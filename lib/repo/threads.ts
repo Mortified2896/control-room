@@ -114,3 +114,75 @@ export async function pingDb(): Promise<boolean> {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Write paths (Phase 2 / Milestone 2).
+//
+// Throws on any DB error -- callers (POST route handlers) should catch and
+// map to a 500. We do NOT use `tryDb` here: writes have no silent fallback.
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new thread. Returns the persisted row. `title` is required;
+ * `modelId` is stored as-is and may be null.
+ *
+ * Throws on DB error.
+ */
+export async function createThread(input: {
+  title: string;
+  modelId?: string | null;
+}): Promise<ThreadRow> {
+  return withClient(async (c) => {
+    const { rows } = await c.query<RawThread>(
+      `INSERT INTO threads (title, model_id)
+       VALUES ($1, $2)
+       RETURNING id, title, created_at, updated_at`,
+      [input.title, input.modelId ?? null],
+    );
+    return toThreadRow(rows[0]);
+  });
+}
+
+/**
+ * Does a thread with this id exist? Cheap existence check used by the
+ * POST /api/threads/[id]/messages validation.
+ */
+export async function threadExists(threadId: string): Promise<boolean> {
+  return withClient(async (c) => {
+    const { rows } = await c.query<{ exists: boolean }>(
+      "SELECT EXISTS(SELECT 1 FROM threads WHERE id = $1) AS exists",
+      [threadId],
+    );
+    return rows[0]?.exists === true;
+  });
+}
+
+/**
+ * Append a message to a thread. Caller is expected to have already verified
+ * the thread exists (`threadExists`) -- this function does NOT do the
+ * existence check itself, so the FK violation can be caught and reported
+ * distinctly from a missing-thread 404.
+ *
+ * Throws on DB error.
+ */
+export async function createMessage(input: {
+  threadId: string;
+  role: MessageRole;
+  content?: string | null;
+  parts?: unknown;
+  modelId?: string | null;
+}): Promise<MessageRow> {
+  return withClient(async (c) => {
+    // `pg` does not auto-detect JS objects/arrays as JSON for jsonb columns,
+    // so we JSON-stringify the value and add an explicit `::jsonb` cast on
+    // the placeholder. null/undefined are passed through (SQL NULL).
+    const partsParam = input.parts == null ? null : JSON.stringify(input.parts);
+    const { rows } = await c.query<RawMessage>(
+      `INSERT INTO messages (thread_id, role, content, parts, model_id)
+       VALUES ($1, $2, $3, $4::jsonb, $5)
+       RETURNING id, thread_id, role, parts, model_id, created_at`,
+      [input.threadId, input.role, input.content ?? null, partsParam, input.modelId ?? null],
+    );
+    return toMessageRow(rows[0]);
+  });
+}

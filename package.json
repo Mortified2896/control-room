@@ -9,7 +9,8 @@
     "format": "oxfmt --check",
     "format:fix": "oxfmt",
     "lint": "oxlint && oxfmt --check",
-    "lint:fix": "oxlint --fix && oxfmt"
+    "lint:fix": "oxlint --fix && oxfmt",
+    "db:migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.71",
