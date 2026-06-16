@@ -3,37 +3,33 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { MessageSquare, Plus } from "lucide-react";
-import { useRef, useState } from "react";
+import type { FC } from "react";
 
-const INITIAL_THREADS = [
-  { id: "1", title: "Control Room setup" },
-  { id: "2", title: "Learn Chinese workflow" },
-  { id: "3", title: "Hermes server task" },
-  { id: "4", title: "Finance article draft" },
-];
+type Thread = {
+  id: string;
+  title: string;
+};
 
-export const Sidebar = () => {
-  const [activeId, setActiveId] = useState("1");
-  const [threads, setThreads] = useState(INITIAL_THREADS);
-  const newChatCounter = useRef(0);
+type SidebarProps = {
+  threads: Thread[];
+  activeThreadId: string;
+  onSelectThread: (id: string) => void;
+  onNewThread: () => void;
+};
 
-  const handleNewChat = () => {
-    newChatCounter.current += 1;
-    const newThread = {
-      id: `local-${Date.now()}-${newChatCounter.current}`,
-      title: `New chat ${newChatCounter.current}`,
-    };
-    setThreads((prev) => [newThread, ...prev]);
-    setActiveId(newThread.id);
-  };
-
+export const Sidebar: FC<SidebarProps> = ({
+  threads,
+  activeThreadId,
+  onSelectThread,
+  onNewThread,
+}) => {
   return (
     <div className="flex h-full w-64 flex-col border-r border-border bg-background">
       <div className="border-border border-b px-3 py-2">
         <Button
           variant="ghost"
           className="w-full justify-start gap-2 text-sm"
-          onClick={handleNewChat}
+          onClick={onNewThread}
         >
           <Plus className="size-4" />
           New chat
@@ -45,10 +41,10 @@ export const Sidebar = () => {
           <button
             key={thread.id}
             type="button"
-            onClick={() => setActiveId(thread.id)}
+            onClick={() => onSelectThread(thread.id)}
             className={cn(
               "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
-              activeId === thread.id
+              activeThreadId === thread.id
                 ? "bg-accent text-accent-foreground"
                 : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
             )}
