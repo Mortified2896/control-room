@@ -19,7 +19,7 @@ const Chat: FC = () => {
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="flex h-dvh">
         <Sidebar />
-        <div className="flex flex-1 overflow-hidden">
+        <div className="h-full flex-1 min-w-0 overflow-hidden">
           <Thread />
         </div>
       </div>
