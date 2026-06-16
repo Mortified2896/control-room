@@ -34,8 +34,10 @@ import {
   PencilIcon,
   RefreshCwIcon,
   SquareIcon,
+  ThumbsDownIcon,
+  ThumbsUpIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import { useState, type FC } from "react";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -259,6 +261,7 @@ const MessageError: FC = () => {
 };
 
 const AssistantMessage: FC = () => {
+  const [vote, setVote] = useState<"up" | "down" | null>(null);
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
 
@@ -301,10 +304,55 @@ const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-footer"
         className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
       >
+        <FeedbackButtons vote={vote} setVote={setVote} />
         <BranchPicker />
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+const FeedbackButtons: FC<{
+  vote: "up" | "down" | null;
+  setVote: (v: "up" | "down" | null) => void;
+}> = ({ vote, setVote }) => {
+  return (
+    <div className="flex items-center gap-0.5">
+      <TooltipIconButton
+        tooltip="Good response"
+        side="bottom"
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-6 rounded-full"
+        aria-label="Thumbs up"
+        onClick={() => setVote(vote === "up" ? null : "up")}
+      >
+        <ThumbsUpIcon
+          className={cn(
+            "size-3.5",
+            vote === "up" && "text-primary fill-current",
+          )}
+        />
+      </TooltipIconButton>
+      <TooltipIconButton
+        tooltip="Bad response"
+        side="bottom"
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-6 rounded-full"
+        aria-label="Thumbs down"
+        onClick={() => setVote(vote === "down" ? null : "down")}
+      >
+        <ThumbsDownIcon
+          className={cn(
+            "size-3.5",
+            vote === "down" && "text-destructive fill-current",
+          )}
+        />
+      </TooltipIconButton>
+    </div>
   );
 };
 
