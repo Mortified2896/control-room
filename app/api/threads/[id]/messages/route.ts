@@ -11,6 +11,8 @@ const ALLOWED_ROLES: ReadonlySet<MessageRole> = new Set<MessageRole>([
   "system",
 ]);
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * GET /api/threads/[id]/messages
  *
@@ -28,6 +30,14 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json(
       { thread: null, messages: [], configured: false },
       { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  // Reject non-UUID ids before hitting Postgres so we don't spam the log with
+  // "invalid input syntax for type uuid" for stale UI ids like "1".
+  if (!UUID_RE.test(id)) {
+    return NextResponse.json(
+      { error: "thread_not_found" },
+      { status: 404, headers: { "Cache-Control": "no-store" } },
     );
   }
   const thread = await getThread(id);
