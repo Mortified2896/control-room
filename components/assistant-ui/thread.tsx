@@ -31,6 +31,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
+  MessageCircleIcon,
   MicIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -46,7 +47,15 @@ import { useEffect, useState, type FC } from "react";
 const isNewChatView = (s: AssistantState) =>
   s.thread.messages.length === 0 && (!s.thread.isLoading || s.threads.isLoading);
 
-export const Thread: FC = () => {
+type NoteResponse = {
+  note: { threadId: string; body: string; createdAt: string; updatedAt: string } | null;
+  configured?: boolean;
+};
+
+export const Thread: FC<{ threadId: string | null; notesDisabled?: boolean }> = ({
+  threadId,
+  notesDisabled = false,
+}) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
@@ -73,7 +82,9 @@ export const Thread: FC = () => {
           </AuiIf>
 
           <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
-            <ThreadPrimitive.Messages>{() => <ThreadMessage />}</ThreadPrimitive.Messages>
+            <ThreadPrimitive.Messages>
+              {() => <ThreadMessage threadId={threadId} notesDisabled={notesDisabled} />}
+            </ThreadPrimitive.Messages>
           </div>
 
           <ThreadPrimitive.ViewportFooter
@@ -94,13 +105,16 @@ export const Thread: FC = () => {
   );
 };
 
-const ThreadMessage: FC = () => {
+const ThreadMessage: FC<{ threadId: string | null; notesDisabled: boolean }> = ({
+  threadId,
+  notesDisabled,
+}) => {
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
 
   if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
-  return <AssistantMessage />;
+  return <AssistantMessage threadId={threadId} notesDisabled={notesDisabled} />;
 };
 
 const ThreadScrollToBottom: FC = () => {
@@ -259,8 +273,12 @@ const MessageError: FC = () => {
   );
 };
 
-const AssistantMessage: FC = () => {
+const AssistantMessage: FC<{ threadId: string | null; notesDisabled: boolean }> = ({
+  threadId,
+  notesDisabled,
+}) => {
   const messageId = useAuiState((s) => s.message.id);
+  const [notesOpen, setNotesOpen] = useState(false);
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
 
@@ -301,11 +319,126 @@ const AssistantMessage: FC = () => {
         className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
       >
         <FeedbackButtons messageId={messageId} />
+        <ThreadNoteToggle open={notesOpen} onOpenChange={setNotesOpen} />
         <BranchPicker />
         <ActionBarDivider />
         <AssistantActionBar />
       </div>
+      {notesOpen && <ThreadNoteEditor threadId={threadId} disabled={notesDisabled} />}
     </MessagePrimitive.Root>
+  );
+};
+
+const ThreadNoteToggle: FC<{ open: boolean; onOpenChange: (open: boolean) => void }> = ({
+  open,
+  onOpenChange,
+}) => {
+  return (
+    <TooltipIconButton
+      tooltip={open ? "Hide thread notes" : "Show thread notes"}
+      side="bottom"
+      type="button"
+      variant="ghost"
+      size="icon"
+      aria-label={open ? "Hide thread notes" : "Show thread notes"}
+      aria-expanded={open}
+      data-state={open ? "active" : "inactive"}
+      onClick={() => onOpenChange(!open)}
+      className={cn(
+        "aui-thread-note-toggle size-7 rounded-full text-muted-foreground/60",
+        "hover:bg-muted/40 hover:text-muted-foreground",
+        "focus-visible:bg-muted/40 focus-visible:text-muted-foreground",
+        open && "bg-accent text-accent-foreground hover:bg-accent hover:text-accent-foreground",
+      )}
+    >
+      <MessageCircleIcon className="size-3.5" />
+    </TooltipIconButton>
+  );
+};
+
+const ThreadNoteEditor: FC<{ threadId: string | null; disabled: boolean }> = ({
+  threadId,
+  disabled,
+}) => {
+  const [body, setBody] = useState("");
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  useEffect(() => {
+    let cancelled = false;
+    setBody("");
+    setStatus("idle");
+    if (!threadId || threadId.startsWith("local-")) return;
+    (async () => {
+      try {
+        const res = await fetch(`/api/threads/${threadId}/note`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data: NoteResponse = await res.json();
+        if (!cancelled) setBody(data.note?.body ?? "");
+      } catch {
+        if (!cancelled) setStatus("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
+
+  const save = async () => {
+    if (!threadId || threadId.startsWith("local-") || disabled) return;
+    setStatus("saving");
+    try {
+      const res = await fetch(`/api/threads/${threadId}/note`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data: NoteResponse = await res.json();
+      setBody(data.note?.body ?? "");
+      setStatus("saved");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  const unavailable = disabled || !threadId || threadId.startsWith("local-");
+
+  return (
+    <div className="aui-thread-note-editor mt-3 rounded-xl border border-border/60 bg-muted/10 px-3 py-2 shadow-sm">
+      <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+        Thread notes
+      </label>
+      <div className="mt-1 flex gap-2">
+        <textarea
+          value={body}
+          onChange={(e) => {
+            setBody(e.target.value);
+            setStatus("idle");
+          }}
+          disabled={unavailable}
+          placeholder="Private notes for later review. Not sent to the model."
+          rows={2}
+          className="min-h-16 flex-1 resize-y rounded-md border border-border/50 bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-muted-foreground/40 focus:outline-none disabled:opacity-60"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void save()}
+          disabled={unavailable || status === "saving"}
+          className="shrink-0 text-xs"
+        >
+          {status === "saving" ? "Saving…" : "Save"}
+        </Button>
+      </div>
+      <div className="mt-1 text-[10px] text-muted-foreground/60">
+        {status === "saved"
+          ? "Saved. Notes are metadata and are not sent to chat."
+          : status === "error"
+            ? "Could not save note."
+            : "Notes are independent from ratings and excluded from model context."}
+      </div>
+    </div>
   );
 };
 

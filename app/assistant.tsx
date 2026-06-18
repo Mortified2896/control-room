@@ -85,11 +85,6 @@ type MessagesResponse = {
   configured: boolean;
 };
 
-type NoteResponse = {
-  note: { threadId: string; body: string; createdAt: string; updatedAt: string } | null;
-  configured?: boolean;
-};
-
 const INITIAL_THREADS: ThreadListItem[] = [
   { id: "1", title: "Control Room setup" },
   { id: "2", title: "Learn Chinese workflow" },
@@ -101,8 +96,9 @@ const ChatPane: FC<{
   modelId: string | null;
   threadId: string | null;
   initialMessages: UIMessage[];
+  notesDisabled: boolean;
   onFinish: () => void;
-}> = ({ modelId, threadId, initialMessages, onFinish }) => {
+}> = ({ modelId, threadId, initialMessages, notesDisabled, onFinish }) => {
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
@@ -122,7 +118,7 @@ const ChatPane: FC<{
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
+      <Thread threadId={threadId} notesDisabled={notesDisabled} />
     </AssistantRuntimeProvider>
   );
 };
@@ -330,90 +326,6 @@ const SidebarPanel: FC<{
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
     </>
-  );
-};
-
-const ThreadNoteEditor: FC<{ threadId: string | null; disabled: boolean }> = ({
-  threadId,
-  disabled,
-}) => {
-  const [body, setBody] = useState("");
-  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
-
-  useEffect(() => {
-    let cancelled = false;
-    setBody("");
-    setStatus("idle");
-    if (!threadId || threadId.startsWith("local-")) return;
-    (async () => {
-      try {
-        const res = await fetch(`/api/threads/${threadId}/note`, { cache: "no-store" });
-        if (!res.ok) return;
-        const data: NoteResponse = await res.json();
-        if (!cancelled) setBody(data.note?.body ?? "");
-      } catch {
-        if (!cancelled) setStatus("error");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [threadId]);
-
-  const save = async () => {
-    if (!threadId || threadId.startsWith("local-") || disabled) return;
-    setStatus("saving");
-    try {
-      const res = await fetch(`/api/threads/${threadId}/note`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body }),
-      });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data: NoteResponse = await res.json();
-      setBody(data.note?.body ?? "");
-      setStatus("saved");
-    } catch {
-      setStatus("error");
-    }
-  };
-
-  return (
-    <div className="border-b border-border/60 bg-muted/10 px-3 py-2 sm:px-4">
-      <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-        Thread notes
-      </label>
-      <div className="mt-1 flex gap-2">
-        <textarea
-          value={body}
-          onChange={(e) => {
-            setBody(e.target.value);
-            setStatus("idle");
-          }}
-          disabled={disabled || !threadId || threadId.startsWith("local-")}
-          placeholder="Private notes for later review. Not sent to the model."
-          rows={1}
-          className="min-h-8 flex-1 resize-none rounded-md border border-border/50 bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-muted-foreground/40 focus:outline-none disabled:opacity-60"
-        />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void save()}
-          disabled={disabled || !threadId || threadId.startsWith("local-") || status === "saving"}
-          className="shrink-0 text-xs"
-        >
-          {status === "saving" ? "Saving…" : "Save"}
-        </Button>
-      </div>
-      <div className="mt-1 text-[10px] text-muted-foreground/60">
-        {status === "saved"
-          ? "Saved. Notes are metadata and are not sent to chat."
-          : status === "error"
-            ? "Could not save note."
-            : "Notes are independent from ratings and excluded from model context."}
-      </div>
-    </div>
   );
 };
 
@@ -652,8 +564,6 @@ export const Assistant = () => {
           </div>
         )}
 
-        <ThreadNoteEditor threadId={activeThreadId} disabled={!dbConfigured || threadsLoading} />
-
         <div className="min-h-0 flex-1 overflow-hidden">
           {messagesLoading ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -665,6 +575,7 @@ export const Assistant = () => {
               modelId={selectedModelId}
               threadId={activeThreadId}
               initialMessages={threadMessages}
+              notesDisabled={!dbConfigured || threadsLoading}
               onFinish={() => void refreshThreads()}
             />
           )}
