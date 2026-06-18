@@ -78,15 +78,19 @@ const ModelSelector: FC<{
       : "Select model";
 
   return (
-    <div ref={ref} className="relative flex items-center border-b border-border px-4 py-2">
+    <div
+      ref={ref}
+      className="relative flex items-center border-b border-border/60 bg-background px-4 py-2"
+    >
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+        className="aui-model-selector-trigger inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
         disabled={loading}
       >
+        <span className="size-1.5 rounded-full bg-emerald-500/80" aria-hidden />
         {triggerLabel}
-        <ChevronDown className="size-3" />
+        <ChevronDown className="size-3 opacity-70" />
       </button>
 
       {open && (

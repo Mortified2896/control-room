@@ -42,8 +42,7 @@ import { useState, type FC } from "react";
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
 const isNewChatView = (s: AssistantState) =>
-  s.thread.messages.length === 0 &&
-  (!s.thread.isLoading || s.threads.isLoading);
+  s.thread.messages.length === 0 && (!s.thread.isLoading || s.threads.isLoading);
 
 export const Thread: FC = () => {
   const isEmpty = useAuiState(isNewChatView);
@@ -71,13 +70,8 @@ export const Thread: FC = () => {
             <ThreadWelcome />
           </AuiIf>
 
-          <div
-            data-slot="aui_message-group"
-            className="mb-14 flex flex-col gap-y-6 empty:hidden"
-          >
-            <ThreadPrimitive.Messages>
-              {() => <ThreadMessage />}
-            </ThreadPrimitive.Messages>
+          <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
+            <ThreadPrimitive.Messages>{() => <ThreadMessage />}</ThreadPrimitive.Messages>
           </div>
 
           <ThreadPrimitive.ViewportFooter
@@ -134,9 +128,7 @@ const ThreadWelcome: FC = () => {
 const ThreadSuggestions: FC = () => {
   return (
     <div className="aui-thread-welcome-suggestions flex w-full flex-wrap items-center justify-center gap-2 px-4">
-      <ThreadPrimitive.Suggestions>
-        {() => <ThreadSuggestionItem />}
-      </ThreadPrimitive.Suggestions>
+      <ThreadPrimitive.Suggestions>{() => <ThreadSuggestionItem />}</ThreadPrimitive.Suggestions>
     </div>
   );
 };
@@ -167,8 +159,8 @@ const Composer: FC = () => {
         >
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder="Send a message..."
-            className="aui-composer-input placeholder:text-muted-foreground/80 max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none"
+            placeholder="Message Control Room…"
+            className="aui-composer-input placeholder:text-muted-foreground/70 max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-[15px] outline-none"
             rows={1}
             autoFocus
             aria-label="Message input"
@@ -279,15 +271,12 @@ const AssistantMessage: FC = () => {
         <MessagePrimitive.Parts>
           {({ part }) => {
             if (part.type === "text") return <MarkdownText />;
-            if (part.type === "tool-call")
-              return part.toolUI ?? <ToolFallback {...part} />;
+            if (part.type === "tool-call") return part.toolUI ?? <ToolFallback {...part} />;
             return null;
           }}
         </MessagePrimitive.Parts>
         <AuiIf
-          condition={(s) =>
-            s.message.status?.type === "running" && s.message.parts.length === 0
-          }
+          condition={(s) => s.message.status?.type === "running" && s.message.parts.length === 0}
         >
           <span
             data-slot="aui_assistant-message-indicator"
@@ -306,6 +295,7 @@ const AssistantMessage: FC = () => {
       >
         <FeedbackButtons vote={vote} setVote={setVote} />
         <BranchPicker />
+        <ActionBarDivider />
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
@@ -317,22 +307,30 @@ const FeedbackButtons: FC<{
   setVote: (v: "up" | "down" | null) => void;
 }> = ({ vote, setVote }) => {
   return (
-    <div className="flex items-center gap-0.5">
+    <div role="group" aria-label="Message feedback" className="flex items-center gap-0.5">
       <TooltipIconButton
         tooltip="Good response"
         side="bottom"
         type="button"
         variant="ghost"
         size="icon"
-        className="size-6 rounded-full"
         aria-label="Thumbs up"
+        aria-pressed={vote === "up"}
+        data-state={vote === "up" ? "active" : "inactive"}
         onClick={() => setVote(vote === "up" ? null : "up")}
+        className={cn(
+          // Match mockup: muted-foreground/50 idle, full muted-foreground on hover,
+          // soft muted/30 background on hover, foreground + colored fill when selected.
+          "aui-feedback-button size-7 rounded-full text-muted-foreground/60",
+          "hover:bg-muted/40 hover:text-muted-foreground",
+          "focus-visible:bg-muted/40 focus-visible:text-muted-foreground",
+          "transition-colors",
+          vote === "up" &&
+            "bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/15 hover:text-emerald-500 focus-visible:bg-emerald-500/15 focus-visible:text-emerald-500",
+        )}
       >
         <ThumbsUpIcon
-          className={cn(
-            "size-3.5",
-            vote === "up" && "text-primary fill-current",
-          )}
+          className={cn("size-3.5 transition-transform", vote === "up" && "fill-current scale-110")}
         />
       </TooltipIconButton>
       <TooltipIconButton
@@ -341,20 +339,35 @@ const FeedbackButtons: FC<{
         type="button"
         variant="ghost"
         size="icon"
-        className="size-6 rounded-full"
         aria-label="Thumbs down"
+        aria-pressed={vote === "down"}
+        data-state={vote === "down" ? "active" : "inactive"}
         onClick={() => setVote(vote === "down" ? null : "down")}
+        className={cn(
+          "aui-feedback-button size-7 rounded-full text-muted-foreground/60",
+          "hover:bg-muted/40 hover:text-muted-foreground",
+          "focus-visible:bg-muted/40 focus-visible:text-muted-foreground",
+          "transition-colors",
+          vote === "down" &&
+            "bg-rose-500/10 text-rose-500 hover:bg-rose-500/15 hover:text-rose-500 focus-visible:bg-rose-500/15 focus-visible:text-rose-500",
+        )}
       >
         <ThumbsDownIcon
           className={cn(
-            "size-3.5",
-            vote === "down" && "text-destructive fill-current",
+            "size-3.5 transition-transform",
+            vote === "down" && "fill-current scale-110",
           )}
         />
       </TooltipIconButton>
     </div>
   );
 };
+
+// Small vertical divider to separate feedback from copy/regenerate,
+// matching the mockup's MessageActions grouping.
+const ActionBarDivider: FC = () => (
+  <div aria-hidden="true" className="bg-border/60 mx-1.5 h-4 w-px" />
+);
 
 const AssistantActionBar: FC = () => {
   return (
@@ -380,10 +393,7 @@ const AssistantActionBar: FC = () => {
       </ActionBarPrimitive.Reload>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
-          <TooltipIconButton
-            tooltip="More"
-            className="data-[state=open]:bg-accent"
-          >
+          <TooltipIconButton tooltip="More" className="data-[state=open]:bg-accent">
             <MoreHorizontalIcon />
           </TooltipIconButton>
         </ActionBarMorePrimitive.Trigger>
@@ -449,10 +459,7 @@ const UserActionBar: FC = () => {
 
 const EditComposer: FC = () => {
   return (
-    <MessagePrimitive.Root
-      data-slot="aui_edit-composer-wrapper"
-      className="flex flex-col px-2"
-    >
+    <MessagePrimitive.Root data-slot="aui_edit-composer-wrapper" className="flex flex-col px-2">
       <ComposerPrimitive.Root className="aui-edit-composer-root bg-background border-border/60 dark:border-muted-foreground/15 dark:bg-muted/30 ms-auto flex w-full max-w-[85%] flex-col rounded-3xl border shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] dark:shadow-none">
         <ComposerPrimitive.Input
           className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none"
@@ -460,11 +467,7 @@ const EditComposer: FC = () => {
         />
         <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
           <ComposerPrimitive.Cancel asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 rounded-full px-3.5"
-            >
+            <Button variant="ghost" size="sm" className="h-8 rounded-full px-3.5">
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
@@ -479,10 +482,7 @@ const EditComposer: FC = () => {
   );
 };
 
-const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
-  className,
-  ...rest
-}) => {
+const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({ className, ...rest }) => {
   return (
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch

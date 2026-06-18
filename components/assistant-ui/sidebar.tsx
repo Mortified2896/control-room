@@ -2,8 +2,8 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Plus } from "lucide-react";
-import type { FC } from "react";
+import { MessageSquare, Plus, Search, Settings } from "lucide-react";
+import { useState, type FC, type FormEvent } from "react";
 
 type Thread = {
   id: string;
@@ -23,37 +23,91 @@ export const Sidebar: FC<SidebarProps> = ({
   onSelectThread,
   onNewThread,
 }) => {
+  const [query, setQuery] = useState("");
+
+  const filtered = query.trim()
+    ? threads.filter((t) => t.title.toLowerCase().includes(query.trim().toLowerCase()))
+    : threads;
+
   return (
-    <div className="flex h-full w-64 flex-col border-r border-border bg-background">
-      <div className="border-border border-b px-3 py-2">
+    <div className="flex h-full w-64 flex-col border-r border-border/60 bg-muted/20">
+      {/* Header */}
+      <div className="border-b border-border/40 px-4 py-3.5">
+        <h1 className="text-sm font-semibold text-foreground">Control Room</h1>
+        <p className="text-[11px] text-muted-foreground/70">Personal AI workbench</p>
+      </div>
+
+      {/* New chat */}
+      <div className="px-3 pt-3">
         <Button
-          variant="ghost"
-          className="w-full justify-start gap-2 text-sm"
+          variant="outline"
+          className="aui-sidebar-new-chat w-full justify-center gap-1.5 rounded-lg border-border/60 bg-muted/30 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
           onClick={onNewThread}
         >
-          <Plus className="size-4" />
-          New chat
+          <Plus className="size-3.5" />
+          New Chat
         </Button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-2 py-2">
-        {threads.map((thread) => (
-          <button
-            key={thread.id}
-            type="button"
-            onClick={() => onSelectThread(thread.id)}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors",
-              activeThreadId === thread.id
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground",
-            )}
-          >
-            <MessageSquare className="size-4 shrink-0" />
-            <span className="truncate">{thread.title}</span>
-          </button>
-        ))}
+      {/* Search */}
+      <form className="px-3 pt-3" onSubmit={(e: FormEvent) => e.preventDefault()} role="search">
+        <label className="relative block">
+          <Search className="aui-sidebar-search-icon pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search chats…"
+            aria-label="Search chats"
+            className="aui-sidebar-search w-full rounded-lg border border-border/50 bg-muted/30 py-1.5 pl-8 pr-3 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-muted-foreground/40 focus:outline-none"
+          />
+        </label>
+      </form>
+
+      {/* Chats */}
+      <nav className="flex-1 overflow-y-auto px-3 pt-3 pb-2">
+        <h2 className="aui-sidebar-section-label mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50">
+          Recent chats
+        </h2>
+        <div className="space-y-0.5">
+          {filtered.length === 0 && (
+            <div className="px-3 py-2 text-xs text-muted-foreground/60">
+              No chats match “{query.trim()}”
+            </div>
+          )}
+          {filtered.map((thread) => (
+            <button
+              key={thread.id}
+              type="button"
+              onClick={() => onSelectThread(thread.id)}
+              className={cn(
+                "aui-sidebar-thread flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-xs transition-colors",
+                activeThreadId === thread.id
+                  ? "bg-primary/10 font-medium text-foreground"
+                  : "text-muted-foreground/80 hover:bg-accent/40 hover:text-foreground",
+              )}
+            >
+              <MessageSquare className="size-3.5 shrink-0" />
+              <span className="truncate">{thread.title}</span>
+            </button>
+          ))}
+        </div>
       </nav>
+
+      {/* Footer: settings placeholder */}
+      <div className="border-t border-border/40 px-3 py-2.5">
+        <button
+          type="button"
+          className="aui-sidebar-settings flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground/60 transition-colors hover:bg-muted/30 hover:text-muted-foreground"
+          aria-label="Open user settings"
+        >
+          <div className="flex size-6 items-center justify-center rounded-full bg-muted/40 text-[10px] font-medium">
+            U
+          </div>
+          <span>User Settings</span>
+          <Settings className="aui-sidebar-settings-icon ml-auto size-3" />
+        </button>
+      </div>
     </div>
   );
 };
