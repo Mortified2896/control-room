@@ -15,20 +15,26 @@ sanitized probe you can re-run if it ever comes back.
 
 ## TL;DR
 
-The mock `INITIAL_THREADS` list in `app/assistant.tsx` contains bare-integer
-ids (`"1"`, `"2"`, `"3"`, `"4"`). On every mount, `activeThreadId` is seeded
-with `"1"`, and the messages-loading effect fires
-`GET /api/threads/1/messages`. The handler had no UUID check, so the string
-`"1"` reached Postgres against a `uuid` column, which rejected it. The
-client render path looked fine because `tryDb` returned `null` / `[]` and the
-catch in the messages effect silently cleared `threadMessages`.
+The stub `INITIAL_THREADS` list in `app/assistant.tsx` once contained
+bare-integer ids (`"1"`, `"2"`, `"3"`, `"4"`). On every mount,
+`activeThreadId` was seeded with `"1"`, and the messages-loading effect
+fired `GET /api/threads/1/messages`. The handler had no UUID check, so
+the string `"1"` reached Postgres against a `uuid` column, which
+rejected it. The client render path looked fine because `tryDb` returned
+`null` / `[]` and the catch in the messages effect silently cleared
+`threadMessages`.
 
-Fix is two lines' worth of intent in two files:
+The stub ids were then renamed to `"local-1"`, `"local-2"`, ... so a
+single `id.startsWith("local-")` check covers both the offline stubs
+and the in-memory "New chat" entries, removing the need for any
+numeric-shape special-casing.
 
-1. `app/assistant.tsx` — treat bare-integer ids the same as the existing
-   `local-` prefix and never let them reach the persisted-chat API.
-2. `app/api/threads/[id]/messages/route.ts` — add a `UUID_RE` guard to the
-   GET handler so any non-UUID id is rejected with a clean 404 before
+Two files were touched for the fix:
+
+1. `app/assistant.tsx` — renamed stub ids to use the `"local-"` prefix
+   and switched the messages-loading guard to use the helper.
+2. `app/api/threads/[id]/messages/route.ts` — added a `UUID_RE` guard to
+   the GET handler so any non-UUID id is rejected with a clean 404 before
    Postgres is touched. The sibling POST handler and both note-route
    handlers already had this guard.
 
@@ -46,21 +52,26 @@ Net effect: every browser mount (or any caller hitting the route with a
 non-UUID id) produced one log line, and the UI rendered as if nothing
 happened.
 
+The stub ids in `INITIAL_THREADS` were then renamed from `"1"`, `"2"`,
+`"3"`, `"4"` to `"local-1"`, `"local-2"`, `"local-3"`, `"local-4"`,
+so the offline-stubs and the in-memory "New chat" entries share the
+same `"local-"` prefix and a single `startsWith("local-")` check covers
+both.
+
 ## The fix (verified)
 
 ### `app/assistant.tsx`
 
-A small `isLocalThreadId(id)` helper recognizes both the existing `local-…`
-prefix and the bare-integer mock ids from `INITIAL_THREADS`. The
-messages-loading effect guard now uses it.
+A small `isLocalThreadId(id)` helper checks the shared `"local-"`
+prefix. The messages-loading effect guard uses it, and the same prefix
+is checked directly in `components/assistant-ui/thread.tsx`'s note
+editor. The offline stub entries in `INITIAL_THREADS` use the prefix
+(`"local-1"`, `"local-2"`, ...), so a single check covers both them
+and the in-memory "New chat" entries.
 
 ```ts
 function isLocalThreadId(id: string | null | undefined): boolean {
-  if (!id) return true;
-  if (id.startsWith("local-")) return true;
-  // Mock ids from INITIAL_THREADS are bare integers; anything else is
-  // assumed to be a real persisted UUID and is eligible for DB calls.
-  return /^\d+$/.test(id);
+  return !id || id.startsWith("local-");
 }
 
 // ...later, in the messages-loading effect:
@@ -97,18 +108,23 @@ journalctl --user -u control-room.service --since "1 hour ago" --no-pager \
   | grep -E 'db\] call failed|invalid input syntax for type uuid' \
   && echo "STILL NOISY" || echo "clean ✓"
 
-# 2. Hit the legacy mock id directly -- must now 404 cleanly
-curl -s -o /dev/null -w "GET /api/threads/1/messages -> HTTP %{http_code}\n" \
-  http://127.0.0.1:18100/api/threads/1/messages
-curl -s http://127.0.0.1:18100/api/threads/1/messages
+# 2. Hit a stub id directly -- must now 404 cleanly without a DB call
+curl -s -o /dev/null -w "GET /api/threads/local-1/messages -> HTTP %{http_code}\n" \
+  http://127.0.0.1:18100/api/threads/local-1/messages
+curl -s http://127.0.0.1:18100/api/threads/local-1/messages
 # expect: 404 {"error":"thread_not_found"}   (no DB call, no log line)
 
-# 3. Real UUID path still works
+# 3. A bare-numeric id (the legacy shape, pre-rename) is also rejected cleanly
+curl -s -o /dev/null -w "GET /api/threads/1/messages -> HTTP %{http_code}\n" \
+  http://127.0.0.1:18100/api/threads/1/messages
+# expect: 404 {"error":"thread_not_found"}   (UUID_RE guard on the API)
+
+# 4. Real UUID path still works
 curl -s -o /dev/null -w "GET /api/threads/<uuid>/messages -> HTTP %{http_code}\n" \
   http://127.0.0.1:18100/api/threads/00000000-0000-0000-0000-000000000000/messages
 # expect: 404 {"error":"thread_not_found"}   (genuine thread lookup, not the guard)
 
-# 4. Confirm the list endpoint still returns real threads
+# 5. Confirm the list endpoint still returns real threads
 curl -s http://127.0.0.1:18100/api/threads | python3 -m json.tool
 # expect: { "threads": [ { "id": "<uuid>", ... } ], "configured": true }
 ```
@@ -118,9 +134,11 @@ curl -s http://127.0.0.1:18100/api/threads | python3 -m json.tool
 - **Stops the recurring log line.** Verified clean on 2026-06-18 after
   `npm run build && systemctl --user restart control-room.service` — zero
   occurrences in the journal since restart.
-- **Preserves the offline mock UX.** `INITIAL_THREADS` is still rendered in
+- **Preserves the offline stub UX.** `INITIAL_THREADS` is still rendered in
   the sidebar on first paint before the DB returns, per the design intent in
   `docs/POSTGRES_PLAN.md` ("we do not yet remove the in-memory fallback").
+  The stub ids carry the `"local-"` prefix so they share the same
+  offline-only code path as in-memory "New chat" entries.
 - **Defense in depth.** A non-UUID id now returns 404 cleanly from the API,
   even if some other caller (stale UI, a manually crafted URL, a future
   bug) sends one. The note routes already had this guard.
@@ -133,12 +151,14 @@ curl -s http://127.0.0.1:18100/api/threads | python3 -m json.tool
   `lib/db.ts`'s `tryDb(fn, fallback)` is a silent fallback. A failing
   persisted-chat call does **not** surface as a UI error — only as a log
   line. Watch the journal, not the page.
-- **Other "1"-shaped defaults can bite.** The thread.tsx note editor
-  currently guards on `startsWith("local-")` only; for a bare-integer mock
-  id, the note fetch hits `/api/threads/1/note` and is rejected by that
-  route's existing `UUID_RE` guard. No DB error is logged, but it does
-  cost one extra round-trip. Tightening the thread.tsx guard to use
-  `isLocalThreadId` would be cosmetic; the bug is gone without it.
+- **Stub ids must use the `"local-"` prefix.** Any new offline stub
+  thread added to `INITIAL_THREADS` (or anywhere else) must use the
+  `"local-"` prefix so `isLocalThreadId()` and the matching guards in
+  `components/assistant-ui/thread.tsx` correctly skip the persisted-chat
+  API for them. A bare-integer id (or any other non-UUID, non-prefixed
+  string) will currently fail the `"local-"` check and slip through to
+  the API — where it is now caught by the `UUID_RE` guard on the GET
+  handler, but the cleaner invariant is to keep the prefix.
 - **Build vs. service timing.** `next start` reads the build output at
   startup. If you edit the route handler but only run `tsc --noEmit`
   without `npm run build`, the running service still has the old handler.
