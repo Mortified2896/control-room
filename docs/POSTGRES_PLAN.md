@@ -1,7 +1,7 @@
 # Control Room — Postgres Persistence Plan
 
-> Status: **Plan only. No code, no DB, no env changes yet.**
-> Last updated: 2026-06-16, Hermes VM inspection session.
+> Status: **Persistent chat v1 implemented and validated.**
+> Last updated: 2026-06-18, Hermes VM implementation session.
 
 ## 0. What I verified on the Hermes VM (read-only)
 
@@ -32,7 +32,7 @@
 | App DB user | `control_room_app` | App-level user; mirrors `learn_chinese_app`. |
 | Owner/admin role | `control_room_owner` | DDL/migrations role. Mirrors a "principle of least privilege" split if we want it. **Optional for v1** — can be folded into `control_room_app` if you want a simpler setup. |
 | Env file path | `/etc/hermes/control_room_postgres.env` | Same pattern as `learn_chinese_postgres.env`. Mode 640, owner `root:hermes`. The Next.js dev process can read it (the dev server runs as `hermes`). |
-| App env var name | `CONTROL_ROOM_DATABASE_URL` | Single URL — easier than mirroring the 4 separate `*_DB` / `*_USER` / `*_PASSWORD` / `*_HOST` vars. Standard `postgres://user:pass@host:port/db` form. |
+| App env var name | `CONTROL_ROOM_DATABASE_URL` | Single URL — easier than mirroring the 4 separate `*_DB` / `*_USER` / `*_PASSWORD` / `*_HOST` vars. Standard `postgres://user:***@host:port/db` form. |
 
 **Why one URL instead of four vars:** `learn_chinese_postgres.env` uses four vars because that app is configured that way; for a brand-new Node/Postgres app, a single `DATABASE_URL` is the modern convention and works natively with `pg`, `postgres.js`, and Drizzle/Kysely. We can revisit if you'd rather match the four-var shape.
 
@@ -142,7 +142,7 @@ ssh -J proxmox-home hermes@10.10.10.80 \
     GRANT ALL ON SCHEMA public TO control_room_app;
 SQL
     sudo -u postgres psql -d control_room -v ON_ERROR_STOP=1 -c \"CREATE EXTENSION IF NOT EXISTS pgcrypto;\"
-    echo 'CONTROL_ROOM_DATABASE_URL=postgres://control_room_app:$PW@127.0.0.1:5432/control_room' \
+    echo 'CONTROL_ROOM_DATABASE_URL=postgres://control_room_app:***@127.0.0.1:5432/control_room' \
       | sudo tee /etc/hermes/control_room_postgres.env >/dev/null
     sudo chmod 640 /etc/hermes/control_room_postgres.env
     sudo chown root:hermes /etc/hermes/control_room_postgres.env"
@@ -216,3 +216,179 @@ Read-only Postgres wiring landed. No schema, no writes, no client UI change.
 - Add `threads`, `messages`, `message_feedback` tables (one-shot migration script under `db/migrations/0001_init.sql`).
 - Wire `POST /api/threads`, `POST /api/threads/:id/messages`, `POST /api/messages/:id/feedback`.
 - Optionally switch the client to use persisted threads (Milestone 3).
+
+---
+
+## 9. Persistent chat v1 — Status: COMPLETE (2026-06-18)
+
+Persistent chat is now wired end-to-end with the existing `pg` + plain SQL stack. No ORM was added.
+
+### 9.1 Final product design
+
+**Persistent chat v1 includes:**
+- DB-backed `threads`.
+- DB-backed `messages`.
+- History hydration when switching threads.
+- Automatic sidebar title from the first user message, only when the thread title is still exactly `New chat`.
+
+**Feedback:**
+- Thumbs up/down are message-level ratings for assistant messages only.
+- The UI persists/toggles ratings silently via `PUT /api/messages/:id/feedback`.
+- Upsert semantics: one `message_feedback` row per assistant message.
+- Clicking the same rating again deletes the row and returns `{ rating: null }`.
+- No automatic note prompt, no "what was wrong?" popover, no reason chips, no forced follow-up UI.
+
+**Notes:**
+- Notes are independent thread-level metadata in `thread_notes`.
+- Notes can exist with no rating; ratings can exist with no notes.
+- Notes are not chat messages.
+- Notes are not included in `/api/chat` model context by default.
+- Future notes-as-context should be an explicit user-controlled feature; it was not built in v1.
+
+**Model context guardrail:**
+- `/api/chat` builds model input with `convertToModelMessages(messages)` using only the client-supplied actual chat `UIMessage[]`.
+- It does not load or merge ratings, notes, feedback, traces, debug metadata, or routing metadata.
+
+### 9.2 Schema and migrations
+
+Existing `0001_init.sql` remains the base schema for:
+- `threads`
+- `messages`
+- `message_feedback`
+- `schema_migrations`
+
+A small additive migration was added:
+
+```sql
+-- db/migrations/0002_thread_notes.sql
+CREATE TABLE IF NOT EXISTS thread_notes (
+  thread_id  uuid        PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  body       text        NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+DROP TRIGGER IF EXISTS thread_notes_set_updated_at ON thread_notes;
+CREATE TRIGGER thread_notes_set_updated_at
+  BEFORE UPDATE ON thread_notes
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+```
+
+Migration validation:
+
+```bash
+npm run db:migrate
+# [migrate] skip   0001_init.sql (already applied)
+# [migrate] apply  0002_thread_notes.sql
+# [migrate] ok     0002_thread_notes.sql
+# [migrate] done
+```
+
+### 9.3 API/routes
+
+Existing routes retained:
+- `GET /api/threads`
+- `POST /api/threads`
+- `GET /api/threads/:id/messages`
+- `POST /api/threads/:id/messages`
+- `POST /api/chat`
+- `GET /api/models`
+- `GET /api/db-health`
+
+New routes:
+- `GET /api/messages/:id/feedback`
+- `PUT /api/messages/:id/feedback`
+- `GET /api/threads/:id/note`
+- `PUT /api/threads/:id/note`
+
+`/api/chat` persistence behavior:
+- Accepts optional `threadId` in the request body.
+- Persists the latest user message best-effort before/while streaming.
+- Persists the assistant reply in `toUIMessageStreamResponse({ onFinish })` after completion.
+- Continues streaming if persistence fails; errors are logged and not exposed as chat failures.
+
+### 9.4 UI behavior
+
+`app/assistant.tsx` now:
+- Fetches `/api/threads` on mount.
+- Creates new DB threads with `POST /api/threads`.
+- Fetches `/api/threads/:id/messages` when the selected thread changes.
+- Hydrates `useChatRuntime({ messages: initialMessages })` with persisted `UIMessage[]`.
+- Renders one active `ChatPane`, keyed by `activeThreadId`, instead of mounting one runtime per sidebar row.
+- Shows a small offline banner when DB-backed routes report `configured: false` or are unreachable.
+- Includes a minimal independent thread-note editor; the placeholder and helper text state that notes are not sent to the model.
+
+`components/assistant-ui/thread.tsx` now:
+- Loads/saves assistant-message feedback silently through `/api/messages/:id/feedback`.
+- Does not show note prompts, popovers, chips, or follow-up UI.
+
+### 9.5 Validation results
+
+Commands run:
+
+```bash
+node --test --experimental-strip-types \
+  lib/assistant-ui/thread-messages.test.ts \
+  lib/repo/feedback.test.ts
+# 8 tests passed
+
+npx tsc --noEmit
+# clean exit 0
+
+npm run build
+# ✓ Compiled successfully
+# routes include /api/messages/[id]/feedback and /api/threads/[id]/note
+```
+
+Lint status:
+- `oxlint` portion of `npm run lint` is clean: 0 warnings, 0 errors.
+- Touched feature files were formatted with `npx oxfmt ...` and no longer appear in the focused oxfmt check.
+- Full `npm run lint` still fails on unrelated pre-existing/no-config oxfmt issues in files outside this feature set (for example `app/globals.css`, `app/layout.tsx`, and several pre-existing components/docs). This is unchanged repo-wide formatter debt, not a TypeScript or oxlint failure.
+
+Runtime service validation:
+- Verified live service via `systemctl --user status control-room.service`.
+- Actual port: `127.0.0.1:18100` (not `:3000`).
+- Restart initially failed because an orphaned old `next-server` still held port `18100`; killed only that orphan and restarted `control-room.service` successfully.
+
+Smoke test results:
+
+```text
+thread_title=Reply with exactly: persistent smoke ok
+message_count=2
+roles=user,assistant
+rating=up
+note=smoke note independent from rating
+```
+
+Browser/UI smoke:
+- Loaded `http://127.0.0.1:18100/`.
+- Sidebar showed persisted thread `Reply with exactly: persistent smoke ok`.
+- Thread history hydrated with the user prompt and assistant reply.
+- Independent thread note displayed: `smoke note independent from rating`.
+- Created a new thread from the UI, switched away, then switched back to the persisted thread.
+- Old thread history and note hydrated again.
+- Browser console showed no JavaScript errors.
+
+### 9.6 NocoDB / inspection guidance
+
+Do **not** connect NocoDB using `control_room_app` write credentials.
+
+For validation, prefer `psql` first:
+
+```bash
+set -a; . /etc/hermes/control_room_postgres.env; set +a
+psql "$CONTROL_ROOM_DATABASE_URL" -c "\dt"
+```
+
+If NocoDB inspection is desired later, create a separate read-only role with SELECT only on the relevant Control Room tables:
+
+```sql
+CREATE ROLE control_room_readonly LOGIN PASSWORD 'replace-with-generated-password';
+GRANT CONNECT ON DATABASE control_room TO control_room_readonly;
+GRANT USAGE ON SCHEMA public TO control_room_readonly;
+GRANT SELECT ON TABLE threads, messages, message_feedback, thread_notes TO control_room_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT ON TABLES TO control_room_readonly;
+```
+
+Do not grant schema creation or write privileges to the read-only role. Do not touch the existing Learn Chinese NocoDB setup.
