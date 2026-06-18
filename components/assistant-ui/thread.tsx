@@ -404,7 +404,7 @@ const ThreadNoteEditor: FC<{ threadId: string | null; disabled: boolean }> = ({
   const unavailable = disabled || !threadId || threadId.startsWith("local-");
 
   return (
-    <div className="aui-thread-note-editor mt-3 rounded-xl border border-border/60 bg-muted/10 px-3 py-2 shadow-sm">
+    <div className="aui-thread-note-editor mt-9 rounded-xl border border-border/60 bg-muted/10 px-3 py-2 shadow-sm">
       <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
         Thread notes
       </label>
