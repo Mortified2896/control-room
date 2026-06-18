@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { KbdHint } from "@/components/kbd-hint";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Plus, Search } from "lucide-react";
+import { MessageSquare, Plus, Search, X } from "lucide-react";
 import { useState, type FC, type FormEvent } from "react";
 
 import { SHORTCUT_TARGETS } from "@/lib/shortcuts";
@@ -19,6 +19,7 @@ type SidebarProps = {
   activeThreadId: string;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
+  onClose?: () => void;
 };
 
 export const Sidebar: FC<SidebarProps> = ({
@@ -26,6 +27,7 @@ export const Sidebar: FC<SidebarProps> = ({
   activeThreadId,
   onSelectThread,
   onNewThread,
+  onClose,
 }) => {
   const [query, setQuery] = useState("");
 
@@ -36,9 +38,23 @@ export const Sidebar: FC<SidebarProps> = ({
   return (
     <div className="flex h-full w-64 flex-col border-r border-border/60 bg-muted/20">
       {/* Header */}
-      <div className="border-b border-border/40 px-4 py-3.5">
-        <h1 className="text-sm font-semibold text-foreground">Control Room</h1>
-        <p className="text-[11px] text-muted-foreground/70">Personal AI workbench</p>
+      <div className="flex items-start justify-between border-b border-border/40 px-4 py-3.5">
+        <div>
+          <h1 className="text-sm font-semibold text-foreground">Control Room</h1>
+          <p className="text-[11px] text-muted-foreground/70">Personal AI workbench</p>
+        </div>
+        {onClose && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="-mr-1 md:hidden"
+            aria-label="Close sidebar"
+            onClick={onClose}
+          >
+            <X className="size-4" />
+          </Button>
+        )}
       </div>
 
       {/* New chat */}
@@ -47,7 +63,10 @@ export const Sidebar: FC<SidebarProps> = ({
           variant="outline"
           data-shortcut-target={SHORTCUT_TARGETS.newChat}
           className="aui-sidebar-new-chat relative w-full justify-center gap-1.5 rounded-lg border-border/60 bg-muted/30 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-          onClick={onNewThread}
+          onClick={() => {
+            onNewThread();
+            onClose?.();
+          }}
         >
           <Plus className="size-3.5" />
           New Chat
@@ -93,7 +112,10 @@ export const Sidebar: FC<SidebarProps> = ({
             <button
               key={thread.id}
               type="button"
-              onClick={() => onSelectThread(thread.id)}
+              onClick={() => {
+                onSelectThread(thread.id);
+                onClose?.();
+              }}
               className={cn(
                 "aui-sidebar-thread flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-xs transition-colors",
                 activeThreadId === thread.id
@@ -111,7 +133,9 @@ export const Sidebar: FC<SidebarProps> = ({
       {/* Footer: keyboard shortcuts help + user settings */}
       <div className="border-t border-border/40 px-3 py-2.5">
         <div className="space-y-0.5">
-          <ShortcutsHelp />
+          <div className="hidden sm:block">
+            <ShortcutsHelp />
+          </div>
           <button
             type="button"
             data-shortcut-target={SHORTCUT_TARGETS.userSettings}

@@ -1,23 +1,17 @@
 import "server-only";
 
-import { tryDb, withClient } from "@/lib/db";
-import type { MessageRow, MessageRole, ThreadRow } from "./types";
+import { tryDb, withClient, withTransaction } from "@/lib/db";
+import { titleFromUserMessage } from "@/lib/assistant-ui/thread-messages";
+import type { MessageRating, MessageRow, MessageRole, ThreadRow } from "./types";
 
 /**
- * Read-only repo functions for threads/messages.
+ * Repo functions for persisted chat threads/messages.
  *
- * Milestone 1: these run against a not-yet-existing schema. The table names
- * are quoted so a `relation does not exist` error is surfaced as a normal
- * Postgres error and caught by `tryDb` (returning an empty list). The in-
- * memory client fallback in `app/assistant.tsx` keeps the app working.
- *
- * All functions return plain JSON-safe objects; Date columns are serialised
- * to ISO strings here so route handlers can `return Response.json(...)` them
- * directly.
+ * Read paths use `tryDb` so a missing/unavailable DB can fall back gracefully.
+ * Write paths throw: callers should report/handle persistence failure explicitly.
  */
 
 const THREAD_COLUMNS = "id, title, created_at, updated_at";
-const MESSAGE_COLUMNS = "id, thread_id, role, parts, model_id, created_at";
 
 type RawThread = {
   id: string;
@@ -30,9 +24,11 @@ type RawMessage = {
   id: string;
   thread_id: string;
   role: MessageRole;
+  content: string | null;
   parts: unknown;
   model_id: string | null;
   created_at: Date;
+  rating?: MessageRating | null;
 };
 
 function toThreadRow(r: RawThread): ThreadRow {
@@ -49,9 +45,11 @@ function toMessageRow(r: RawMessage): MessageRow {
     id: r.id,
     threadId: r.thread_id,
     role: r.role,
+    content: r.content,
     parts: r.parts,
     modelId: r.model_id,
     createdAt: r.created_at.toISOString(),
+    rating: r.rating ?? null,
   };
 }
 
@@ -89,9 +87,11 @@ export async function getThread(id: string): Promise<ThreadRow | null> {
 export async function listMessages(threadId: string): Promise<MessageRow[]> {
   return tryDb(async (c) => {
     const { rows } = await c.query<RawMessage>(
-      `SELECT ${MESSAGE_COLUMNS} FROM messages
-        WHERE thread_id = $1
-        ORDER BY created_at ASC
+      `SELECT m.id, m.thread_id, m.role, m.content, m.parts, m.model_id, m.created_at, f.rating
+        FROM messages m
+        LEFT JOIN message_feedback f ON f.message_id = m.id
+        WHERE m.thread_id = $1
+        ORDER BY m.created_at ASC
         LIMIT 1000`,
       [threadId],
     );
@@ -115,13 +115,6 @@ export async function pingDb(): Promise<boolean> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Write paths (Phase 2 / Milestone 2).
-//
-// Throws on any DB error -- callers (POST route handlers) should catch and
-// map to a 500. We do NOT use `tryDb` here: writes have no silent fallback.
-// ---------------------------------------------------------------------------
-
 /**
  * Create a new thread. Returns the persisted row. `title` is required;
  * `modelId` is stored as-is and may be null.
@@ -144,8 +137,7 @@ export async function createThread(input: {
 }
 
 /**
- * Does a thread with this id exist? Cheap existence check used by the
- * POST /api/threads/[id]/messages validation.
+ * Does a thread with this id exist? Cheap existence check used by route validation.
  */
 export async function threadExists(threadId: string): Promise<boolean> {
   return withClient(async (c) => {
@@ -157,13 +149,26 @@ export async function threadExists(threadId: string): Promise<boolean> {
   });
 }
 
+export async function renameThread(input: {
+  threadId: string;
+  title: string;
+}): Promise<ThreadRow | null> {
+  return withClient(async (c) => {
+    const { rows } = await c.query<RawThread>(
+      `UPDATE threads
+       SET title = $2
+       WHERE id = $1
+       RETURNING id, title, created_at, updated_at`,
+      [input.threadId, input.title.trim()],
+    );
+    return rows[0] ? toThreadRow(rows[0]) : null;
+  });
+}
+
 /**
- * Append a message to a thread. Caller is expected to have already verified
- * the thread exists (`threadExists`) -- this function does NOT do the
- * existence check itself, so the FK violation can be caught and reported
- * distinctly from a missing-thread 404.
- *
- * Throws on DB error.
+ * Append a message and bump thread activity in one transaction. If the message
+ * is the first user message and the thread title is still exactly "New chat",
+ * derive a compact sidebar title from that user message.
  */
 export async function createMessage(input: {
   threadId: string;
@@ -172,17 +177,28 @@ export async function createMessage(input: {
   parts?: unknown;
   modelId?: string | null;
 }): Promise<MessageRow> {
-  return withClient(async (c) => {
-    // `pg` does not auto-detect JS objects/arrays as JSON for jsonb columns,
-    // so we JSON-stringify the value and add an explicit `::jsonb` cast on
-    // the placeholder. null/undefined are passed through (SQL NULL).
+  return withTransaction(async (c) => {
     const partsParam = input.parts == null ? null : JSON.stringify(input.parts);
     const { rows } = await c.query<RawMessage>(
       `INSERT INTO messages (thread_id, role, content, parts, model_id)
        VALUES ($1, $2, $3, $4::jsonb, $5)
-       RETURNING id, thread_id, role, parts, model_id, created_at`,
+       RETURNING id, thread_id, role, content, parts, model_id, created_at`,
       [input.threadId, input.role, input.content ?? null, partsParam, input.modelId ?? null],
     );
+
+    if (input.role === "user" && input.content?.trim()) {
+      const title = titleFromUserMessage(input.content);
+      await c.query(
+        `UPDATE threads
+         SET updated_at = now(),
+             title = CASE WHEN title = 'New chat' THEN $2 ELSE title END
+         WHERE id = $1`,
+        [input.threadId, title],
+      );
+    } else {
+      await c.query("UPDATE threads SET updated_at = now() WHERE id = $1", [input.threadId]);
+    }
+
     return toMessageRow(rows[0]);
   });
 }

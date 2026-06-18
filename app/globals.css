@@ -115,3 +115,17 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  .safe-top {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+
+  .safe-bottom {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .scroll-pb-safe {
+    scroll-padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+}

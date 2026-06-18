@@ -2,11 +2,14 @@
 
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
-import { lastAssistantMessageIsCompleteWithToolCalls } from "ai";
+import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai";
 import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
 import { KbdHint } from "@/components/kbd-hint";
-import { ChevronDown } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useMediaQuery } from "@/components/layout/use-media-query";
+import { ChevronDown, Menu } from "lucide-react";
+import { Dialog as DialogPrimitive } from "radix-ui";
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 
 import {
@@ -15,6 +18,7 @@ import {
   eventMatchesCombo,
   isTypingTarget,
 } from "@/lib/shortcuts";
+import { messageRowsToUIMessages } from "@/lib/assistant-ui/thread-messages";
 
 /**
  * Click or focus the element that owns a given shortcut target.
@@ -28,14 +32,9 @@ import {
  */
 function triggerTarget(target: ShortcutTarget) {
   if (typeof document === "undefined") return;
-  const el = document.querySelector<HTMLElement>(
-    `[data-shortcut-target="${target}"]`,
-  );
+  const el = document.querySelector<HTMLElement>(`[data-shortcut-target="${target}"]`);
   if (!el) return;
-  if (
-    target === SHORTCUT_TARGETS.searchChats ||
-    target === SHORTCUT_TARGETS.focusComposer
-  ) {
+  if (target === SHORTCUT_TARGETS.searchChats || target === SHORTCUT_TARGETS.focusComposer) {
     el.focus();
     if (el instanceof HTMLInputElement) el.select();
   } else {
@@ -57,24 +56,66 @@ type ModelsResponse = {
   defaultModelId: string | null;
 };
 
-const INITIAL_THREADS = [
+type ThreadListItem = {
+  id: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type MessageRow = {
+  id: string;
+  threadId: string;
+  role: "user" | "assistant" | "system";
+  content: string | null;
+  parts: unknown;
+  modelId: string | null;
+  createdAt: string;
+  rating?: "up" | "down" | null;
+};
+
+type ThreadsResponse = {
+  threads: ThreadListItem[];
+  configured: boolean;
+};
+
+type MessagesResponse = {
+  thread: ThreadListItem | null;
+  messages: MessageRow[];
+  configured: boolean;
+};
+
+type NoteResponse = {
+  note: { threadId: string; body: string; createdAt: string; updatedAt: string } | null;
+  configured?: boolean;
+};
+
+const INITIAL_THREADS: ThreadListItem[] = [
   { id: "1", title: "Control Room setup" },
   { id: "2", title: "Learn Chinese workflow" },
   { id: "3", title: "Hermes server task" },
   { id: "4", title: "Finance article draft" },
 ];
 
-const ChatPane: FC<{ modelId: string | null }> = ({ modelId }) => {
+const ChatPane: FC<{
+  modelId: string | null;
+  threadId: string | null;
+  initialMessages: UIMessage[];
+  onFinish: () => void;
+}> = ({ modelId, threadId, initialMessages, onFinish }) => {
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
         api: "/api/chat",
-        body: { modelId },
+        body: { modelId, threadId },
       }),
-    [modelId],
+    [modelId, threadId],
   );
 
   const runtime = useChatRuntime({
+    id: threadId ?? undefined,
+    messages: initialMessages,
+    onFinish,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     transport,
   });
@@ -94,8 +135,10 @@ const ModelSelector: FC<{
 }> = ({ models, selectedModelId, onModelChange, loading }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const isPhone = useMediaQuery("(max-width: 639px)");
 
   useEffect(() => {
+    if (isPhone) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setOpen(false);
@@ -103,7 +146,7 @@ const ModelSelector: FC<{
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [isPhone]);
 
   const selected = models.find((m) => m.modelId === selectedModelId);
   const triggerLabel = selected
@@ -112,89 +155,264 @@ const ModelSelector: FC<{
       ? "Loading models…"
       : "Select model";
 
+  const modelOptions = (() => {
+    // Assign ⌘1..⌘9 to the first 9 *enabled* models in display order.
+    // This way the "press ⌘3 to switch to the third enabled model"
+    // behavior is consistent with what the user sees in the list.
+    const enabledIndexById = new Map<string, number>();
+    let enabledCounter = 0;
+    for (const m of models) {
+      if (!m.enabled) continue;
+      enabledCounter += 1;
+      if (enabledCounter <= 9) {
+        enabledIndexById.set(m.modelId, enabledCounter);
+      }
+    }
+    return models.map((m) => {
+      const isSelected = m.modelId === selectedModelId;
+      const disabled = !m.enabled;
+      const shortcutIndex = enabledIndexById.get(m.modelId);
+      return (
+        <button
+          key={`${m.providerId}:${m.modelId}`}
+          type="button"
+          disabled={disabled}
+          title={disabled ? (m.reason ?? "Not available") : undefined}
+          onClick={() => {
+            if (disabled) return;
+            onModelChange(m.modelId);
+            setOpen(false);
+          }}
+          className={
+            "flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors sm:min-h-0 sm:py-1.5 " +
+            (disabled
+              ? "cursor-not-allowed text-muted-foreground/60"
+              : isSelected
+                ? "bg-accent text-accent-foreground"
+                : "text-popover-foreground hover:bg-accent/50 hover:text-accent-foreground")
+          }
+        >
+          <div className="min-w-0 flex-1">
+            <div className="truncate font-medium">{m.modelLabel}</div>
+            <div className="truncate text-[10px] text-muted-foreground">
+              {m.providerLabel}
+              {disabled && m.reason ? ` — ${m.reason}` : ""}
+            </div>
+          </div>
+          {shortcutIndex !== undefined && (
+            <KbdHint
+              combo={`${shortcutIndex}`}
+              className="aui-model-dropdown-shortcut bg-background/40"
+            />
+          )}
+        </button>
+      );
+    });
+  })();
+
   return (
     <div
       ref={ref}
-      className="relative flex items-center border-b border-border/60 bg-background px-4 py-2"
+      className="relative flex items-center border-b border-border/60 bg-background px-3 py-2 sm:px-4"
     >
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         data-shortcut-target={SHORTCUT_TARGETS.selectModel}
         aria-label={`Select model (currently ${triggerLabel}; press M)`}
-        className="aui-model-selector-trigger relative inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-10 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
+        className="aui-model-selector-trigger relative inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-8 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:pr-10"
         disabled={loading}
       >
         <span className="size-1.5 rounded-full bg-emerald-500/80" aria-hidden />
-        {triggerLabel}
-        <ChevronDown className="size-3 opacity-70" />
+        <span className="truncate">{triggerLabel}</span>
+        <ChevronDown className="size-3 shrink-0 opacity-70" />
         <KbdHint
           combo="m"
           className="aui-model-selector-shortcut pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 bg-background/60"
         />
       </button>
 
-      {open && (
-        <div className="absolute left-4 top-full z-50 mt-1 w-64 max-h-80 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
+      {open && !isPhone && (
+        <div className="absolute left-4 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
           {models.length === 0 && !loading && (
             <div className="px-3 py-2 text-xs text-muted-foreground">No models available</div>
           )}
-          {(() => {
-            // Assign ⌘1..⌘9 to the first 9 *enabled* models in display order.
-            // This way the "press ⌘3 to switch to the third enabled model"
-            // behavior is consistent with what the user sees in the list.
-            const enabledIndexById = new Map<string, number>();
-            let enabledCounter = 0;
-            for (const m of models) {
-              if (!m.enabled) continue;
-              enabledCounter += 1;
-              if (enabledCounter <= 9) {
-                enabledIndexById.set(m.modelId, enabledCounter);
-              }
-            }
-            return models.map((m) => {
-              const isSelected = m.modelId === selectedModelId;
-              const disabled = !m.enabled;
-              const shortcutIndex = enabledIndexById.get(m.modelId);
-              return (
-                <button
-                  key={`${m.providerId}:${m.modelId}`}
-                  type="button"
-                  disabled={disabled}
-                  title={disabled ? (m.reason ?? "Not available") : undefined}
-                  onClick={() => {
-                    if (disabled) return;
-                    onModelChange(m.modelId);
-                    setOpen(false);
-                  }}
-                  className={
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors " +
-                    (disabled
-                      ? "cursor-not-allowed text-muted-foreground/60"
-                      : isSelected
-                        ? "bg-accent text-accent-foreground"
-                        : "text-popover-foreground hover:bg-accent/50 hover:text-accent-foreground")
-                  }
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium">{m.modelLabel}</div>
-                    <div className="text-[10px] text-muted-foreground">
-                      {m.providerLabel}
-                      {disabled && m.reason ? ` — ${m.reason}` : ""}
-                    </div>
-                  </div>
-                  {shortcutIndex !== undefined && (
-                    <KbdHint
-                      combo={`${shortcutIndex}`}
-                      className="aui-model-dropdown-shortcut bg-background/40"
-                    />
-                  )}
-                </button>
-              );
-            });
-          })()}
+          {modelOptions}
         </div>
       )}
+
+      <DialogPrimitive.Root open={open && isPhone} onOpenChange={setOpen}>
+        <DialogPrimitive.Portal>
+          <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <DialogPrimitive.Content className="fixed inset-x-0 bottom-0 z-50 max-h-[70dvh] overflow-hidden rounded-t-2xl border border-border bg-popover shadow-lg outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom">
+            <div className="safe-bottom flex max-h-[70dvh] flex-col">
+              <div className="border-b border-border/60 px-4 py-3">
+                <DialogPrimitive.Title className="text-sm font-semibold text-popover-foreground">
+                  Select model
+                </DialogPrimitive.Title>
+                <DialogPrimitive.Description className="mt-1 text-xs text-muted-foreground">
+                  Choose the model for this chat.
+                </DialogPrimitive.Description>
+              </div>
+              <div className="overflow-y-auto py-1">
+                {models.length === 0 && !loading && (
+                  <div className="px-4 py-3 text-xs text-muted-foreground">No models available</div>
+                )}
+                {modelOptions}
+              </div>
+            </div>
+          </DialogPrimitive.Content>
+        </DialogPrimitive.Portal>
+      </DialogPrimitive.Root>
+    </div>
+  );
+};
+
+const MobileHeader: FC<{
+  activeThreadTitle: string;
+  onOpenSidebar: () => void;
+}> = ({ activeThreadTitle, onOpenSidebar }) => {
+  return (
+    <header className="safe-top flex min-h-14 items-center gap-2 border-b border-border/60 bg-background px-3 md:hidden">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-lg"
+        aria-label="Open sidebar"
+        onClick={onOpenSidebar}
+        className="-ml-1 rounded-full"
+      >
+        <Menu className="size-5" />
+      </Button>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-semibold text-foreground">Control Room</div>
+        <div className="truncate text-[11px] text-muted-foreground/70">{activeThreadTitle}</div>
+      </div>
+    </header>
+  );
+};
+
+const SidebarPanel: FC<{
+  threads: { id: string; title: string }[];
+  activeThreadId: string;
+  onSelectThread: (id: string) => void;
+  onNewThread: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}> = ({ threads, activeThreadId, onSelectThread, onNewThread, open, onOpenChange }) => {
+  return (
+    <>
+      <div className="hidden h-full shrink-0 md:block">
+        <Sidebar
+          threads={threads}
+          activeThreadId={activeThreadId}
+          onSelectThread={onSelectThread}
+          onNewThread={onNewThread}
+        />
+      </div>
+
+      <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+        <DialogPrimitive.Portal>
+          <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40 md:hidden data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+          <DialogPrimitive.Content className="safe-top fixed inset-y-0 left-0 z-50 h-dvh w-72 max-w-[85vw] border-r border-border/60 bg-background outline-none md:hidden data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left">
+            <DialogPrimitive.Title className="sr-only">Control Room sidebar</DialogPrimitive.Title>
+            <DialogPrimitive.Description className="sr-only">
+              Search chats, start a new chat, or switch threads.
+            </DialogPrimitive.Description>
+            <Sidebar
+              threads={threads}
+              activeThreadId={activeThreadId}
+              onSelectThread={onSelectThread}
+              onNewThread={onNewThread}
+              onClose={() => onOpenChange(false)}
+            />
+          </DialogPrimitive.Content>
+        </DialogPrimitive.Portal>
+      </DialogPrimitive.Root>
+    </>
+  );
+};
+
+const ThreadNoteEditor: FC<{ threadId: string | null; disabled: boolean }> = ({
+  threadId,
+  disabled,
+}) => {
+  const [body, setBody] = useState("");
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  useEffect(() => {
+    let cancelled = false;
+    setBody("");
+    setStatus("idle");
+    if (!threadId || threadId.startsWith("local-")) return;
+    (async () => {
+      try {
+        const res = await fetch(`/api/threads/${threadId}/note`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data: NoteResponse = await res.json();
+        if (!cancelled) setBody(data.note?.body ?? "");
+      } catch {
+        if (!cancelled) setStatus("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
+
+  const save = async () => {
+    if (!threadId || threadId.startsWith("local-") || disabled) return;
+    setStatus("saving");
+    try {
+      const res = await fetch(`/api/threads/${threadId}/note`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data: NoteResponse = await res.json();
+      setBody(data.note?.body ?? "");
+      setStatus("saved");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div className="border-b border-border/60 bg-muted/10 px-3 py-2 sm:px-4">
+      <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+        Thread notes
+      </label>
+      <div className="mt-1 flex gap-2">
+        <textarea
+          value={body}
+          onChange={(e) => {
+            setBody(e.target.value);
+            setStatus("idle");
+          }}
+          disabled={disabled || !threadId || threadId.startsWith("local-")}
+          placeholder="Private notes for later review. Not sent to the model."
+          rows={1}
+          className="min-h-8 flex-1 resize-none rounded-md border border-border/50 bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-muted-foreground/40 focus:outline-none disabled:opacity-60"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void save()}
+          disabled={disabled || !threadId || threadId.startsWith("local-") || status === "saving"}
+          className="shrink-0 text-xs"
+        >
+          {status === "saving" ? "Saving…" : "Save"}
+        </Button>
+      </div>
+      <div className="mt-1 text-[10px] text-muted-foreground/60">
+        {status === "saved"
+          ? "Saved. Notes are metadata and are not sent to chat."
+          : status === "error"
+            ? "Could not save note."
+            : "Notes are independent from ratings and excluded from model context."}
+      </div>
     </div>
   );
 };
@@ -205,13 +423,47 @@ export const Assistant = () => {
     setMounted(true);
   }, []);
 
-  const [threads, setThreads] = useState(INITIAL_THREADS);
-  const [activeThreadId, setActiveThreadId] = useState("1");
+  const [threads, setThreads] = useState<ThreadListItem[]>(INITIAL_THREADS);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(
+    INITIAL_THREADS[0]?.id ?? null,
+  );
+  const [threadMessages, setThreadMessages] = useState<UIMessage[]>([]);
+  const [threadsLoading, setThreadsLoading] = useState(true);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [dbConfigured, setDbConfigured] = useState(true);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const isCoarsePointer = useMediaQuery("(pointer: coarse)");
   const newChatCounter = useRef(0);
+
+  const refreshThreads = useCallback(async () => {
+    try {
+      const res = await fetch("/api/threads", { cache: "no-store" });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data: ThreadsResponse = await res.json();
+      setDbConfigured(data.configured);
+      if (data.configured) {
+        setThreads(data.threads);
+        setActiveThreadId((prev) =>
+          prev && data.threads.some((t) => t.id === prev) ? prev : (data.threads[0]?.id ?? null),
+        );
+      }
+    } catch {
+      setDbConfigured(false);
+      setThreads((prev) => (prev.length ? prev : INITIAL_THREADS));
+      setActiveThreadId((prev) => prev ?? INITIAL_THREADS[0]?.id ?? null);
+    } finally {
+      setThreadsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    void refreshThreads();
+  }, [mounted, refreshThreads]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -241,7 +493,56 @@ export const Assistant = () => {
     };
   }, [mounted]);
 
-  const handleNewThread = useCallback(() => {
+  useEffect(() => {
+    if (!mounted || !activeThreadId || activeThreadId.startsWith("local-")) {
+      setThreadMessages([]);
+      return;
+    }
+    let cancelled = false;
+    setMessagesLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/threads/${activeThreadId}/messages`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data: MessagesResponse = await res.json();
+        if (cancelled) return;
+        setDbConfigured(data.configured);
+        setThreadMessages(messageRowsToUIMessages(data.messages));
+        if (data.thread) {
+          setThreads((prev) =>
+            prev.map((t) => (t.id === data.thread?.id ? { ...t, ...data.thread } : t)),
+          );
+        }
+      } catch {
+        if (!cancelled) setThreadMessages([]);
+      } finally {
+        if (!cancelled) setMessagesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted, activeThreadId]);
+
+  const handleNewThread = useCallback(async () => {
+    if (dbConfigured) {
+      try {
+        const res = await fetch("/api/threads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "New chat", modelId: selectedModelId }),
+        });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data: { thread: ThreadListItem } = await res.json();
+        setThreads((prev) => [data.thread, ...prev.filter((t) => t.id !== data.thread.id)]);
+        setActiveThreadId(data.thread.id);
+        setThreadMessages([]);
+        return;
+      } catch {
+        setDbConfigured(false);
+      }
+    }
+
     newChatCounter.current += 1;
     const newThread = {
       id: `local-${Date.now()}-${newChatCounter.current}`,
@@ -249,10 +550,12 @@ export const Assistant = () => {
     };
     setThreads((prev) => [newThread, ...prev]);
     setActiveThreadId(newThread.id);
-  }, []);
+    setThreadMessages([]);
+  }, [dbConfigured, selectedModelId]);
 
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
+    setSidebarOpen(false);
   }, []);
 
   // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
@@ -267,7 +570,6 @@ export const Assistant = () => {
     if (!mounted) return;
     const handler = (e: KeyboardEvent) => {
       if (e.repeat) return;
-      // Help: Cmd+/ or Ctrl+/. Fires anywhere, even while typing.
       if (eventMatchesCombo(e, "mod+/")) {
         e.preventDefault();
         const help = document.querySelector<HTMLElement>(
@@ -277,17 +579,11 @@ export const Assistant = () => {
         return;
       }
       const idle = !isTypingTarget(e.target);
-      // Idle-only single-key shortcuts.
+      if (isCoarsePointer) return;
       if (idle) {
-        // Bare key, no modifiers — let the browser's own bindings run if
-        // the user is holding one (e.g. Cmd+N new window). The single
-        // letters below only fire on the unmodified key.
         const noMods = !e.metaKey && !e.ctrlKey && !e.altKey;
         if (noMods) {
           const k = e.key.toLowerCase();
-          // 1..9 select the Nth enabled model. The dropdown uses the
-          // same "first-N-enabled" rule for its badges, so the chip "1"
-          // always lines up with the model this handler picks.
           if (k >= "1" && k <= "9") {
             const idx = Number(k) - 1;
             const enabled = models.filter((m) => m.enabled);
@@ -307,27 +603,36 @@ export const Assistant = () => {
           if (target) {
             e.preventDefault();
             triggerTarget(target);
-            return;
           }
         }
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [mounted, models]);
+  }, [mounted, models, isCoarsePointer]);
 
   if (!mounted) return <div className="h-dvh" />;
 
+  const activeThreadTitle =
+    threads.find((thread) => thread.id === activeThreadId)?.title ?? "New chat";
+
   return (
-    <div className="flex h-dvh">
-      <Sidebar
+    <div className="flex h-dvh overflow-hidden">
+      <SidebarPanel
         threads={threads}
-        activeThreadId={activeThreadId}
+        activeThreadId={activeThreadId ?? ""}
         onSelectThread={handleSelectThread}
         onNewThread={handleNewThread}
+        open={sidebarOpen}
+        onOpenChange={setSidebarOpen}
       />
 
-      <div className="flex h-full flex-1 min-w-0 flex-col overflow-hidden">
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+        <MobileHeader
+          activeThreadTitle={activeThreadTitle}
+          onOpenSidebar={() => setSidebarOpen(true)}
+        />
+
         <ModelSelector
           models={models}
           selectedModelId={selectedModelId}
@@ -335,18 +640,34 @@ export const Assistant = () => {
           loading={modelsLoading}
         />
 
+        {!dbConfigured && (
+          <div className="border-b border-border bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
+            Working offline — chats and notes in this session may not persist.
+          </div>
+        )}
+
         {modelsError && (
           <div className="border-b border-border bg-destructive/10 px-4 py-2 text-xs text-destructive">
             Failed to load models: {modelsError}
           </div>
         )}
 
+        <ThreadNoteEditor threadId={activeThreadId} disabled={!dbConfigured || threadsLoading} />
+
         <div className="min-h-0 flex-1 overflow-hidden">
-          {threads.map((thread) => (
-            <div key={thread.id} className={thread.id === activeThreadId ? "h-full" : "hidden"}>
-              <ChatPane modelId={selectedModelId} />
+          {messagesLoading ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              Loading thread…
             </div>
-          ))}
+          ) : (
+            <ChatPane
+              key={activeThreadId ?? "empty"}
+              modelId={selectedModelId}
+              threadId={activeThreadId}
+              initialMessages={threadMessages}
+              onFinish={() => void refreshThreads()}
+            />
+          )}
         </div>
       </div>
     </div>

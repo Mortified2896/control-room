@@ -59,7 +59,7 @@ export function KbdHint({ combo, className, ...rest }: KbdHintProps) {
       aria-hidden="true"
       data-slot="kbd-hint"
       className={cn(
-        "inline-flex shrink-0 select-none items-center gap-0.5 rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80 shadow-[inset_0_-1px_0_rgb(0_0_0_/_0.04)]",
+        "hidden shrink-0 select-none items-center gap-0.5 rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground/80 shadow-[inset_0_-1px_0_rgb(0_0_0_/_0.04)] sm:inline-flex",
         className,
       )}
       {...rest}

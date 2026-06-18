@@ -39,7 +39,7 @@ import {
   ThumbsDownIcon,
   ThumbsUpIcon,
 } from "lucide-react";
-import { useState, type FC } from "react";
+import { useEffect, useState, type FC } from "react";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -64,7 +64,7 @@ export const Thread: FC = () => {
       >
         <div
           className={cn(
-            "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",
+            "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-3 pt-4 sm:px-4",
             isEmpty && "justify-center",
           )}
         >
@@ -78,7 +78,7 @@ export const Thread: FC = () => {
 
           <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
+              "aui-thread-viewport-footer safe-bottom bg-background flex flex-col gap-4 overflow-visible pb-3 md:pb-6",
               !isEmpty && "sticky bottom-0 mt-auto rounded-t-xl",
             )}
           >
@@ -120,7 +120,7 @@ const ThreadScrollToBottom: FC = () => {
 const ThreadWelcome: FC = () => {
   return (
     <div className="aui-thread-welcome-root mb-6 flex flex-col items-center px-4 text-center">
-      <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-semibold duration-200">
+      <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-xl font-semibold duration-200 sm:text-2xl">
         How can I help you today?
       </h1>
     </div>
@@ -137,11 +137,11 @@ const ThreadSuggestions: FC = () => {
 
 const ThreadSuggestionItem: FC = () => {
   return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200">
+    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both w-full duration-200 sm:w-auto">
       <SuggestionPrimitive.Trigger send asChild>
         <Button
           variant="ghost"
-          className="aui-thread-welcome-suggestion text-foreground hover:bg-muted border-border/60 h-auto gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-normal whitespace-nowrap transition-colors"
+          className="aui-thread-welcome-suggestion text-foreground hover:bg-muted border-border/60 h-auto w-full justify-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-normal whitespace-normal transition-colors sm:w-auto sm:whitespace-nowrap sm:py-1.5"
         >
           <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1" />
           <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 empty:hidden" />
@@ -163,7 +163,7 @@ const Composer: FC = () => {
           <ComposerPrimitive.Input
             placeholder="Message Control Room…  (press C to focus)"
             data-shortcut-target={SHORTCUT_TARGETS.focusComposer}
-            className="aui-composer-input placeholder:text-muted-foreground/70 max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-[15px] outline-none"
+            className="aui-composer-input placeholder:text-muted-foreground/70 max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none sm:text-[15px]"
             rows={1}
             autoFocus
             aria-label="Message input (press C to focus)"
@@ -180,14 +180,8 @@ const ComposerAction: FC = () => {
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
       <div className="flex items-center gap-2">
         <ComposerAddAttachment />
-        <span
-          aria-hidden="true"
-          className="bg-border/60 h-4 w-px"
-        />
-        <KbdHint
-          combo="c"
-          className="aui-composer-focus-shortcut"
-        />
+        <span aria-hidden="true" className="bg-border/60 h-4 w-px" />
+        <KbdHint combo="c" className="aui-composer-focus-shortcut" />
       </div>
       <div className="flex items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
@@ -266,7 +260,7 @@ const MessageError: FC = () => {
 };
 
 const AssistantMessage: FC = () => {
-  const [vote, setVote] = useState<"up" | "down" | null>(null);
+  const messageId = useAuiState((s) => s.message.id);
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
 
@@ -306,7 +300,7 @@ const AssistantMessage: FC = () => {
         data-slot="aui_assistant-message-footer"
         className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
       >
-        <FeedbackButtons vote={vote} setVote={setVote} />
+        <FeedbackButtons messageId={messageId} />
         <BranchPicker />
         <ActionBarDivider />
         <AssistantActionBar />
@@ -315,10 +309,48 @@ const AssistantMessage: FC = () => {
   );
 };
 
-const FeedbackButtons: FC<{
-  vote: "up" | "down" | null;
-  setVote: (v: "up" | "down" | null) => void;
-}> = ({ vote, setVote }) => {
+const FeedbackButtons: FC<{ messageId: string }> = ({ messageId }) => {
+  const [vote, setVote] = useState<"up" | "down" | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/messages/${messageId}/feedback`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data: { rating?: "up" | "down" | null } = await res.json();
+        if (!cancelled) setVote(data.rating ?? null);
+      } catch {
+        // Feedback should never interrupt reading/chatting.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [messageId]);
+
+  const submitVote = async (rating: "up" | "down") => {
+    if (saving) return;
+    const previous = vote;
+    setSaving(true);
+    setVote(previous === rating ? null : rating);
+    try {
+      const res = await fetch(`/api/messages/${messageId}/feedback`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data: { rating: "up" | "down" | null } = await res.json();
+      setVote(data.rating);
+    } catch {
+      setVote(previous);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div role="group" aria-label="Message feedback" className="flex items-center gap-0.5">
       <TooltipIconButton
@@ -330,10 +362,9 @@ const FeedbackButtons: FC<{
         aria-label="Thumbs up"
         aria-pressed={vote === "up"}
         data-state={vote === "up" ? "active" : "inactive"}
-        onClick={() => setVote(vote === "up" ? null : "up")}
+        disabled={saving}
+        onClick={() => void submitVote("up")}
         className={cn(
-          // Match mockup: muted-foreground/50 idle, full muted-foreground on hover,
-          // soft muted/30 background on hover, foreground + colored fill when selected.
           "aui-feedback-button size-7 rounded-full text-muted-foreground/60",
           "hover:bg-muted/40 hover:text-muted-foreground",
           "focus-visible:bg-muted/40 focus-visible:text-muted-foreground",
@@ -355,7 +386,8 @@ const FeedbackButtons: FC<{
         aria-label="Thumbs down"
         aria-pressed={vote === "down"}
         data-state={vote === "down" ? "active" : "inactive"}
-        onClick={() => setVote(vote === "down" ? null : "down")}
+        disabled={saving}
+        onClick={() => void submitVote("down")}
         className={cn(
           "aui-feedback-button size-7 rounded-full text-muted-foreground/60",
           "hover:bg-muted/40 hover:text-muted-foreground",

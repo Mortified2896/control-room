@@ -16,12 +16,22 @@ export type ThreadRow = {
 };
 
 export type MessageRole = "user" | "assistant" | "system";
+export type MessageRating = "up" | "down";
 
 export type MessageRow = {
   id: string;
   threadId: string;
   role: MessageRole;
+  content: string | null;
   parts: unknown;
   modelId: string | null;
   createdAt: string;
+  rating?: MessageRating | null;
+};
+
+export type ThreadNoteRow = {
+  threadId: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
 };
