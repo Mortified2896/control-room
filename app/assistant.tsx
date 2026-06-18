@@ -5,8 +5,43 @@ import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-s
 import { lastAssistantMessageIsCompleteWithToolCalls } from "ai";
 import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
+import { KbdHint } from "@/components/kbd-hint";
 import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
+
+import {
+  SHORTCUT_TARGETS,
+  type ShortcutTarget,
+  eventMatchesCombo,
+  isTypingTarget,
+} from "@/lib/shortcuts";
+
+/**
+ * Click or focus the element that owns a given shortcut target.
+ *
+ * - For New chat / User settings / Select model: the element is a button,
+ *   so we call .click() which fires its onClick handler.
+ * - For Search chats: the element is the <input>, so we focus it.
+ * - For Help: the element is a button, .click() opens the dialog.
+ * - For Focus composer: the element is the composer <textarea>, so we
+ *   focus it.
+ */
+function triggerTarget(target: ShortcutTarget) {
+  if (typeof document === "undefined") return;
+  const el = document.querySelector<HTMLElement>(
+    `[data-shortcut-target="${target}"]`,
+  );
+  if (!el) return;
+  if (
+    target === SHORTCUT_TARGETS.searchChats ||
+    target === SHORTCUT_TARGETS.focusComposer
+  ) {
+    el.focus();
+    if (el instanceof HTMLInputElement) el.select();
+  } else {
+    el.click();
+  }
+}
 
 type ModelOption = {
   providerId: string;
@@ -85,50 +120,79 @@ const ModelSelector: FC<{
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="aui-model-selector-trigger inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
+        data-shortcut-target={SHORTCUT_TARGETS.selectModel}
+        aria-label={`Select model (currently ${triggerLabel}; press M)`}
+        className="aui-model-selector-trigger relative inline-flex items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-10 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground"
         disabled={loading}
       >
         <span className="size-1.5 rounded-full bg-emerald-500/80" aria-hidden />
         {triggerLabel}
         <ChevronDown className="size-3 opacity-70" />
+        <KbdHint
+          combo="m"
+          className="aui-model-selector-shortcut pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 bg-background/60"
+        />
       </button>
 
       {open && (
-        <div className="absolute left-4 top-full z-50 mt-1 w-56 max-h-80 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
+        <div className="absolute left-4 top-full z-50 mt-1 w-64 max-h-80 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
           {models.length === 0 && !loading && (
             <div className="px-3 py-2 text-xs text-muted-foreground">No models available</div>
           )}
-          {models.map((m) => {
-            const isSelected = m.modelId === selectedModelId;
-            const disabled = !m.enabled;
-            return (
-              <button
-                key={`${m.providerId}:${m.modelId}`}
-                type="button"
-                disabled={disabled}
-                title={disabled ? (m.reason ?? "Not available") : undefined}
-                onClick={() => {
-                  if (disabled) return;
-                  onModelChange(m.modelId);
-                  setOpen(false);
-                }}
-                className={
-                  "flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-xs transition-colors " +
-                  (disabled
-                    ? "cursor-not-allowed text-muted-foreground/60"
-                    : isSelected
-                      ? "bg-accent text-accent-foreground"
-                      : "text-popover-foreground hover:bg-accent/50 hover:text-accent-foreground")
-                }
-              >
-                <span className="font-medium">{m.modelLabel}</span>
-                <span className="text-[10px] text-muted-foreground">
-                  {m.providerLabel}
-                  {disabled && m.reason ? ` — ${m.reason}` : ""}
-                </span>
-              </button>
-            );
-          })}
+          {(() => {
+            // Assign ⌘1..⌘9 to the first 9 *enabled* models in display order.
+            // This way the "press ⌘3 to switch to the third enabled model"
+            // behavior is consistent with what the user sees in the list.
+            const enabledIndexById = new Map<string, number>();
+            let enabledCounter = 0;
+            for (const m of models) {
+              if (!m.enabled) continue;
+              enabledCounter += 1;
+              if (enabledCounter <= 9) {
+                enabledIndexById.set(m.modelId, enabledCounter);
+              }
+            }
+            return models.map((m) => {
+              const isSelected = m.modelId === selectedModelId;
+              const disabled = !m.enabled;
+              const shortcutIndex = enabledIndexById.get(m.modelId);
+              return (
+                <button
+                  key={`${m.providerId}:${m.modelId}`}
+                  type="button"
+                  disabled={disabled}
+                  title={disabled ? (m.reason ?? "Not available") : undefined}
+                  onClick={() => {
+                    if (disabled) return;
+                    onModelChange(m.modelId);
+                    setOpen(false);
+                  }}
+                  className={
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors " +
+                    (disabled
+                      ? "cursor-not-allowed text-muted-foreground/60"
+                      : isSelected
+                        ? "bg-accent text-accent-foreground"
+                        : "text-popover-foreground hover:bg-accent/50 hover:text-accent-foreground")
+                  }
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{m.modelLabel}</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {m.providerLabel}
+                      {disabled && m.reason ? ` — ${m.reason}` : ""}
+                    </div>
+                  </div>
+                  {shortcutIndex !== undefined && (
+                    <KbdHint
+                      combo={`${shortcutIndex}`}
+                      className="aui-model-dropdown-shortcut bg-background/40"
+                    />
+                  )}
+                </button>
+              );
+            });
+          })()}
         </div>
       )}
     </div>
@@ -190,6 +254,67 @@ export const Assistant = () => {
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
   }, []);
+
+  // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
+  // full registry. The typing guard (isTypingTarget) is enforced here for
+  // every shortcut marked requiresIdle in SHORTCUT_ENTRIES, so we never
+  // hijack a key the user is typing into an input / textarea /
+  // contenteditable. We also bail on e.repeat and on modifier keys for
+  // single-key shortcuts, so the user can still use browser shortcuts
+  // like Cmd+N (Firefox new window) or Cmd+Shift+; without our handler
+  // firing first.
+  useEffect(() => {
+    if (!mounted) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      // Help: Cmd+/ or Ctrl+/. Fires anywhere, even while typing.
+      if (eventMatchesCombo(e, "mod+/")) {
+        e.preventDefault();
+        const help = document.querySelector<HTMLElement>(
+          `[data-shortcut-target="${SHORTCUT_TARGETS.help}"]`,
+        );
+        help?.click();
+        return;
+      }
+      const idle = !isTypingTarget(e.target);
+      // Idle-only single-key shortcuts.
+      if (idle) {
+        // Bare key, no modifiers — let the browser's own bindings run if
+        // the user is holding one (e.g. Cmd+N new window). The single
+        // letters below only fire on the unmodified key.
+        const noMods = !e.metaKey && !e.ctrlKey && !e.altKey;
+        if (noMods) {
+          const k = e.key.toLowerCase();
+          // 1..9 select the Nth enabled model. The dropdown uses the
+          // same "first-N-enabled" rule for its badges, so the chip "1"
+          // always lines up with the model this handler picks.
+          if (k >= "1" && k <= "9") {
+            const idx = Number(k) - 1;
+            const enabled = models.filter((m) => m.enabled);
+            const target = enabled[idx];
+            if (target) {
+              e.preventDefault();
+              setSelectedModelId(target.modelId);
+              return;
+            }
+          }
+          let target: ShortcutTarget | null = null;
+          if (k === "n") target = SHORTCUT_TARGETS.newChat;
+          else if (k === "k") target = SHORTCUT_TARGETS.searchChats;
+          else if (k === "m") target = SHORTCUT_TARGETS.selectModel;
+          else if (k === "c") target = SHORTCUT_TARGETS.focusComposer;
+          else if (k === ",") target = SHORTCUT_TARGETS.userSettings;
+          if (target) {
+            e.preventDefault();
+            triggerTarget(target);
+            return;
+          }
+        }
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [mounted, models]);
 
   if (!mounted) return <div className="h-dvh" />;
 

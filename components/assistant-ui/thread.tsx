@@ -7,7 +7,9 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { KbdHint } from "@/components/kbd-hint";
 import { cn } from "@/lib/utils";
+import { SHORTCUT_TARGETS } from "@/lib/shortcuts";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -159,11 +161,12 @@ const Composer: FC = () => {
         >
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder="Message Control Room…"
+            placeholder="Message Control Room…  (press C to focus)"
+            data-shortcut-target={SHORTCUT_TARGETS.focusComposer}
             className="aui-composer-input placeholder:text-muted-foreground/70 max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-[15px] outline-none"
             rows={1}
             autoFocus
-            aria-label="Message input"
+            aria-label="Message input (press C to focus)"
           />
           <ComposerAction />
         </div>
@@ -175,7 +178,17 @@ const Composer: FC = () => {
 const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <ComposerAddAttachment />
+      <div className="flex items-center gap-2">
+        <ComposerAddAttachment />
+        <span
+          aria-hidden="true"
+          className="bg-border/60 h-4 w-px"
+        />
+        <KbdHint
+          combo="c"
+          className="aui-composer-focus-shortcut"
+        />
+      </div>
       <div className="flex items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
