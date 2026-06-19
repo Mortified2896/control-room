@@ -40,13 +40,13 @@ Two files were touched for the fix:
 
 ## How the call chain was wired
 
-| Layer | File | Behavior before fix |
-| --- | --- | --- |
-| Client state seed | `app/assistant.tsx` | `useState<string \| null>(INITIAL_THREADS[0]?.id ?? null)` → `activeThreadId = "1"` |
-| Client effect | `app/assistant.tsx` (≈ line 408) | Guard: `!activeThreadId.startsWith("local-")` — did **not** catch `"1"` |
-| API handler | `app/api/threads/[id]/messages/route.ts` GET | No `UUID_RE` guard; passed `id` straight to `getThread(id)` / `listMessages(id)` |
-| Repo wrapper | `lib/repo/threads.ts` (`getThread`, `listMessages`) | Uses `tryDb(fn, fallback)` so the error is logged and swallowed |
-| Postgres | `threads.id uuid`, `messages.thread_id uuid` | Rejects `"1"` with `invalid input syntax for type uuid: "1"` |
+| Layer             | File                                                | Behavior before fix                                                                 |
+| ----------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Client state seed | `app/assistant.tsx`                                 | `useState<string \| null>(INITIAL_THREADS[0]?.id ?? null)` → `activeThreadId = "1"` |
+| Client effect     | `app/assistant.tsx` (≈ line 408)                    | Guard: `!activeThreadId.startsWith("local-")` — did **not** catch `"1"`             |
+| API handler       | `app/api/threads/[id]/messages/route.ts` GET        | No `UUID_RE` guard; passed `id` straight to `getThread(id)` / `listMessages(id)`    |
+| Repo wrapper      | `lib/repo/threads.ts` (`getThread`, `listMessages`) | Uses `tryDb(fn, fallback)` so the error is logged and swallowed                     |
+| Postgres          | `threads.id uuid`, `messages.thread_id uuid`        | Rejects `"1"` with `invalid input syntax for type uuid: "1"`                        |
 
 Net effect: every browser mount (or any caller hitting the route with a
 non-UUID id) produced one log line, and the UI rendered as if nothing

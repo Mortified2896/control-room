@@ -11,11 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  SHORTCUT_ENTRIES,
-  SHORTCUT_TARGETS,
-  isMacOs,
-} from "@/lib/shortcuts";
+import { SHORTCUT_ENTRIES, SHORTCUT_TARGETS, isMacOs } from "@/lib/shortcuts";
 
 /**
  * Subtle "?" affordance for the keyboard shortcut help dialog.
@@ -60,8 +56,8 @@ export const ShortcutsHelp: FC = () => {
           <DialogHeader>
             <DialogTitle>Keyboard shortcuts</DialogTitle>
             <DialogDescription>
-              Shortcuts that fire anywhere in the app, except when you&apos;re
-              typing in an input, textarea, or contenteditable field.
+              Shortcuts that fire anywhere in the app, except when you&apos;re typing in an input,
+              textarea, or contenteditable field.
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-y-auto">
@@ -80,10 +76,7 @@ export const ShortcutsHelp: FC = () => {
                           {entry.chipLabel}
                         </span>
                       ) : (
-                        <KbdHint
-                          combo={entry.combo}
-                          className="bg-muted/40"
-                        />
+                        <KbdHint combo={entry.combo} className="bg-muted/40" />
                       )}
                     </td>
                   </tr>
@@ -91,11 +84,9 @@ export const ShortcutsHelp: FC = () => {
               </tbody>
             </table>
             <p className="mt-4 text-xs text-muted-foreground/70">
-              <KbdHint combo="mod" className="bg-muted/40 align-middle" /> is
-              the Command key on macOS, Ctrl on Windows/Linux. The
-              &quot;Copy last code block&quot; shortcut is reserved for a
-              future release; use the copy button on each code block in the
-              meantime.
+              <KbdHint combo="mod" className="bg-muted/40 align-middle" /> is the Command key on
+              macOS, Ctrl on Windows/Linux. The &quot;Copy last code block&quot; shortcut is
+              reserved for a future release; use the copy button on each code block in the meantime.
             </p>
           </div>
         </DialogContent>

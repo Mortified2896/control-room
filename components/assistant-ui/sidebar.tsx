@@ -146,10 +146,7 @@ export const Sidebar: FC<SidebarProps> = ({
               U
             </div>
             <span>User Settings</span>
-            <KbdHint
-              combo=","
-              className="aui-sidebar-settings-shortcut ml-auto bg-background/60"
-            />
+            <KbdHint combo="," className="aui-sidebar-settings-shortcut ml-auto bg-background/60" />
           </button>
         </div>
       </div>

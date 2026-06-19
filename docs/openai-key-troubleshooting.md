@@ -7,12 +7,12 @@ here.
 
 ## TL;DR
 
-| Symptom in `/api/chat` SSE stream | Most likely cause |
-|---|---|
-| `data: {"type":"error","errorText":"An error occurred."}` | OpenAI rejected the request. Cause is in the upstream error, **not** visible in the SSE stream. Probe directly. |
-| `{"error":"unknown_model","modelId":"...","allowedIds":[...]}` | The `modelId` sent by the client is not in the hard-coded allowlist in `lib/providers/openai.ts`. |
-| `{"error":"provider_disabled","providerId":"openai","reason":"OPENAI_API_KEY is not configured"}` | `process.env.OPENAI_API_KEY` is empty/missing in the running Next.js process. |
-| `{"error":"no_models_available",...}` | No provider has a key set. See above. |
+| Symptom in `/api/chat` SSE stream                                                                 | Most likely cause                                                                                               |
+| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `data: {"type":"error","errorText":"An error occurred."}`                                         | OpenAI rejected the request. Cause is in the upstream error, **not** visible in the SSE stream. Probe directly. |
+| `{"error":"unknown_model","modelId":"...","allowedIds":[...]}`                                    | The `modelId` sent by the client is not in the hard-coded allowlist in `lib/providers/openai.ts`.               |
+| `{"error":"provider_disabled","providerId":"openai","reason":"OPENAI_API_KEY is not configured"}` | `process.env.OPENAI_API_KEY` is empty/missing in the running Next.js process.                                   |
+| `{"error":"no_models_available",...}`                                                             | No provider has a key set. See above.                                                                           |
 
 The SSE error stream is **deliberately generic** — the AI SDK stringifies upstream
 errors. You cannot tell from the SSE body alone whether the cause is auth, quota,
@@ -113,15 +113,15 @@ PY
 
 ### What each OpenAI error category means in practice
 
-| OpenAI response | Meaning in this app |
-|---|---|
-| `401 invalid_api_key` | The key in `.env.local` is wrong/revoked/mistyped. **Most common cause.** Replace the key, restart the service. |
-| `401 incorrect_organization` / `invalid_organization` | The key is valid but tied to a different org. Set `OPENAI_ORG_ID` / `OPENAI_ORGANIZATION` in `.env.local`. |
-| `403 insufficient_quota` / `billing_hard_limit_reached` | Account out of credit. Not a code/config issue. |
-| `404 model_not_found` | Hard-coded `modelId` in `lib/providers/openai.ts` is no longer (or never was) a valid model. |
-| `429 rate_limit_exceeded` | Back off and retry. Consider lowering request rate. |
-| `5xx` | OpenAI side. Check https://status.openai.com. |
-| 200 with the right number of model IDs in `data[].id` | Auth is fine. The `modelId`s in `lib/providers/openai.ts` are real (confirmed for the current allowlist on 2026-06-18). |
+| OpenAI response                                         | Meaning in this app                                                                                                     |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `401 invalid_api_key`                                   | The key in `.env.local` is wrong/revoked/mistyped. **Most common cause.** Replace the key, restart the service.         |
+| `401 incorrect_organization` / `invalid_organization`   | The key is valid but tied to a different org. Set `OPENAI_ORG_ID` / `OPENAI_ORGANIZATION` in `.env.local`.              |
+| `403 insufficient_quota` / `billing_hard_limit_reached` | Account out of credit. Not a code/config issue.                                                                         |
+| `404 model_not_found`                                   | Hard-coded `modelId` in `lib/providers/openai.ts` is no longer (or never was) a valid model.                            |
+| `429 rate_limit_exceeded`                               | Back off and retry. Consider lowering request rate.                                                                     |
+| `5xx`                                                   | OpenAI side. Check https://status.openai.com.                                                                           |
+| 200 with the right number of model IDs in `data[].id`   | Auth is fine. The `modelId`s in `lib/providers/openai.ts` are real (confirmed for the current allowlist on 2026-06-18). |
 
 ## Restart procedure
 
