@@ -40,7 +40,7 @@ import {
   ThumbsDownIcon,
   ThumbsUpIcon,
 } from "lucide-react";
-import { useEffect, useState, type FC } from "react";
+import { useEffect, useState, type FC, type ReactNode } from "react";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -52,10 +52,12 @@ type NoteResponse = {
   configured?: boolean;
 };
 
-export const Thread: FC<{ threadId: string | null; notesDisabled?: boolean }> = ({
-  threadId,
-  notesDisabled = false,
-}) => {
+export const Thread: FC<{
+  threadId: string | null;
+  notesDisabled?: boolean;
+  workflowContent?: ReactNode;
+  showWelcome?: boolean;
+}> = ({ threadId, notesDisabled = false, workflowContent, showWelcome = true }) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
@@ -74,14 +76,17 @@ export const Thread: FC<{ threadId: string | null; notesDisabled?: boolean }> = 
         <div
           className={cn(
             "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-3 pt-4 sm:px-4",
-            isEmpty && "justify-center",
+            isEmpty && showWelcome && "justify-center",
           )}
         >
-          <AuiIf condition={isNewChatView}>
-            <ThreadWelcome />
-          </AuiIf>
+          {showWelcome && (
+            <AuiIf condition={isNewChatView}>
+              <ThreadWelcome />
+            </AuiIf>
+          )}
 
           <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
+            {workflowContent}
             <ThreadPrimitive.Messages>
               {() => <ThreadMessage threadId={threadId} notesDisabled={notesDisabled} />}
             </ThreadPrimitive.Messages>
