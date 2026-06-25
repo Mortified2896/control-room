@@ -1,4 +1,5 @@
 import type { ModelMeta, ModelOption, ReasoningLevel } from "./types";
+import { getStaticOpenAIModelAlias, listStaticOpenAIModelAliases } from "./openai-static";
 
 /**
  * Canonical OpenAI model metadata.
@@ -8,10 +9,12 @@ import type { ModelMeta, ModelOption, ReasoningLevel } from "./types";
  * - what reasoning levels each model is allowed to be paired with,
  * - and the cost tier that drives the router's safety/budget guards.
  *
- * If a new model is added here, the chat route's `resolveModel` continues to
- * work unchanged because it consumes the runtime `OPENAI_MODELS` list below;
- * the router also picks it up automatically via `getModelMeta` /
- * `listRouterAllowedPool`.
+ * The data lives in `lib/providers/openai-static.ts` (the alias map) so
+ * both the synchronous router-graph code path AND the async dynamic
+ * registry (`lib/providers/registry.ts`) consume the same source. The
+ * `OPENAI_MODEL_METAS` array below is derived from that alias map for
+ * backward compatibility with the cost table lookups in
+ * `lib/router/policy.ts` and the legacy `getOpenAIModelMeta` resolver.
  *
  * Notes on tier assignment:
  * - `gpt-5.4-mini` is the cheap tier — also the default router model.
@@ -20,22 +23,19 @@ import type { ModelMeta, ModelOption, ReasoningLevel } from "./types";
  */
 type OpenAIModelMeta = ModelMeta;
 
-const OPENAI_MODEL_METAS: ReadonlyArray<OpenAIModelMeta> = [
-  {
-    providerId: "openai",
-    modelId: "gpt-5.4-mini",
-    modelLabel: "GPT-5.4 Mini",
-    tier: "cheap",
-    reasoningLevels: ["low", "medium"],
-  },
-  {
-    providerId: "openai",
-    modelId: "gpt-5.5",
-    modelLabel: "GPT-5.5",
-    tier: "expensive",
-    reasoningLevels: ["low", "medium", "high"],
-  },
-];
+function deriveStaticMetas(): ReadonlyArray<OpenAIModelMeta> {
+  return listStaticOpenAIModelAliases()
+    .filter(([, alias]) => alias.tier !== undefined)
+    .map(([modelId, alias]) => ({
+      providerId: "openai" as const,
+      modelId,
+      modelLabel: alias.label,
+      tier: alias.tier,
+      reasoningLevels: alias.reasoningLevels,
+    }));
+}
+
+const OPENAI_MODEL_METAS: ReadonlyArray<OpenAIModelMeta> = deriveStaticMetas();
 
 const OPENAI_MODELS: ReadonlyArray<{ id: string; label: string }> = OPENAI_MODEL_METAS.map((m) => ({
   id: m.modelId,
@@ -76,8 +76,15 @@ export function isOpenAIEnabled(): boolean {
  * reject stale or disallowed model names).
  */
 export function getOpenAIModelMeta(modelId: string): ModelMeta | null {
-  const found = OPENAI_MODEL_METAS.find((m) => m.modelId === modelId);
-  return found ? { ...found } : null;
+  const alias = getStaticOpenAIModelAlias(modelId);
+  if (!alias) return null;
+  return {
+    providerId: "openai",
+    modelId,
+    modelLabel: alias.label,
+    tier: alias.tier,
+    reasoningLevels: alias.reasoningLevels,
+  };
 }
 
 /**

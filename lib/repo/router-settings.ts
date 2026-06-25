@@ -48,7 +48,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * surface the error to the user, not silently fall back to defaults
  * (otherwise the user could "save" changes that never land).
  */
-export async function getRouterSettingsRow(): Promise<RouterSettings | null> {
+export async function getRouterSettingsRow(
+  registry?: import("@/lib/providers/registry").EffectiveRegistry,
+): Promise<RouterSettings | null> {
   return withClient(async (c) => {
     const { rows } = await c.query<RawRouterSettings>(
       "SELECT id, settings, schema_version, updated_by, created_at, updated_at FROM router_settings WHERE id = $1",
@@ -57,7 +59,7 @@ export async function getRouterSettingsRow(): Promise<RouterSettings | null> {
     const row = rows[0];
     if (!row) return null;
     if (!isPlainObject(row.settings)) return null;
-    const result = parseRouterSettingsForSave(row.settings);
+    const result = parseRouterSettingsForSave(row.settings, registry);
     if (!result.ok) {
       // The persisted payload is corrupt (e.g. from an older schema
       // version). Log and fall back to defaults so the UI still loads
@@ -81,11 +83,12 @@ export async function getRouterSettingsRow(): Promise<RouterSettings | null> {
 export async function upsertRouterSettingsRow(input: {
   settings: unknown;
   updatedBy?: string | null;
+  registry?: import("@/lib/providers/registry").EffectiveRegistry;
 }): Promise<
   | { ok: true; value: RouterSettings }
   | { ok: false; errors: ReadonlyArray<{ field: string; message: string }> }
 > {
-  const validation = parseRouterSettingsForSave(input.settings);
+  const validation = parseRouterSettingsForSave(input.settings, input.registry);
   if (!validation.ok) {
     return { ok: false, errors: validation.errors };
   }

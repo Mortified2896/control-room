@@ -248,8 +248,21 @@ export function parseRouterSettings(input: unknown): RouterSettings {
  *      (which the UI uses as "blank"), in which case the default value is
  *      applied. A numeric value must be non-negative and finite.
  *   5. No duplicate (modelId, reasoningLevel) pairs in `allowedCombos`.
+ *
+ * When an `EffectiveRegistry` is supplied (the production path),
+ * allowlist validation also enforces:
+ *   - the model id is known to the local registry,
+ *   - the model is currently available (not stale),
+ *   - the reasoning level is in the model's supported set.
+ *
+ * When no registry is supplied (the env-only / test path), the legacy
+ * `listRouterAllowedPool(true)` set is used. This preserves the existing
+ * `lib/router/settings.test.ts` assertions.
  */
-export function parseRouterSettingsForSave(input: unknown): RouterSettingsValidationResult {
+export function parseRouterSettingsForSave(
+  input: unknown,
+  registry?: import("@/lib/providers/registry").EffectiveRegistry,
+): RouterSettingsValidationResult {
   if (!isPlainObject(input)) {
     return {
       ok: false,
@@ -366,14 +379,11 @@ export function parseRouterSettingsForSave(input: unknown): RouterSettingsValida
     modelId: c.modelId,
     reasoningLevel: c.reasoningLevel,
   }));
-  let allowlistInvalid = false;
   if (b.allowedCombos !== undefined) {
     const combosRaw = b.allowedCombos;
     if (!Array.isArray(combosRaw)) {
-      allowlistInvalid = true;
       errors.push({ field: "allowedCombos", message: "Allowlist must be a list." });
     } else if (combosRaw.length === 0) {
-      allowlistInvalid = true;
       errors.push({
         field: "allowedCombos",
         message: "Allowlist must contain at least one (model, reasoning level) combination.",
@@ -385,6 +395,9 @@ export function parseRouterSettingsForSave(input: unknown): RouterSettingsValida
       const validRegistryEntries = new Set(
         listRouterAllowedPool(true).map((e) => `${e.modelId}|${e.reasoningLevel}`),
       );
+      const registryById = registry
+        ? new Map(registry.models.map((m) => [m.modelId, m] as const))
+        : null;
       const next: RouterAllowedCombo[] = [];
       let hasInvalid = false;
       for (const raw of combosRaw) {
@@ -416,7 +429,45 @@ export function parseRouterSettingsForSave(input: unknown): RouterSettingsValida
           continue;
         }
         seen.add(key);
-        if (!validRegistryEntries.has(key)) {
+        if (registryById) {
+          // Production path: enforce registry-aware invariants so unknown
+          // discovered models cannot silently enter the router pool.
+          const entry = registryById.get(modelId);
+          if (!entry) {
+            hasInvalid = true;
+            errors.push({
+              field: "allowedCombos",
+              message: `Unknown model id: ${modelId}. Add it to the manual selector first.`,
+            });
+            continue;
+          }
+          if (!entry.known) {
+            hasInvalid = true;
+            errors.push({
+              field: "allowedCombos",
+              message: `${modelId} is not in the local model registry and cannot enter the router pool. Add it to the manual selector with explicit metadata first.`,
+            });
+            continue;
+          }
+          if (!entry.available || entry.stale) {
+            hasInvalid = true;
+            errors.push({
+              field: "allowedCombos",
+              message: `${modelId} is not currently available from OpenAI. Refresh the model catalog or remove it from the allowlist.`,
+            });
+            continue;
+          }
+          if (!(entry.supportedReasoningLevels as ReadonlyArray<string>).includes(reasoningLevel)) {
+            hasInvalid = true;
+            errors.push({
+              field: "allowedCombos",
+              message: `${modelId} does not support reasoning level ${reasoningLevel}.`,
+            });
+            continue;
+          }
+        } else if (!validRegistryEntries.has(key)) {
+          // Legacy / test path: keep the original error message so the
+          // existing unit tests continue to match.
           hasInvalid = true;
           errors.push({
             field: "allowedCombos",
@@ -428,16 +479,15 @@ export function parseRouterSettingsForSave(input: unknown): RouterSettingsValida
       }
       if (!hasInvalid) {
         allowedCombos = next;
-      } else {
-        allowlistInvalid = true;
       }
     }
   }
 
-  // Stage 2: fallback must be in the allowlist. Only meaningful when the
-  // allowlist parsed cleanly (otherwise we would be validating against
-  // a half-built list of keys).
-  if (!allowlistInvalid && b.allowedCombos !== undefined) {
+  // Stage 2: fallback must be in the allowlist. We always check (even
+  // when the allowlist was rejected as invalid) so the user gets a
+  // clear "fallback not in pool" error when every combo was rejected
+  // for other reasons.
+  if (b.allowedCombos !== undefined) {
     const inAllowlist = allowedCombos.some(
       (c) => c.modelId === fallbackModelId && c.reasoningLevel === fallbackReasoningLevel,
     );

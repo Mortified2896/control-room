@@ -56,9 +56,22 @@ async function cleanupSettingsRow(apiURL: string) {
   }
 }
 
+async function cleanupSelectorPrefs(apiURL: string) {
+  try {
+    await fetch(`${apiURL}/api/model-selector-prefs`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preferences: {} }),
+    });
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
 test.describe("Router Settings UI", () => {
   test.afterEach(async () => {
     await cleanupSettingsRow("http://127.0.0.1:3100");
+    await cleanupSelectorPrefs("http://127.0.0.1:3100");
   });
 
   test("sidebar 'Router Settings' link navigates to /settings/router", async ({ page }) => {

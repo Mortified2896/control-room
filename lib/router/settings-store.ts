@@ -2,6 +2,7 @@ import "server-only";
 
 import { isDbConfigured } from "@/lib/db";
 import { getRouterSettingsRow } from "@/lib/repo/router-settings";
+import { getEffectiveModelsRegistry } from "@/lib/providers/registry";
 import { DEFAULT_ROUTER_SETTINGS, getRouterSettings, type RouterSettings } from "./schema";
 
 /**
@@ -30,6 +31,13 @@ import { DEFAULT_ROUTER_SETTINGS, getRouterSettings, type RouterSettings } from 
  * next prompt without requiring a server restart. The cache is global to
  * the Next.js node process — this is acceptable for a single-tenant dev
  * app and keeps the chat route simple.
+ *
+ * Discovery awareness: when a registry is available (DB configured +
+ * discovery snapshot read succeeded), the persisted settings are validated
+ * against it so a stale `allowedCombos` entry can never silently pass
+ * through to the chat path. When the registry read fails, we fall back
+ * to the legacy (registry-less) validator so a transient DB failure does
+ * not break the chat.
  */
 
 let cache: { settings: RouterSettings; cachedAtMs: number } | null = null;
@@ -58,8 +66,22 @@ export async function reloadEffectiveRouterSettings(): Promise<RouterSettings> {
 
 async function readFreshSettings(): Promise<RouterSettings> {
   if (!isDbConfigured()) return getRouterSettings();
+  // Best-effort registry read. If discovery isn't reachable we still
+  // want the chat to keep working, so the read failures here are
+  // swallowed and the validator falls back to the legacy static set.
+  let registryForValidation: Awaited<ReturnType<typeof getEffectiveModelsRegistry>> | null = null;
   try {
-    const row = await getRouterSettingsRow();
+    registryForValidation = await getEffectiveModelsRegistry();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(
+      "[router/settings-store] registry read failed, using legacy validator:",
+      err instanceof Error ? err.message : err,
+    );
+    registryForValidation = null;
+  }
+  try {
+    const row = await getRouterSettingsRow(registryForValidation ?? undefined);
     if (row) return row;
     // No row yet — fall through to env defaults. The migration inserts
     // an empty JSONB default, so a real "no row" only happens if the

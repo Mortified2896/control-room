@@ -164,6 +164,213 @@ test("parseRouterSettingsForSave rejects an unknown model id in the allowlist", 
   assert.equal(result.ok, false);
 });
 
+test("parseRouterSettingsForSave with registry: rejects an unknown model id with the new helpful message", () => {
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "gpt-not-a-real-model", reasoningLevel: "low" }],
+      fallbackModelId: "gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          displayLabel: "GPT-5.4 Mini",
+          known: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          routerEligible: true,
+          provenance: "local_meta",
+        },
+      ],
+      defaults: { manualModelId: "gpt-5.4-mini", reasoningLevel: "low" },
+      discovery: {
+        modelIds: ["gpt-5.4-mini"],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 1,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 1,
+        known: 1,
+        available: 1,
+        stale: 0,
+        manualSelectorVisible: 1,
+        routerEligible: 1,
+      },
+      fakeMode: false,
+    },
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(
+      result.errors.some((e) => e.field === "allowedCombos" && /Unknown model id/.test(e.message)),
+      "expected registry-aware unknown-model error",
+    );
+  }
+});
+
+test("parseRouterSettingsForSave with registry: rejects an unavailable (not-in-discovery) model", () => {
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
+      fallbackModelId: "gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          displayLabel: "GPT-5.4 Mini",
+          known: true,
+          available: false,
+          stale: true,
+          supportsReasoning: true,
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "standard",
+          usableForChat: false,
+          manualSelectorVisible: false,
+          routerEligible: false,
+          provenance: "stale",
+        },
+      ],
+      defaults: { manualModelId: null, reasoningLevel: "low" },
+      discovery: {
+        modelIds: [],
+        previousModelIds: ["gpt-5.4-mini"],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 1,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 0,
+        known: 1,
+        available: 0,
+        stale: 1,
+        manualSelectorVisible: 0,
+        routerEligible: 0,
+      },
+      fakeMode: false,
+    },
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(
+      result.errors.some(
+        (e) => e.field === "allowedCombos" && /not currently available/.test(e.message),
+      ),
+    );
+  }
+});
+
+test("parseRouterSettingsForSave with registry: rejects an unknown (not in static map) model", () => {
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "gpt-fake-unknown-xyz", reasoningLevel: "low" }],
+      fallbackModelId: "gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          displayLabel: "GPT-5.4 Mini",
+          known: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          routerEligible: true,
+          provenance: "local_meta",
+        },
+        {
+          providerId: "openai",
+          modelId: "gpt-fake-unknown-xyz",
+          displayLabel: "gpt-fake-unknown-xyz",
+          known: false,
+          available: true,
+          stale: false,
+          supportsReasoning: false,
+          supportedReasoningLevels: [],
+          tier: "unknown",
+          usableForChat: false,
+          manualSelectorVisible: false,
+          routerEligible: false,
+          provenance: "fake",
+        },
+      ],
+      defaults: { manualModelId: "gpt-5.4-mini", reasoningLevel: "low" },
+      discovery: {
+        modelIds: ["gpt-5.4-mini", "gpt-fake-unknown-xyz"],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "fake",
+        rawCount: 2,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 2,
+        known: 1,
+        available: 2,
+        stale: 0,
+        manualSelectorVisible: 1,
+        routerEligible: 1,
+      },
+      fakeMode: true,
+    },
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(
+      result.errors.some(
+        (e) =>
+          e.field === "allowedCombos" &&
+          /not in the local model registry|cannot enter the router pool/.test(e.message),
+      ),
+    );
+  }
+});
+
+test("parseRouterSettingsForSave without registry: still uses the legacy error message", () => {
+  const result = parseRouterSettingsForSave({
+    allowedCombos: [{ modelId: "gpt-not-a-real-model", reasoningLevel: "low" }],
+    fallbackModelId: "gpt-5.4-mini",
+    fallbackReasoningLevel: "low",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    // Legacy path emits the original "Unknown or disallowed combination" message.
+    assert.ok(
+      result.errors.some(
+        (e) => e.field === "allowedCombos" && /Unknown or disallowed combination/.test(e.message),
+      ),
+    );
+  }
+});
+
 test("parseRouterSettingsForSave accepts the defaults", () => {
   const result = parseRouterSettingsForSave(DEFAULT_ROUTER_SETTINGS);
   assert.equal(result.ok, true);
