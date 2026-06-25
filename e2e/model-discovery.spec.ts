@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * E2E for the model discovery + manual selector + router pool UI.
+ * E2E for the model discovery + unified Model Registry UI.
  *
  * Run with the Playwright config (which sets CONTROL_ROOM_FAKE_LLM=1 and
  * CONTROL_ROOM_FAKE_OPENAI_MODELS=1) so the discovery path uses the
@@ -10,16 +10,15 @@ import { expect, test } from "@playwright/test";
  * What this test exercises (after the UX refactor):
  *   - Section A (OpenAI Model Discovery) renders the plain-English
  *     summary: discovered / configured / unclassified counts.
- *   - Section B (Manual Model Selector) lists every discovered fake
- *     id, separates OpenAI availability from Control Room
- *     configuration (two stacked columns per row), tags the unknown
- *     fake id as "unclassified" (renamed from "unknown"), renders
- *     capability placeholders, supports sort + filter + search, and
- *     allows opting in to an unclassified model.
- *   - Section C (Router Recommendation Pool) still renders the cheap
- *     combo checkboxes, and the unclassified fake id is excluded (it
- *     cannot enter the pool).
- *   - /api/models reflects the manual selector visibility.
+ *   - Section B (Model Registry) is the unified table — one row per
+ *     discovered model — with the columns: Model, OpenAI, Control Room,
+ *     Manual, Router, Reasoning, Tier, Capabilities.
+ *   - Section C (Router Global Settings) only contains the global
+ *     router knobs (fallback, allow-expensive, threshold). The
+ *     per-model router pool table is gone.
+ *   - /api/models reflects the manual selector visibility (Manual toggle).
+ *   - The router toggle for unconfigured / unclassified models is locked
+ *     with a tooltip.
  *   - A new A/B chat uses the persisted allowlist.
  */
 
@@ -53,12 +52,12 @@ async function cleanup(apiURL: string) {
   }
 }
 
-test.describe("Model discovery + manual selector + router pool", () => {
+test.describe("Model discovery + unified Model Registry", () => {
   test.afterEach(async () => {
     await cleanup("http://127.0.0.1:3100");
   });
 
-  test("/settings/router loads in fake mode with the redesigned UX", async ({ page }) => {
+  test("/settings/router loads in fake mode with the unified registry", async ({ page }) => {
     const consoleErrors: string[] = [];
     const failedRequests: string[] = [];
     page.on("console", (msg) => {
@@ -82,31 +81,51 @@ test.describe("Model discovery + manual selector + router pool", () => {
     await expect(page.getByTestId("discovery-summary-unclassified")).toContainText("1");
     await expect(page.getByTestId("discovery-refresh-button")).toBeVisible();
 
-    // Section B: manual selector renders all 4 fake ids + sort/filter/search
-    await expect(page.getByTestId("router-settings-section-selector")).toBeVisible();
-    await expect(page.getByTestId("selector-search")).toBeVisible();
-    await expect(page.getByTestId("selector-sort")).toBeVisible();
-    await expect(page.getByTestId("selector-filter")).toBeVisible();
+    // Section B: unified registry table renders all 4 fake ids +
+    // sort/filter/search controls.
+    await expect(page.getByTestId("router-settings-section-registry")).toBeVisible();
+    await expect(page.getByTestId("registry-search")).toBeVisible();
+    await expect(page.getByTestId("registry-sort")).toBeVisible();
+    await expect(page.getByTestId("registry-filter")).toBeVisible();
     for (const id of FAKE_FOUR_IDS) {
-      await expect(page.getByTestId(`selector-row-${id}`)).toBeVisible();
+      await expect(page.getByTestId(`registry-row-${id}`)).toBeVisible();
     }
     // The unknown fake is tagged as "unclassified" (renamed from "unknown")
     await expect(
-      page.getByTestId("selector-badge-unclassified-gpt-fake-unknown-xyz"),
+      page.getByTestId("registry-badge-unclassified-gpt-fake-unknown-xyz"),
     ).toBeVisible();
     // The fake badge still applies in fake mode
-    await expect(page.getByTestId("selector-badge-fake-gpt-fake-unknown-xyz")).toBeVisible();
+    await expect(page.getByTestId("registry-badge-fake-gpt-fake-unknown-xyz")).toBeVisible();
     // OpenAI + Control Room columns are separated per row
-    await expect(page.getByTestId("selector-openai-pill-gpt-5.4-mini")).toBeVisible();
-    await expect(page.getByTestId("selector-controlroom-pill-gpt-5.4-mini")).toBeVisible();
+    await expect(page.getByTestId("registry-openai-pill-gpt-5.4-mini")).toBeVisible();
+    await expect(page.getByTestId("registry-controlroom-pill-gpt-5.4-mini")).toBeVisible();
     // Capability placeholders are rendered (disabled)
-    await expect(page.getByTestId("selector-gpt-5.4-mini-capability-reasoning")).toBeVisible();
-    await expect(page.getByTestId("selector-gpt-5.4-mini-capability-vision")).toBeDisabled();
-    await expect(page.getByTestId("selector-gpt-5.4-mini-capability-streaming")).toBeChecked();
+    await expect(page.getByTestId("registry-capability-gpt-5.4-mini-reasoning")).toBeVisible();
+    await expect(page.getByTestId("registry-capability-gpt-5.4-mini-vision")).toBeDisabled();
+    await expect(page.getByTestId("registry-capability-gpt-5.4-mini-streaming")).toBeChecked();
+    // Tier pill renders for the standard cheap-tier model
+    await expect(page.getByTestId("registry-tier-pill-gpt-5.4-mini")).toContainText(/Standard/i);
+    await expect(page.getByTestId("registry-tier-pill-gpt-5.5")).toContainText(/Expensive/i);
+    // Reasoning column exposes per-level checkboxes for the configured model
+    await expect(page.getByTestId("registry-reasoning-gpt-5.4-mini-low")).toBeVisible();
+    await expect(page.getByTestId("registry-reasoning-gpt-5.4-mini-medium")).toBeVisible();
+    // Router toggle renders and is ON by default for a configured + available model
+    await expect(page.getByTestId("registry-router-toggle-gpt-5.4-mini")).toHaveAttribute(
+      "data-state",
+      "checked",
+    );
+    // Unconfigured model's Router toggle is locked (the brief).
+    await expect(page.getByTestId("registry-router-locked-gpt-fake-unknown-xyz")).toBeVisible();
 
-    // Section C: router pool should NOT include the unknown fake
-    await expect(page.getByTestId("router-settings-section-pool")).toBeVisible();
-    await expect(page.getByTestId("router-settings-row-gpt-fake-unknown-xyz")).toHaveCount(0);
+    // Section C: only the global router settings now (fallback + safety knobs).
+    // The per-model pool table that used to live here has been folded
+    // into the unified registry above.
+    await expect(page.getByTestId("router-settings-section-fallback")).toBeVisible();
+    await expect(page.getByTestId("router-settings-fallback-model")).toBeVisible();
+    await expect(page.getByTestId("router-settings-fallback-reasoning")).toBeVisible();
+    await expect(page.getByTestId("router-settings-allow-expensive")).toBeVisible();
+    await expect(page.getByTestId("router-settings-allow-long-expensive")).toBeVisible();
+    await expect(page.getByTestId("router-settings-threshold")).toBeVisible();
 
     // Console + network sanity
     const fatalConsoleErrors = consoleErrors.filter((msg) => {
@@ -157,7 +176,7 @@ test.describe("Model discovery + manual selector + router pool", () => {
       timeout: 15_000,
     });
 
-    await expect(page.getByTestId("selector-row-gpt-5.4-mini")).toBeVisible();
+    await expect(page.getByTestId("registry-row-gpt-5.4-mini")).toBeVisible();
 
     const initial = await request.get("/api/models");
     expect(initial.status()).toBe(200);
@@ -165,7 +184,7 @@ test.describe("Model discovery + manual selector + router pool", () => {
     const initialIds = (initialBody.models ?? []).map((m: { modelId: string }) => m.modelId);
     expect(initialIds).toContain("gpt-5.4-mini");
 
-    const toggle = page.getByTestId("selector-toggle-gpt-5.4-mini");
+    const toggle = page.getByTestId("registry-manual-toggle-gpt-5.4-mini");
     await expect(toggle).toBeVisible();
     await toggle.click();
 
@@ -209,8 +228,8 @@ test.describe("Model discovery + manual selector + router pool", () => {
       timeout: 15_000,
     });
 
-    await expect(page.getByTestId("selector-row-gpt-5.4-mini")).toBeVisible();
-    await page.getByTestId("selector-toggle-gpt-5.4-mini").click();
+    await expect(page.getByTestId("registry-row-gpt-5.4-mini")).toBeVisible();
+    await page.getByTestId("registry-manual-toggle-gpt-5.4-mini").click();
     await page.waitForTimeout(500);
 
     const modelsRes = await request.get("/api/models");
@@ -256,7 +275,7 @@ test.describe("Model discovery + manual selector + router pool", () => {
       timeout: 15_000,
     });
 
-    await page.getByTestId("router-settings-combo-gpt-5.4-mini-medium").locator("button").click();
+    await page.getByTestId("registry-reasoning-gpt-5.4-mini-medium").click();
     await page.getByTestId("router-settings-save").click();
     await expect(page.getByTestId("router-settings-save-status")).toBeVisible({
       timeout: 5_000,
@@ -280,31 +299,31 @@ test.describe("Model discovery + manual selector + router pool", () => {
     await expect(sideBHeader).toContainText(/low/i);
   });
 
-  test("Manual selector: sort + filter + search narrow the table", async ({ page }) => {
+  test("Registry: sort + filter + search narrow the table", async ({ page }) => {
     await page.goto("/settings/router");
     await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
       timeout: 15_000,
     });
 
     // Search "fake-unknown" should narrow to the one unknown fake
-    await page.getByTestId("selector-search").fill("fake-unknown");
-    await expect(page.getByTestId("selector-result-count")).toContainText(/Showing 1 of 4/);
-    await expect(page.getByTestId("selector-row-gpt-fake-unknown-xyz")).toBeVisible();
-    await expect(page.getByTestId("selector-row-gpt-5.4-mini")).toHaveCount(0);
+    await page.getByTestId("registry-search").fill("fake-unknown");
+    await expect(page.getByTestId("registry-result-count")).toContainText(/Showing 1 of 4/);
+    await expect(page.getByTestId("registry-row-gpt-fake-unknown-xyz")).toBeVisible();
+    await expect(page.getByTestId("registry-row-gpt-5.4-mini")).toHaveCount(0);
 
     // Clear search and switch to "Configured only" filter
-    await page.getByTestId("selector-search").fill("");
-    await page.getByTestId("selector-filter").selectOption("configured");
-    await expect(page.getByTestId("selector-result-count")).toContainText(/Showing 3 of 4/);
-    await expect(page.getByTestId("selector-row-gpt-fake-unknown-xyz")).toHaveCount(0);
+    await page.getByTestId("registry-search").fill("");
+    await page.getByTestId("registry-filter").selectOption("configured");
+    await expect(page.getByTestId("registry-result-count")).toContainText(/Showing 3 of 4/);
+    await expect(page.getByTestId("registry-row-gpt-fake-unknown-xyz")).toHaveCount(0);
 
-    // Switch to "Unclassified only" filter
-    await page.getByTestId("selector-filter").selectOption("unclassified");
-    await expect(page.getByTestId("selector-result-count")).toContainText(/Showing 1 of 4/);
-    await expect(page.getByTestId("selector-row-gpt-fake-unknown-xyz")).toBeVisible();
+    // Switch to "Not configured" filter
+    await page.getByTestId("registry-filter").selectOption("not-configured");
+    await expect(page.getByTestId("registry-result-count")).toContainText(/Showing 1 of 4/);
+    await expect(page.getByTestId("registry-row-gpt-fake-unknown-xyz")).toBeVisible();
   });
 
-  test("Manual selector: unconfigured model can be opted in for experimentation", async ({
+  test("Registry: unconfigured model can be opted in via the Manual toggle", async ({
     page,
     request,
   }) => {
@@ -314,18 +333,22 @@ test.describe("Model discovery + manual selector + router pool", () => {
     await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
       timeout: 15_000,
     });
-    // Filter to unclassified to find it easily.
-    await page.getByTestId("selector-filter").selectOption("unclassified");
-    const row = page.getByTestId("selector-row-gpt-fake-unknown-xyz");
+    // Filter to not-configured to find it easily.
+    await page.getByTestId("registry-filter").selectOption("not-configured");
+    const row = page.getByTestId("registry-row-gpt-fake-unknown-xyz");
     await expect(row).toBeVisible();
     // The Control Room column should show "Not configured"
-    await expect(page.getByTestId("selector-controlroom-pill-gpt-fake-unknown-xyz")).toContainText(
+    await expect(page.getByTestId("registry-controlroom-pill-gpt-fake-unknown-xyz")).toContainText(
       /Not configured/,
     );
     // The OpenAI column should show "Available"
-    await expect(page.getByTestId("selector-openai-pill-gpt-fake-unknown-xyz")).toContainText(
+    await expect(page.getByTestId("registry-openai-pill-gpt-fake-unknown-xyz")).toContainText(
       /Available/,
     );
+    // The Router toggle is locked with the tooltip from the brief.
+    const locked = page.getByTestId("registry-router-locked-gpt-fake-unknown-xyz");
+    await expect(locked).toBeVisible();
+    await expect(locked).toContainText(/Disabled/i);
 
     // Confirm /api/models does NOT include it before opt-in
     const before = await request.get("/api/models");
@@ -333,8 +356,8 @@ test.describe("Model discovery + manual selector + router pool", () => {
     const beforeIds = (beforeBody.models ?? []).map((m: { modelId: string }) => m.modelId);
     expect(beforeIds).not.toContain("gpt-fake-unknown-xyz");
 
-    // Opt in via the toggle
-    await page.getByTestId("selector-toggle-gpt-fake-unknown-xyz").click();
+    // Opt in via the Manual toggle
+    await page.getByTestId("registry-manual-toggle-gpt-fake-unknown-xyz").click();
     await page.waitForTimeout(500);
 
     // /api/models now includes the opted-in model (even though Control
@@ -354,8 +377,8 @@ test.describe("Model discovery + manual selector + router pool", () => {
     // an unconfigured model at runtime).
     expect(optedIn?.enabled).toBe(false);
 
-    // The "override" badge appears in the selector row after opt-in
-    await expect(page.getByTestId("selector-badge-overridden-gpt-fake-unknown-xyz")).toBeVisible();
+    // The "override" badge appears in the registry row after opt-in
+    await expect(page.getByTestId("registry-badge-overridden-gpt-fake-unknown-xyz")).toBeVisible();
 
     // Router pool is STILL empty for this model (unconfigured models
     // cannot enter the router pool — that's the safety guarantee).
@@ -370,5 +393,49 @@ test.describe("Model discovery + manual selector + router pool", () => {
       },
     });
     expect(routerRes.status()).toBe(400);
+  });
+
+  test("Registry: Router toggle per row turns all supported reasoning levels on / off", async ({
+    page,
+  }) => {
+    await page.goto("/settings/router");
+    await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Default state: gpt-5.5 has all three reasoning levels enabled
+    // (low/medium/high). gpt-5.5 is the expensive-tier model so the
+    // "Allow expensive models" switch (Section C) must be ON for it to
+    // be in the persisted allowlist. The Router toggle reflects the
+    // *persisted* allowlist state, which is whatever was last saved.
+    // We assert: the toggle is consistent with the per-level checks.
+    const routerToggle = page.getByTestId("registry-router-toggle-gpt-5.4-mini");
+    const lowCheckbox = page.getByTestId("registry-reasoning-gpt-5.4-mini-low");
+    const mediumCheckbox = page.getByTestId("registry-reasoning-gpt-5.4-mini-medium");
+    await expect(routerToggle).toHaveAttribute("data-state", "checked");
+    await expect(lowCheckbox).toHaveAttribute("data-state", "checked");
+    await expect(mediumCheckbox).toHaveAttribute("data-state", "checked");
+
+    // Click the Router toggle → all reasoning levels for this model
+    // become unchecked in one click.
+    await routerToggle.click();
+    await expect(routerToggle).toHaveAttribute("data-state", "unchecked");
+    await expect(lowCheckbox).toHaveAttribute("data-state", "unchecked");
+    await expect(mediumCheckbox).toHaveAttribute("data-state", "unchecked");
+
+    // Click again → all re-checked.
+    await routerToggle.click();
+    await expect(routerToggle).toHaveAttribute("data-state", "checked");
+    await expect(lowCheckbox).toHaveAttribute("data-state", "checked");
+    await expect(mediumCheckbox).toHaveAttribute("data-state", "checked");
+
+    // A individual reasoning checkbox click flips just that one combo;
+    // the Router toggle stays ON (still some checks), and a "partial"
+    // badge appears because not all of the supported levels are checked.
+    await mediumCheckbox.click();
+    await expect(routerToggle).toHaveAttribute("data-state", "checked");
+    await expect(lowCheckbox).toHaveAttribute("data-state", "checked");
+    await expect(mediumCheckbox).toHaveAttribute("data-state", "unchecked");
+    await expect(page.getByTestId("registry-badge-partial-gpt-5.4-mini")).toBeVisible();
   });
 });

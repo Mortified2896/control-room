@@ -43,6 +43,17 @@ export type FetchOpenAIModelsResult =
   | { ok: false; httpStatus: number | null; reason: string };
 
 /**
+ * OpenAI 401 responses can echo a masked form of the provided API key
+ * back in the JSON error body. Do not persist or render even partially
+ * identifying key fragments in Control Room's discovery error surface.
+ */
+export function sanitizeOpenAIErrorDetail(detail: string): string {
+  return detail
+    .replace(/Incorrect API key provided:\s*[^".\s]+/gi, "Incorrect API key provided: [redacted]")
+    .replace(/sk-[A-Za-z0-9_-]+/g, "sk-[redacted]");
+}
+
+/**
  * Hit `GET /v1/models` on the OpenAI API. Returns the deduplicated,
  * sorted list of model ids or a structured failure (network error,
  * non-2xx, parse error).
@@ -86,7 +97,7 @@ export async function fetchOpenAIModels(opts: {
     let detail = "";
     try {
       const body = (await res.text()) ?? "";
-      detail = body.slice(0, 200);
+      detail = sanitizeOpenAIErrorDetail(body.slice(0, 200));
     } catch {
       // body read failure is non-fatal
     }

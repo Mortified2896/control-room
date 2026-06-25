@@ -3,6 +3,12 @@ import { expect, test } from "@playwright/test";
 /**
  * Happy-path E2E for the Router Settings UI.
  *
+ * After the Model Registry UX refactor, the page now exposes a single
+ * unified table (Section B) where each model has its own Manual toggle,
+ * Router toggle, and per-reasoning-level checkboxes. The global router
+ * settings (Section C) only contain the fallback combination, the
+ * expensive-tier gate, and the long-prompt safety guard.
+ *
  * What this test exercises:
  *   1. /settings/router loads and renders the form.
  *   2. The user can toggle a (model, reasoning-level) combo, save, and the
@@ -102,15 +108,18 @@ test.describe("Router Settings UI", () => {
       timeout: 15_000,
     });
 
-    // The allowed-combinations section must list both cheap-tier combos
-    // by default (gpt-5.4-mini x low/medium). Each `<td data-testid=…>`
-    // contains a Radix Checkbox button whose `data-state` is the source
-    // of truth for checked/unchecked.
-    await expect(page.getByTestId("router-settings-row-gpt-5.4-mini")).toBeVisible();
-    const cheapLow = page.getByTestId("router-settings-combo-gpt-5.4-mini-low").locator("button");
-    const cheapMedium = page
-      .getByTestId("router-settings-combo-gpt-5.4-mini-medium")
-      .locator("button");
+    // The unified Model Registry section must list the configured
+    // models by default. Each registry row contains a Router toggle and
+    // a per-reasoning-level checkbox column. The defaults enable both
+    // cheap-tier combos (gpt-5.4-mini x low/medium).
+    await expect(page.getByTestId("router-settings-section-registry")).toBeVisible();
+    await expect(page.getByTestId("registry-row-gpt-5.4-mini")).toBeVisible();
+    await expect(page.getByTestId("registry-router-toggle-gpt-5.4-mini")).toBeVisible();
+    // The reasoning checkboxes carry their own data-testid directly on
+    // the Radix Checkbox button, so we can assert + click on them
+    // without an extra `.locator("button")` step.
+    const cheapLow = page.getByTestId("registry-reasoning-gpt-5.4-mini-low");
+    const cheapMedium = page.getByTestId("registry-reasoning-gpt-5.4-mini-medium");
     await expect(cheapLow).toBeVisible();
     await expect(cheapMedium).toBeVisible();
     await expect(cheapLow).toHaveAttribute("data-state", "checked");
@@ -121,7 +130,7 @@ test.describe("Router Settings UI", () => {
     await expect(saveButton).toBeDisabled();
 
     // Uncheck the cheap/medium combo so the form becomes dirty.
-    await page.getByTestId("router-settings-combo-gpt-5.4-mini-medium").click();
+    await page.getByTestId("registry-reasoning-gpt-5.4-mini-medium").click();
     await expect(saveButton).toBeEnabled();
 
     // Save and confirm the success state.
@@ -138,18 +147,14 @@ test.describe("Router Settings UI", () => {
     await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
       timeout: 15_000,
     });
-    const cheapLowAfter = page
-      .getByTestId("router-settings-combo-gpt-5.4-mini-low")
-      .locator("button");
-    const cheapMediumAfter = page
-      .getByTestId("router-settings-combo-gpt-5.4-mini-medium")
-      .locator("button");
+    const cheapLowAfter = page.getByTestId("registry-reasoning-gpt-5.4-mini-low");
+    const cheapMediumAfter = page.getByTestId("registry-reasoning-gpt-5.4-mini-medium");
     await expect(cheapLowAfter).toHaveAttribute("data-state", "checked");
     await expect(cheapMediumAfter).toHaveAttribute("data-state", "unchecked");
 
     // Re-enable the combo and save it back so the next test (and the
     // existing router A/B smoke spec) sees a non-empty allowlist.
-    await page.getByTestId("router-settings-combo-gpt-5.4-mini-medium").click();
+    await page.getByTestId("registry-reasoning-gpt-5.4-mini-medium").click();
     await page.getByTestId("router-settings-save").click();
     await expect(page.getByTestId("router-settings-save-status")).toBeVisible({
       timeout: 5_000,
@@ -178,7 +183,7 @@ test.describe("Router Settings UI", () => {
       timeout: 15_000,
     });
     // Uncheck cheap/medium to leave only cheap/low.
-    await page.getByTestId("router-settings-combo-gpt-5.4-mini-medium").click();
+    await page.getByTestId("registry-reasoning-gpt-5.4-mini-medium").click();
     await page.getByTestId("router-settings-save").click();
     await expect(page.getByTestId("router-settings-save-status")).toBeVisible({
       timeout: 5_000,
@@ -239,7 +244,7 @@ test.describe("Router Settings UI", () => {
     // the defaults from the initial GET. This means the form's baseline
     // matches the schema defaults, which is what "Reset to safe
     // defaults" is supposed to restore.
-    await page.getByTestId("router-settings-combo-gpt-5.4-mini-medium").click();
+    await page.getByTestId("registry-reasoning-gpt-5.4-mini-medium").click();
     await page.waitForTimeout(200);
     // Confirm the form is now dirty before we reset.
     await expect(page.getByTestId("router-settings-save")).toBeEnabled();
@@ -248,12 +253,62 @@ test.describe("Router Settings UI", () => {
     // (gpt-5.4-mini, low) + (gpt-5.4-mini, medium), both checked, with
     // the Save button re-disabled.
     await page.getByRole("button", { name: /Reset to safe defaults/i }).click();
-    await expect(
-      page.getByTestId("router-settings-combo-gpt-5.4-mini-low").locator("button"),
-    ).toHaveAttribute("data-state", "checked");
-    await expect(
-      page.getByTestId("router-settings-combo-gpt-5.4-mini-medium").locator("button"),
-    ).toHaveAttribute("data-state", "checked");
+    await expect(page.getByTestId("registry-reasoning-gpt-5.4-mini-low")).toHaveAttribute(
+      "data-state",
+      "checked",
+    );
+    await expect(page.getByTestId("registry-reasoning-gpt-5.4-mini-medium")).toHaveAttribute(
+      "data-state",
+      "checked",
+    );
     await expect(page.getByTestId("router-settings-save")).toBeDisabled();
+  });
+
+  test("Router toggle per row turns all supported reasoning levels on / off", async ({ page }) => {
+    await page.goto("/settings/router");
+    await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // The default state has gpt-5.4-mini's Router toggle ON and both
+    // (gpt-5.4-mini, low) and (gpt-5.4-mini, medium) checked.
+    const routerToggle = page.getByTestId("registry-router-toggle-gpt-5.4-mini");
+    const lowCheckbox = page.getByTestId("registry-reasoning-gpt-5.4-mini-low");
+    const mediumCheckbox = page.getByTestId("registry-reasoning-gpt-5.4-mini-medium");
+    await expect(routerToggle).toHaveAttribute("data-state", "checked");
+    await expect(lowCheckbox).toHaveAttribute("data-state", "checked");
+    await expect(mediumCheckbox).toHaveAttribute("data-state", "checked");
+
+    // Turning the Router toggle OFF must clear both reasoning levels
+    // for that model in one click. The per-level checkboxes reflect
+    // the form state directly (allowedCombos).
+    await routerToggle.click();
+    await expect(routerToggle).toHaveAttribute("data-state", "unchecked");
+    await expect(lowCheckbox).toHaveAttribute("data-state", "unchecked");
+    await expect(mediumCheckbox).toHaveAttribute("data-state", "unchecked");
+
+    // Turning it back ON must re-check all supported levels at once.
+    await routerToggle.click();
+    await expect(routerToggle).toHaveAttribute("data-state", "checked");
+    await expect(lowCheckbox).toHaveAttribute("data-state", "checked");
+    await expect(mediumCheckbox).toHaveAttribute("data-state", "checked");
+  });
+
+  test("Unconfigured model has its Router toggle locked with a tooltip", async ({ page }) => {
+    await page.goto("/settings/router");
+    await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // The unknown fake model is unconfigured, so the Router toggle is
+    // replaced by a disabled "Disabled" lock chip with the
+    // "cannot be recommended" tooltip copy from the brief.
+    const locked = page.getByTestId("registry-router-locked-gpt-fake-unknown-xyz");
+    await expect(locked).toBeVisible();
+    await expect(locked).toContainText(/Disabled/i);
+    await locked.hover();
+    await expect(page.getByText(/cannot be recommended by the router/i).first()).toBeVisible({
+      timeout: 5_000,
+    });
   });
 });

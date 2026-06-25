@@ -12,6 +12,7 @@ import {
   Filter,
   Info,
   Loader2,
+  Lock,
   RefreshCw,
   RotateCcw,
   Save,
@@ -25,6 +26,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 import type { RouterSettings } from "@/lib/router/schema";
@@ -34,7 +36,7 @@ import type { ReasoningLevel } from "@/lib/providers/types";
  * Router Settings page (client component).
  *
  * Renders the Settings UI for the Router A/B mode singleton row in
- * Postgres, organized into three sections per the brief:
+ * Postgres, organized into three sections per the post-refactor brief:
  *
  *   A. OpenAI Model Discovery
  *      - last refreshed timestamp
@@ -45,33 +47,39 @@ import type { ReasoningLevel } from "@/lib/providers/types";
  *         available but unclassified"
  *      - dev/fake mode banner
  *
- *   B. Manual Model Selector
- *      - per-model show/hide toggle for every discovered OpenAI model
- *      - each row exposes OpenAI availability and Control Room
- *        configuration as TWO STACKED COLUMNS so the user sees
- *        "OpenAI says I can use this" vs "Control Room knows about
- *        this" as separate facts
- *      - "Unclassified" badge (renamed from "UNKNOWN") for models
- *        that OpenAI exposes but Control Room has no local metadata
- *        for; unconfigured models can be opted into for
- *        experimentation
- *      - inline warning when the user enables an unconfigured model
- *      - capability placeholders (disabled): Reasoning, Vision,
- *        Images, Function calling, Structured output, Streaming
- *      - sorting + search filter so the table stays usable as the
- *        OpenAI catalog grows
+ *   B. Model Registry  (was: Manual Model Selector + Router Recommendation
+ *      Pool — merged into a single unified table)
+ *      - one row per model
+ *      - columns answer all of:
+ *          "Can OpenAI access this model?"
+ *          "Has Control Room been configured for it?"
+ *          "Should it appear in the manual selector?"
+ *          "May the router recommend it?"
+ *          "Which reasoning levels may the router use?"
+ *          "What capabilities are known?"
+ *      - manual visibility toggles persist immediately (existing path)
+ *      - router toggle + per-reasoning-level checkboxes batch into the
+ *        same Save as the global router settings (existing path)
+ *      - unconfigured models: router toggle is locked with a tooltip;
+ *        manual toggle still works (opt-in for experimentation) with the
+ *        existing unconfigured warning
+ *      - sort + filter + search preserved
  *
- *   C. Router Recommendation Pool (existing router settings UI)
- *      - allowed (model + reasoning-level) checkboxes
+ *   C. Router Global Settings  (only settings that affect the router
+ *      globally stay here)
  *      - fallback model + reasoning level
- *      - allow expensive models / long-prompt safety controls
- *      - explicit "Side B only" copy so the user knows what they're
- *        editing
- *      - strict gate: unconfigured + stale models cannot enter the
- *        pool (router safety unchanged)
+ *      - allow expensive models
+ *      - allow expensive on long prompts
+ *      - long prompt threshold
+ *      - pricing controls (future)
  *
  * Pricing knobs (`maxCostPerRecommendationUsd`, `maxCostPerAbRunUsd`)
  * and the router model id are intentionally NOT exposed here.
+ *
+ * This file is a pure UX refactor of the previous split
+ * "Manual Selector / Router Pool" surface. The persistence layer
+ * (Postgres rows, repos, settings-store cache), the API routes, the
+ * validation pipeline, and the router graph are all untouched.
  */
 
 type RegistryEntry = {
@@ -170,8 +178,15 @@ type RefreshStatus =
     }
   | { kind: "refresh_error"; at: number; message: string };
 
-type SelectorSort = "configured-first" | "unclassified-first" | "hidden-first" | "available";
-type SelectorFilter = "all" | "configured" | "unclassified" | "hidden" | "available";
+type RegistrySort = "configured-first" | "unclassified-first" | "router-first" | "available";
+type RegistryFilter =
+  | "all"
+  | "configured"
+  | "not-configured"
+  | "manual-enabled"
+  | "router-enabled"
+  | "available"
+  | "unavailable";
 
 function comboKey(modelId: string, reasoningLevel: ReasoningLevel): string {
   return `${modelId}|${reasoningLevel}`;
@@ -290,6 +305,18 @@ const CAPABILITY_LABELS: ReadonlyArray<{
   { key: "streaming", label: "Streaming" },
 ];
 
+const TIER_PILL_STYLES: Record<"standard" | "expensive" | "unknown", string> = {
+  standard: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  expensive: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  unknown: "border-zinc-500/40 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+};
+
+const TIER_PILL_LABELS: Record<"standard" | "expensive" | "unknown", string> = {
+  standard: "Standard",
+  expensive: "Expensive",
+  unknown: "Unknown",
+};
+
 const ErrorPanel: FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => {
   return (
     <div className="mx-auto flex h-dvh w-full max-w-2xl flex-col items-center justify-center gap-3 p-6 text-center">
@@ -322,8 +349,8 @@ const LoadingPanel: FC = () => {
 };
 
 /**
- * Small two-line "OK / Not OK" pill used inside the manual-selector table
- * to keep OpenAI availability and Control Room support visually separate.
+ * Small two-line "OK / Not OK" pill used inside the Model Registry to
+ * keep OpenAI availability and Control Room support visually separate.
  *
  *   ✓ Available        (green)
  *   ✗ Unavailable      (zinc)
@@ -381,7 +408,7 @@ const CapabilityList: FC<{
               checked={checked}
               disabled
               aria-label={`${cap.label} (future capability placeholder)`}
-              data-testid={`${testIdPrefix}-capability-${cap.key}`}
+              data-testid={`${testIdPrefix}-${cap.key}`}
               className="size-3"
             />
             <span>{cap.label}</span>
@@ -393,7 +420,28 @@ const CapabilityList: FC<{
 };
 
 /**
- * Inline warning shown next to the visibility toggle when the user is
+ * Tier badge for the registry row. Renders Standard / Expensive / Unknown
+ * with a color matching the model's cost tier.
+ */
+const TierPill: FC<{ tier: "standard" | "expensive" | "unknown"; modelId: string }> = ({
+  tier,
+  modelId,
+}) => {
+  return (
+    <span
+      data-testid={`registry-tier-pill-${modelId}`}
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+        TIER_PILL_STYLES[tier],
+      )}
+    >
+      {TIER_PILL_LABELS[tier]}
+    </span>
+  );
+};
+
+/**
+ * Inline warning shown next to the manual-selector toggle when the user is
  * about to enable a model Control Room has no local metadata for.
  * Matches the brief's required copy.
  */
@@ -417,6 +465,51 @@ const UnconfiguredWarning: FC<{ modelLabel: string }> = ({ modelLabel }) => {
   );
 };
 
+/**
+ * Helper: derive the (checked / disabled) state for the per-level
+ * reasoning checkboxes for a single row. Pulled out so the row JSX
+ * stays readable.
+ */
+function reasoningCellState(input: {
+  configured: boolean;
+  routerOn: boolean;
+  level: ReasoningLevel;
+  supportedLevels: ReadonlyArray<ReasoningLevel>;
+  allowedComboKeys: Set<string>;
+  modelId: string;
+}): {
+  supported: boolean;
+  checked: boolean;
+  disabled: boolean;
+  disabledReason: "unsupported" | "router-off" | "unconfigured";
+} {
+  const { configured, routerOn, level, supportedLevels, allowedComboKeys, modelId } = input;
+  const supported = supportedLevels.includes(level);
+  if (!supported) {
+    return { supported, checked: false, disabled: true, disabledReason: "unsupported" };
+  }
+  if (!configured) {
+    // Configured check should never let us get here (the row's router
+    // toggle is locked for unconfigured models) but keep it as a
+    // defense-in-depth branch.
+    return { supported, checked: false, disabled: true, disabledReason: "unconfigured" };
+  }
+  if (!routerOn) {
+    return {
+      supported,
+      checked: false,
+      disabled: true,
+      disabledReason: "router-off",
+    };
+  }
+  return {
+    supported,
+    checked: allowedComboKeys.has(comboKey(modelId, level)),
+    disabled: false,
+    disabledReason: "unsupported",
+  };
+}
+
 export const RouterSettingsPage: FC = () => {
   const [dto, setDto] = useState<RouterSettingsDto | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -428,12 +521,12 @@ export const RouterSettingsPage: FC = () => {
   const [selectorSaving, setSelectorSaving] = useState<Record<string, boolean>>({});
   const [selectorError, setSelectorError] = useState<string | null>(null);
 
-  // Manual-selector UI state (sort + filter + search). The persisted
-  // selector prefs are owned by the backend; this is purely client-side
+  // Registry UI state (sort + filter + search). The persisted selector
+  // prefs are owned by the backend; this is purely client-side
   // presentation state so the user can find what they're looking for
   // without scrolling through 100+ ids.
-  const [sortMode, setSortMode] = useState<SelectorSort>("configured-first");
-  const [filterMode, setFilterMode] = useState<SelectorFilter>("all");
+  const [sortMode, setSortMode] = useState<RegistrySort>("configured-first");
+  const [filterMode, setFilterMode] = useState<RegistryFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [warningDismissedFor, setWarningDismissedFor] = useState<Record<string, boolean>>({});
 
@@ -488,47 +581,75 @@ export const RouterSettingsPage: FC = () => {
     return supported;
   }, [form, registryByModel]);
 
-  const registryByModelEntries = useMemo(() => {
-    const out: Array<{
-      modelId: string;
-      modelLabel: string;
-      tier: "cheap" | "expensive";
-      configured: boolean;
-      available: boolean;
-      stale: boolean;
-      levels: RegistryEntry[];
-    }> = [];
-    const seen = new Set<string>();
-    for (const e of registry) {
-      if (seen.has(e.modelId)) continue;
-      seen.add(e.modelId);
-      out.push({
-        modelId: e.modelId,
-        modelLabel: e.modelLabel,
-        tier: e.tier,
-        configured: e.configured,
-        available: e.available,
-        stale: e.stale,
-        levels: registry.filter((r) => r.modelId === e.modelId),
-      });
-    }
+  // Routable registry model ids: configured + currently available + not
+  // stale. Used for the fallback model selector so the user can only
+  // pick a model the router can actually recommend.
+  const routableModelIds = useMemo(() => {
+    const out = new Set<string>();
+    for (const e of registry) out.add(e.modelId);
     return out;
   }, [registry]);
 
-  const selectorEntries = useMemo(() => dto?.effectiveRegistry.models ?? [], [dto]);
+  const registryEntries = useMemo(() => dto?.effectiveRegistry.models ?? [], [dto]);
   const selectorPrefs = useMemo(() => dto?.effectiveRegistry.selectorPrefs ?? {}, [dto]);
   const discovery = useMemo(() => dto?.effectiveRegistry.discovery, [dto]);
   const counts = useMemo(() => dto?.effectiveRegistry.counts, [dto]);
 
-  // Effective visible-set for the manual selector table, after applying
-  // the user's sort + filter + search. Persisted prefs are unchanged;
-  // this is presentation-only.
-  const visibleSelectorEntries = useMemo(() => {
+  /**
+   * For each registry row, compute the router-toggle state and the
+   * per-level checkbox state. Derived purely from the live
+   * `form.allowedComboKeys` so toggling a single reasoning checkbox
+   * updates the row's Router toggle immediately.
+   */
+  const registryRowState = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        routerOn: boolean;
+        anyChecked: boolean;
+        allChecked: boolean;
+        checkedLevels: ReadonlyArray<ReasoningLevel>;
+      }
+    >();
+    if (!form) return map;
+    for (const entry of registryEntries) {
+      const supported = entry.supportedReasoningLevels;
+      const checkedLevels = supported.filter((lvl) =>
+        form.allowedComboKeys.has(comboKey(entry.modelId, lvl)),
+      );
+      const anyChecked = checkedLevels.length > 0;
+      const allChecked = supported.length > 0 && checkedLevels.length === supported.length;
+      // "Router ON" for the row means at least one supported reasoning
+      // level is currently in the allowlist. The brief: "Router ON →
+      // router may recommend this model." That's satisfied as soon as
+      // any one combo is checked.
+      const routerOn = anyChecked && entry.configured;
+      map.set(entry.modelId, {
+        routerOn,
+        anyChecked,
+        allChecked,
+        checkedLevels,
+      });
+    }
+    return map;
+  }, [registryEntries, form]);
+
+  /**
+   * Effective visible-set for the registry table, after applying
+   * sort + filter + search. Persisted prefs are unchanged; this is
+   * presentation-only.
+   */
+  const visibleRegistryEntries = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const matchesSearch = (entry: EffectiveRegistryModelDto) =>
       q.length === 0 ||
       entry.modelId.toLowerCase().includes(q) ||
       entry.displayLabel.toLowerCase().includes(q);
+
+    const prefVisible = (entry: EffectiveRegistryModelDto) => {
+      const pref = selectorPrefs[entry.modelId]?.visible;
+      return pref !== undefined ? pref : entry.manualSelectorVisible;
+    };
 
     const matchesFilter = (entry: EffectiveRegistryModelDto): boolean => {
       switch (filterMode) {
@@ -536,37 +657,41 @@ export const RouterSettingsPage: FC = () => {
           return true;
         case "configured":
           return entry.configured;
-        case "unclassified":
-          return !entry.configured && !entry.stale;
-        case "hidden": {
-          const pref = selectorPrefs[entry.modelId]?.visible;
-          const visible = pref !== undefined ? pref : entry.manualSelectorVisible;
-          return !visible;
-        }
+        case "not-configured":
+          return !entry.configured;
+        case "manual-enabled":
+          return prefVisible(entry);
+        case "router-enabled":
+          return Boolean(registryRowState.get(entry.modelId)?.routerOn);
         case "available":
           return entry.available && !entry.stale;
+        case "unavailable":
+          return !entry.available || entry.stale;
       }
     };
 
-    const filtered = selectorEntries.filter((e) => matchesFilter(e) && matchesSearch(e));
+    const filtered = registryEntries.filter((e) => matchesFilter(e) && matchesSearch(e));
     const sorted = [...filtered];
     sorted.sort((a, b) => {
       switch (sortMode) {
         case "configured-first":
-          // Configured first, then by availability, then alphabetical.
+          // Configured first, then by router-eligibility, then
+          // alphabetical.
           if (a.configured !== b.configured) return a.configured ? -1 : 1;
+          const aRouter = Boolean(registryRowState.get(a.modelId)?.routerOn);
+          const bRouter = Boolean(registryRowState.get(b.modelId)?.routerOn);
+          if (aRouter !== bRouter) return aRouter ? -1 : 1;
           if (a.available !== b.available) return a.available ? -1 : 1;
           return a.modelId.localeCompare(b.modelId);
         case "unclassified-first":
           if (a.configured !== b.configured) return a.configured ? 1 : -1;
           if (a.available !== b.available) return a.available ? -1 : 1;
           return a.modelId.localeCompare(b.modelId);
-        case "hidden-first": {
-          const aPref = selectorPrefs[a.modelId]?.visible;
-          const bPref = selectorPrefs[b.modelId]?.visible;
-          const aVisible = aPref !== undefined ? aPref : a.manualSelectorVisible;
-          const bVisible = bPref !== undefined ? bPref : b.manualSelectorVisible;
-          if (aVisible !== bVisible) return aVisible ? 1 : -1;
+        case "router-first": {
+          const aRouter = Boolean(registryRowState.get(a.modelId)?.routerOn);
+          const bRouter = Boolean(registryRowState.get(b.modelId)?.routerOn);
+          if (aRouter !== bRouter) return aRouter ? -1 : 1;
+          if (a.configured !== b.configured) return a.configured ? -1 : 1;
           return a.modelId.localeCompare(b.modelId);
         }
         case "available":
@@ -575,7 +700,7 @@ export const RouterSettingsPage: FC = () => {
       }
     });
     return sorted;
-  }, [selectorEntries, selectorPrefs, sortMode, filterMode, searchQuery]);
+  }, [registryEntries, selectorPrefs, registryRowState, sortMode, filterMode, searchQuery]);
 
   const update = useCallback(
     (patch: Partial<FormState>) => {
@@ -594,7 +719,38 @@ export const RouterSettingsPage: FC = () => {
     [registryByModel],
   );
 
-  const toggleCombo = useCallback(
+  /**
+   * Toggle the row's Router switch. The semantics:
+   *
+   *   - Turn ON  (set every supported level into the allowlist).
+   *   - Turn OFF (remove every supported level from the allowlist).
+   *
+   * This is the single-row equivalent of the previous "Check all" /
+   * "Clear" buttons in the old router pool table.
+   */
+  const toggleRouterForModel = useCallback(
+    (modelId: string, enabled: boolean) => {
+      setForm((prev) => {
+        if (!prev) return prev;
+        const entry = registryEntries.find((e) => e.modelId === modelId);
+        if (!entry) return prev;
+        const next = new Set(prev.allowedComboKeys);
+        for (const lvl of entry.supportedReasoningLevels) {
+          const k = comboKey(modelId, lvl);
+          if (enabled) next.add(k);
+          else next.delete(k);
+        }
+        return { ...prev, allowedComboKeys: next };
+      });
+    },
+    [registryEntries],
+  );
+
+  /**
+   * Toggle a single (model, reasoning-level) combo inside the allowlist.
+   * Used by the per-level checkboxes in the Reasoning column.
+   */
+  const toggleReasoningCombo = useCallback(
     (modelId: string, reasoningLevel: ReasoningLevel, enabled: boolean) => {
       setForm((prev) => {
         if (!prev) return prev;
@@ -606,23 +762,6 @@ export const RouterSettingsPage: FC = () => {
       });
     },
     [],
-  );
-
-  const toggleAllForModel = useCallback(
-    (modelId: string, enabled: boolean) => {
-      setForm((prev) => {
-        if (!prev) return prev;
-        const next = new Set(prev.allowedComboKeys);
-        for (const e of registry) {
-          if (e.modelId !== modelId) continue;
-          const k = comboKey(e.modelId, e.reasoningLevel);
-          if (enabled) next.add(k);
-          else next.delete(k);
-        }
-        return { ...prev, allowedComboKeys: next };
-      });
-    },
-    [registry],
   );
 
   const onResetDefaults = useCallback(() => {
@@ -752,6 +891,14 @@ export const RouterSettingsPage: FC = () => {
     }
   }, [loadSettings]);
 
+  /**
+   * Persist manual-selector visibility for a single model.
+   *
+   * This endpoint is unchanged from the previous split-table layout:
+   * `PUT /api/model-selector-prefs` writes the singleton prefs row.
+   * The write happens immediately on toggle (the previous UX), not
+   * batched into the router Save.
+   */
   const onToggleSelectorVisible = useCallback(
     async (modelId: string, visible: boolean) => {
       if (!dto) return;
@@ -806,7 +953,7 @@ export const RouterSettingsPage: FC = () => {
   const isExpensiveAllowed = form.allowExpensiveModels;
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-4xl flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-8">
+    <div className="mx-auto flex h-dvh w-full max-w-6xl flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-8">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
         <div>
           <div className="flex items-center gap-2">
@@ -818,8 +965,8 @@ export const RouterSettingsPage: FC = () => {
             <h1 className="text-lg font-semibold">Router Settings</h1>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Choose which OpenAI models appear in the chat composer (Section B) and which
-            combinations the router is allowed to recommend for Side B (Section C).
+            Discover what OpenAI lets you call (Section A), configure each model in a unified
+            registry (Section B), and tune the router&apos;s global safety knobs (Section C).
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1042,21 +1189,27 @@ export const RouterSettingsPage: FC = () => {
           </div>
         </section>
 
-        {/* Section B: Manual Model Selector */}
+        {/* Section B: Model Registry — unified table.
+            Replaces the previous split "Manual Model Selector" +
+            "Router Recommendation Pool" sections. Each row answers all
+            six brief questions for a single model. */}
         <section
-          aria-labelledby="selector-heading"
-          className="rounded-lg border border-border/60 bg-card p-4 sm:p-6"
-          data-testid="router-settings-section-selector"
+          aria-labelledby="registry-heading"
+          className={cn(
+            "rounded-lg border border-border/60 bg-card p-4 sm:p-6",
+            errorsByField.has("allowedCombos") && "border-destructive/60",
+          )}
+          data-testid="router-settings-section-registry"
         >
           <div>
-            <h2 id="selector-heading" className="text-sm font-semibold">
-              B · Manual model selector
+            <h2 id="registry-heading" className="text-sm font-semibold">
+              B · Model registry
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Choose which discovered OpenAI models appear in the chat composer dropdown. Hidden
-              models do not appear in chat, but messages that already used them remain in history.
-              Decoupled from the router pool (Section C) — a model hidden here may still be
-              router-eligible, and a model shown here may still be router-blocked.
+              One row per discovered OpenAI model. Toggle each model&apos;s visibility in the chat
+              composer (Manual), let the router recommend it (Router), and pick which reasoning
+              levels the router may pair it with (Reasoning). The router can only choose from
+              configured, currently available models — everything else is locked.
             </p>
           </div>
 
@@ -1067,9 +1220,7 @@ export const RouterSettingsPage: FC = () => {
             </div>
           )}
 
-          {/* Sort + filter + search controls. The list can be very long
-              (OpenAI's catalog is ~120 entries) so we let the user
-              narrow it. */}
+          {/* Sort + filter + search controls. */}
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-[180px]">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
@@ -1078,7 +1229,7 @@ export const RouterSettingsPage: FC = () => {
                 placeholder="Search models by id or label…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                data-testid="selector-search"
+                data-testid="registry-search"
                 className="pl-8"
               />
             </div>
@@ -1087,15 +1238,17 @@ export const RouterSettingsPage: FC = () => {
               <select
                 aria-label="Filter"
                 value={filterMode}
-                onChange={(e) => setFilterMode(e.target.value as SelectorFilter)}
-                data-testid="selector-filter"
+                onChange={(e) => setFilterMode(e.target.value as RegistryFilter)}
+                data-testid="registry-filter"
                 className="border-input bg-background flex h-9 rounded-md border px-2 text-xs shadow-xs outline-none"
               >
-                <option value="all">All ({selectorEntries.length})</option>
+                <option value="all">All ({registryEntries.length})</option>
                 <option value="configured">Configured only</option>
-                <option value="unclassified">Unclassified only</option>
+                <option value="not-configured">Not configured</option>
+                <option value="manual-enabled">Manual enabled</option>
+                <option value="router-enabled">Router enabled</option>
                 <option value="available">Available from OpenAI</option>
-                <option value="hidden">Hidden from picker</option>
+                <option value="unavailable">Unavailable</option>
               </select>
             </div>
             <div className="flex items-center gap-1">
@@ -1103,13 +1256,13 @@ export const RouterSettingsPage: FC = () => {
               <select
                 aria-label="Sort"
                 value={sortMode}
-                onChange={(e) => setSortMode(e.target.value as SelectorSort)}
-                data-testid="selector-sort"
+                onChange={(e) => setSortMode(e.target.value as RegistrySort)}
+                data-testid="registry-sort"
                 className="border-input bg-background flex h-9 rounded-md border px-2 text-xs shadow-xs outline-none"
               >
                 <option value="configured-first">Configured first</option>
                 <option value="unclassified-first">Unclassified first</option>
-                <option value="hidden-first">Hidden first</option>
+                <option value="router-first">Router first</option>
                 <option value="available">Available first</option>
               </select>
             </div>
@@ -1117,62 +1270,110 @@ export const RouterSettingsPage: FC = () => {
 
           <div
             className="mt-2 text-xs text-muted-foreground/70"
-            data-testid="selector-result-count"
+            data-testid="registry-result-count"
           >
-            Showing {visibleSelectorEntries.length} of {selectorEntries.length} models
+            Showing {visibleRegistryEntries.length} of {registryEntries.length} models
             {searchQuery ? ` matching “${searchQuery}”` : ""}
             {filterMode !== "all" ? ` (filter: ${filterMode})` : ""}.
           </div>
 
-          <div className="mt-3 overflow-hidden rounded-md border border-border/60">
-            <table className="w-full text-sm">
+          <div
+            className={cn(
+              "mt-3 overflow-x-auto rounded-md border border-border/60",
+              errorsByField.has("allowedCombos") && "border-destructive/60",
+            )}
+          >
+            <table className="w-full min-w-[960px] text-sm">
               <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground/70">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Model</th>
-                  <th className="px-3 py-2 text-left font-medium">OpenAI</th>
-                  <th className="px-3 py-2 text-left font-medium">Control Room</th>
-                  <th className="px-3 py-2 text-left font-medium">Capabilities</th>
-                  <th className="px-3 py-2 text-right font-medium">In selector</th>
+                  <th scope="col" className="px-3 py-2 text-left font-medium" data-label="Model">
+                    Model
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-left font-medium" data-label="OpenAI">
+                    OpenAI
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-3 py-2 text-left font-medium"
+                    data-label="Control Room"
+                  >
+                    Control Room
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-center font-medium" data-label="Manual">
+                    Manual
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-center font-medium" data-label="Router">
+                    Router
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-3 py-2 text-center font-medium"
+                    data-label="Reasoning"
+                  >
+                    Reasoning
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-left font-medium" data-label="Tier">
+                    Tier
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-3 py-2 text-left font-medium"
+                    data-label="Capabilities"
+                  >
+                    Capabilities
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {visibleSelectorEntries.length === 0 && (
+                {visibleRegistryEntries.length === 0 && (
                   <tr>
                     <td
-                      colSpan={5}
+                      colSpan={8}
                       className="px-3 py-6 text-center text-xs text-muted-foreground/60"
                     >
                       No models match the current filter / search.
                     </td>
                   </tr>
                 )}
-                {visibleSelectorEntries.map((entry) => {
+                {visibleRegistryEntries.map((entry) => {
                   const prefVisible = selectorPrefs[entry.modelId]?.visible;
                   const defaultVisible = entry.manualSelectorVisible;
-                  const visible = prefVisible !== undefined ? prefVisible : defaultVisible;
+                  const manualVisible = prefVisible !== undefined ? prefVisible : defaultVisible;
                   // The server-computed `manuallyOverridden` only updates
                   // when we re-fetch the registry. For instant feedback
                   // after toggling, derive it from the local selector
                   // prefs map (which is updated optimistically on click).
                   const manuallyOverridden = prefVisible !== undefined || entry.manuallyOverridden;
+                  const rowState = registryRowState.get(entry.modelId);
+                  const routerOn = Boolean(rowState?.routerOn);
+                  const anyChecked = Boolean(rowState?.anyChecked);
+                  const allChecked = Boolean(rowState?.allChecked);
                   const saving = Boolean(selectorSaving[entry.modelId]);
                   const showInlineWarning =
-                    visible && !entry.configured && !warningDismissedFor[entry.modelId];
-                  const toggleDisabled = saving;
+                    manualVisible && !entry.configured && !warningDismissedFor[entry.modelId];
+                  const manualToggleDisabled = saving;
+                  const routerLocked = !entry.configured || entry.stale;
+                  // Partial router toggle: the user has checked some but
+                  // not all supported levels. Surfaced as a small badge
+                  // next to the switch so the binary Switch state stays
+                  // meaningful.
+                  const isPartial = anyChecked && !allChecked;
                   return (
                     <tr
                       key={entry.modelId}
-                      data-testid={`selector-row-${entry.modelId}`}
+                      data-testid={`registry-row-${entry.modelId}`}
                       data-configured={entry.configured ? "true" : "false"}
-                      className={cn("transition-colors", entry.stale && "bg-muted/20")}
+                      data-stale={entry.stale ? "true" : "false"}
+                      className={cn("transition-colors align-top", entry.stale && "bg-muted/20")}
                     >
-                      <td className="px-3 py-2 align-top">
+                      {/* Model column */}
+                      <td className="px-3 py-2">
                         <div className="font-medium">{entry.displayLabel}</div>
                         <div className="text-[11px] text-muted-foreground/70">{entry.modelId}</div>
                         <div className="mt-1 flex flex-wrap gap-1">
                           {!entry.configured && !entry.stale && (
                             <span
-                              data-testid={`selector-badge-unclassified-${entry.modelId}`}
+                              data-testid={`registry-badge-unclassified-${entry.modelId}`}
                               className="inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-700 dark:text-rose-300"
                             >
                               unclassified
@@ -1180,7 +1381,7 @@ export const RouterSettingsPage: FC = () => {
                           )}
                           {entry.provenance === "fake" && (
                             <span
-                              data-testid={`selector-badge-fake-${entry.modelId}`}
+                              data-testid={`registry-badge-fake-${entry.modelId}`}
                               className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
                             >
                               fake
@@ -1188,7 +1389,7 @@ export const RouterSettingsPage: FC = () => {
                           )}
                           {entry.provenance === "stale" && (
                             <span
-                              data-testid={`selector-badge-stale-${entry.modelId}`}
+                              data-testid={`registry-badge-stale-${entry.modelId}`}
                               className="inline-flex items-center rounded-full border border-zinc-500/40 bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
                             >
                               stale
@@ -1196,24 +1397,31 @@ export const RouterSettingsPage: FC = () => {
                           )}
                           {manuallyOverridden && (
                             <span
-                              data-testid={`selector-badge-overridden-${entry.modelId}`}
+                              data-testid={`registry-badge-overridden-${entry.modelId}`}
                               className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
                             >
                               override
                             </span>
                           )}
+                          {isPartial && (
+                            <span
+                              data-testid={`registry-badge-partial-${entry.modelId}`}
+                              className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                            >
+                              partial
+                            </span>
+                          )}
                         </div>
                       </td>
-                      <td className="px-3 py-2 align-top">
-                        {/* OpenAI column: just availability. The brief
-                            explicitly wants this separated from "Control
-                            Room knows about this model". */}
+
+                      {/* OpenAI column */}
+                      <td className="px-3 py-2" data-label="OpenAI">
                         <div className="flex flex-col gap-1">
                           <StatusPill
                             ok={entry.available}
                             okLabel="Available"
                             badLabel="Unavailable"
-                            testId={`selector-openai-pill-${entry.modelId}`}
+                            testId={`registry-openai-pill-${entry.modelId}`}
                           />
                           {entry.available ? (
                             <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
@@ -1222,16 +1430,15 @@ export const RouterSettingsPage: FC = () => {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2 align-top">
-                        {/* Control Room column: configured (local
-                            metadata) vs not configured. Independent of
-                            OpenAI availability. */}
+
+                      {/* Control Room column */}
+                      <td className="px-3 py-2" data-label="Control Room">
                         <div className="flex flex-col gap-1">
                           <StatusPill
                             ok={entry.configured}
                             okLabel="Configured"
                             badLabel="Not configured"
-                            testId={`selector-controlroom-pill-${entry.modelId}`}
+                            testId={`registry-controlroom-pill-${entry.modelId}`}
                           />
                           {entry.configured ? (
                             <Sparkles className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
@@ -1242,170 +1449,131 @@ export const RouterSettingsPage: FC = () => {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2 align-top">
-                        <CapabilityList
-                          capabilities={entry.capabilities}
-                          testIdPrefix={`selector-${entry.modelId}`}
-                        />
-                      </td>
-                      <td className="px-3 py-2 align-top text-right">
-                        <div className="flex flex-col items-end gap-1">
+
+                      {/* Manual toggle column */}
+                      <td className="px-3 py-2 text-center" data-label="Manual">
+                        <div className="flex flex-col items-center gap-1">
                           <Switch
-                            checked={visible}
-                            disabled={toggleDisabled}
+                            checked={manualVisible}
+                            disabled={manualToggleDisabled}
                             onCheckedChange={(v) => void onToggleSelectorVisible(entry.modelId, v)}
                             aria-label={`Show ${entry.displayLabel} in manual selector`}
-                            data-testid={`selector-toggle-${entry.modelId}`}
+                            data-testid={`registry-manual-toggle-${entry.modelId}`}
                           />
                           {showInlineWarning && (
                             <UnconfiguredWarning modelLabel={entry.displayLabel} />
                           )}
                         </div>
                       </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
 
-          <p className="mt-3 text-xs text-muted-foreground/70">
-            <strong>OpenAI</strong> = what OpenAI&apos;s{" "}
-            <code className="rounded bg-muted px-1">/v1/models</code> says you can call.{" "}
-            <strong>Control Room</strong> = whether this build has local metadata (display label,
-            tier, reasoning levels) for it. Models with ✓ on both rows are the safest picks; the
-            router only ever picks from those. Unclassified models can be enabled for
-            experimentation, but the router will never select them.
-          </p>
-        </section>
-
-        {/* Section C: Router Recommendation Pool */}
-        <section
-          aria-labelledby="allowlist-heading"
-          className={cn(
-            "rounded-lg border border-border/60 bg-card p-4 sm:p-6",
-            errorsByField.has("allowedCombos") && "border-destructive/60",
-          )}
-          data-testid="router-settings-section-pool"
-        >
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <h2 id="allowlist-heading" className="text-sm font-semibold">
-                C · Router recommendation pool (Side B only)
-              </h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                The router picks one of the checked combinations below for Side B. Side A (the
-                user&apos;s selected model) is never touched here. Only configured, currently
-                available models appear here; unconfigured and stale models cannot enter the router
-                pool.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>
-                {form.allowedComboKeys.size} of {registry.length} checked
-              </span>
-            </div>
-          </div>
-
-          <div className="mt-4 overflow-hidden rounded-md border border-border/60">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground/70">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Model</th>
-                  <th className="px-3 py-2 text-left font-medium">Tier</th>
-                  {REASONING_LEVELS.map((level) => (
-                    <th key={level} className="px-3 py-2 text-center font-medium capitalize">
-                      {level}
-                    </th>
-                  ))}
-                  <th className="px-3 py-2 text-right font-medium">All</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {registryByModelEntries.map((row) => {
-                  const allChecked = row.levels.every((l) =>
-                    form.allowedComboKeys.has(comboKey(l.modelId, l.reasoningLevel)),
-                  );
-                  const isExpensiveRow = row.tier === "expensive";
-                  const isUnavailable = !row.available || row.stale;
-                  const disabledByTier = isExpensiveRow && !isExpensiveAllowed;
-                  const disabledByState = isUnavailable;
-                  return (
-                    <tr
-                      key={row.modelId}
-                      data-testid={`router-settings-row-${row.modelId}`}
-                      className={cn(
-                        "transition-colors",
-                        (disabledByTier || disabledByState) && "bg-muted/20",
-                      )}
-                    >
-                      <td className="px-3 py-2 align-top">
-                        <div className="font-medium">{row.modelLabel}</div>
-                        <div className="text-[11px] text-muted-foreground/70">{row.modelId}</div>
-                        {isUnavailable && (
-                          <div
-                            className="mt-1 inline-flex items-center rounded-full border border-zinc-500/40 bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
-                            data-testid={`pool-badge-stale-${row.modelId}`}
-                          >
-                            {row.stale ? "stale" : "unavailable"}
-                          </div>
-                        )}
+                      {/* Router toggle column */}
+                      <td className="px-3 py-2 text-center" data-label="Router">
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="inline-flex"
+                                data-testid={`registry-router-locked-${entry.modelId}`}
+                              >
+                                {routerLocked ? (
+                                  <span
+                                    className="inline-flex items-center gap-1 rounded-md border border-zinc-500/40 bg-zinc-500/10 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
+                                    aria-label="Router toggle locked"
+                                  >
+                                    <Lock className="size-3" />
+                                    Disabled
+                                  </span>
+                                ) : (
+                                  <Switch
+                                    checked={routerOn}
+                                    onCheckedChange={(v) => toggleRouterForModel(entry.modelId, v)}
+                                    aria-label={`Allow router to recommend ${entry.displayLabel}`}
+                                    data-testid={`registry-router-toggle-${entry.modelId}`}
+                                  />
+                                )}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {routerLocked
+                                ? entry.stale
+                                  ? "This model disappeared from the latest OpenAI discovery. Refresh to re-enable."
+                                  : "This model has not yet been configured in Control Room and cannot be recommended by the router."
+                                : routerOn
+                                  ? "Router may recommend this model. Uncheck to stop the router from using it."
+                                  : "Router will not recommend this model. Toggle on to allow it."}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                       </td>
-                      <td className="px-3 py-2 align-top">
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
-                            row.tier === "cheap"
-                              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                              : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-                          )}
-                        >
-                          {row.tier}
-                        </span>
+
+                      {/* Reasoning column */}
+                      <td className="px-3 py-2 text-center" data-label="Reasoning">
+                        <div className="flex items-center justify-center gap-2">
+                          {REASONING_LEVELS.map((level) => {
+                            const cell = reasoningCellState({
+                              configured: entry.configured && !entry.stale,
+                              routerOn,
+                              level,
+                              supportedLevels: entry.supportedReasoningLevels,
+                              allowedComboKeys: form.allowedComboKeys,
+                              modelId: entry.modelId,
+                            });
+                            const cellTestId = `registry-reasoning-${entry.modelId}-${level}`;
+                            if (!cell.supported) {
+                              return (
+                                <div key={level} className="flex flex-col items-center gap-0.5">
+                                  <Checkbox
+                                    checked={false}
+                                    disabled
+                                    aria-label={`${entry.displayLabel} does not support ${level} reasoning`}
+                                    data-testid={cellTestId}
+                                    className="size-3.5"
+                                  />
+                                  <span className="text-[9px] uppercase tracking-wide text-muted-foreground/40">
+                                    {level}
+                                  </span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div key={level} className="flex flex-col items-center gap-0.5">
+                                <Checkbox
+                                  checked={cell.checked}
+                                  disabled={cell.disabled}
+                                  onCheckedChange={(value) =>
+                                    toggleReasoningCombo(entry.modelId, level, value === true)
+                                  }
+                                  aria-label={`Allow ${entry.displayLabel} with ${level} reasoning`}
+                                  data-testid={cellTestId}
+                                  className="size-3.5"
+                                />
+                                <span
+                                  className={cn(
+                                    "text-[9px] uppercase tracking-wide",
+                                    cell.disabled
+                                      ? "text-muted-foreground/40"
+                                      : "text-muted-foreground/70",
+                                  )}
+                                >
+                                  {level}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </td>
-                      {REASONING_LEVELS.map((level) => {
-                        const entry = row.levels.find((l) => l.reasoningLevel === level);
-                        if (!entry) {
-                          return (
-                            <td
-                              key={level}
-                              className="px-3 py-2 text-center text-xs text-muted-foreground/40"
-                              aria-label={`${row.modelLabel} does not support ${level} reasoning`}
-                            >
-                              —
-                            </td>
-                          );
-                        }
-                        const k = comboKey(entry.modelId, entry.reasoningLevel);
-                        const checked = form.allowedComboKeys.has(k);
-                        const disabled = disabledByTier || disabledByState;
-                        return (
-                          <td
-                            key={level}
-                            className="px-3 py-2 text-center"
-                            data-testid={`router-settings-combo-${entry.modelId}-${entry.reasoningLevel}`}
-                          >
-                            <Checkbox
-                              checked={checked}
-                              onCheckedChange={(value) =>
-                                toggleCombo(entry.modelId, entry.reasoningLevel, value === true)
-                              }
-                              disabled={disabled}
-                              aria-label={`Allow ${entry.modelLabel} with ${level} reasoning`}
-                            />
-                          </td>
-                        );
-                      })}
-                      <td className="px-3 py-2 text-right">
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={() => toggleAllForModel(row.modelId, !allChecked)}
-                          disabled={disabledByTier || disabledByState}
-                          aria-label={`${allChecked ? "Uncheck" : "Check"} all ${row.modelLabel} combinations`}
-                        >
-                          {allChecked ? "Clear" : "Check all"}
-                        </Button>
+
+                      {/* Tier column */}
+                      <td className="px-3 py-2" data-label="Tier">
+                        <TierPill tier={entry.tier} modelId={entry.modelId} />
+                      </td>
+
+                      {/* Capabilities column */}
+                      <td className="px-3 py-2" data-label="Capabilities">
+                        <CapabilityList
+                          capabilities={entry.capabilities}
+                          testIdPrefix={`registry-capability-${entry.modelId}`}
+                        />
                       </td>
                     </tr>
                   );
@@ -1424,30 +1592,37 @@ export const RouterSettingsPage: FC = () => {
             </p>
           )}
 
-          {!isExpensiveAllowed && registryByModelEntries.some((r) => r.tier === "expensive") && (
-            <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-              Expensive-tier combinations are disabled until you turn on &ldquo;Allow expensive
-              models&rdquo; below. The router cannot pick an expensive combo unless that switch is
-              on.
-            </p>
-          )}
+          <p className="mt-3 text-xs text-muted-foreground/70">
+            <strong>OpenAI</strong> = what OpenAI&apos;s{" "}
+            <code className="rounded bg-muted px-1">/v1/models</code> says you can call.{" "}
+            <strong>Control Room</strong> = whether this build has local metadata (display label,
+            tier, reasoning levels) for it. <strong>Manual</strong> toggles chat-composer visibility
+            and saves immediately. <strong>Router</strong> toggles whether the router may recommend
+            this model and saves with the rest of the form. <strong>Reasoning</strong> lets you
+            fine-tune which reasoning levels the router may pair this model with — enabled only when
+            the Router toggle is on. Unconfigured models cannot enter the router pool, by design.
+          </p>
         </section>
 
-        {/* Section: Fallback */}
+        {/* Section C: Router Global Settings — only the knobs that
+            affect every router run. Everything model-specific has
+            moved into the Model Registry above. */}
         <section
           aria-labelledby="fallback-heading"
           className={cn(
             "rounded-lg border border-border/60 bg-card p-4 sm:p-6",
             errorsByField.has("fallbackCombo") && "border-destructive/60",
           )}
+          data-testid="router-settings-section-fallback"
         >
           <h2 id="fallback-heading" className="text-sm font-semibold">
-            Fallback combination
+            C · Router global settings
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Used when the router call fails or returns a disallowed value. The fallback must be one
-            of the allowed combinations above.
+            Model-specific knobs (Manual, Router, Reasoning) live in the Model Registry above. This
+            section only holds the router-wide safety and fallback controls.
           </p>
+
           <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="fallback-model">Fallback model</Label>
@@ -1458,11 +1633,14 @@ export const RouterSettingsPage: FC = () => {
                 onChange={(e) => update({ fallbackModelId: e.target.value })}
                 className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:ring-[3px]"
               >
-                {registryByModelEntries.map((row) => (
-                  <option key={row.modelId} value={row.modelId}>
-                    {row.modelLabel} ({row.tier})
-                  </option>
-                ))}
+                {[...routableModelIds].sort().map((modelId) => {
+                  const alias = registryByModel.get(modelId)?.[0];
+                  return (
+                    <option key={modelId} value={modelId}>
+                      {alias?.modelLabel ?? modelId} ({alias?.tier ?? "unknown"})
+                    </option>
+                  );
+                })}
               </select>
             </div>
             <div className="space-y-1.5">
@@ -1493,20 +1671,7 @@ export const RouterSettingsPage: FC = () => {
               {errorsByField.get("fallbackCombo")?.[0]?.message}
             </p>
           )}
-        </section>
 
-        {/* Section: Expensive / long prompt safety */}
-        <section
-          aria-labelledby="safety-heading"
-          className="rounded-lg border border-border/60 bg-card p-4 sm:p-6"
-        >
-          <h2 id="safety-heading" className="text-sm font-semibold">
-            Expensive & long-prompt safety
-          </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            These switches gate the expensive-tier combinations above and decide what happens when a
-            user prompt crosses the long-prompt threshold. Both are off by default.
-          </p>
           <div className="mt-4 space-y-4">
             <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-3">
               <div>
@@ -1571,6 +1736,14 @@ export const RouterSettingsPage: FC = () => {
               )}
             </div>
           </div>
+
+          {!isExpensiveAllowed && registry.some((e) => e.tier === "expensive") && (
+            <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              Expensive-tier combinations are disabled until you turn on &ldquo;Allow expensive
+              models&rdquo; above. The router cannot pick an expensive combo unless that switch is
+              on.
+            </p>
+          )}
         </section>
       </main>
     </div>
