@@ -35,3 +35,65 @@ export type ThreadNoteRow = {
   createdAt: string;
   updatedAt: string;
 };
+
+// ---------------------------------------------------------------------------
+// Router A/B mode (migration 0004_router_ab.sql)
+// ---------------------------------------------------------------------------
+
+export type AbFeedbackRating = "prefer_a" | "prefer_b" | "tie" | "bad_router";
+
+export const AB_FEEDBACK_RATINGS: ReadonlyArray<AbFeedbackRating> = [
+  "prefer_a",
+  "prefer_b",
+  "tie",
+  "bad_router",
+];
+
+export type AbTaskType =
+  | "simple_chat"
+  | "coding"
+  | "debugging"
+  | "writing"
+  | "research"
+  | "analysis"
+  | "planning"
+  | "other";
+
+export type AbSide = "a" | "b";
+
+/**
+ * One row in `router_ab_sessions`. Nullable columns reflect "Side B was
+ * skipped / not generated" or "the router never produced a recommendation".
+ */
+export type AbSessionRow = {
+  id: string;
+  threadId: string;
+  userMessageId: string | null;
+  assistantMessageId: string | null;
+  sideAModelId: string;
+  sideAReasoningLevel: "low" | "medium" | "high";
+  sideBModelId: string | null;
+  sideBReasoningLevel: "low" | "medium" | "high" | null;
+  taskType: AbTaskType | null;
+  confidence: number | null;
+  shortReason: string | null;
+  usedFallback: boolean;
+  fallbackReason: string | null;
+  skipReason: string | null;
+  costEstimateUsd: number | null;
+  userPromptText: string;
+  recentChars: number;
+  poolKeyHash: string | null;
+  routerModelId: string;
+  sideBText: string | null;
+  sideBLatencyMs: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AbFeedbackRow = {
+  abSessionId: string;
+  rating: AbFeedbackRating;
+  createdAt: string;
+  updatedAt: string;
+};

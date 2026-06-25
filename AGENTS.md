@@ -13,18 +13,18 @@ If you are an AI agent or a human contributor, read this first.
 Control Room is built on the following stack. Use these unless a task
 explicitly calls for something else and that something else has been approved.
 
-| Layer            | Default                                                         |
-| ---------------- | --------------------------------------------------------------- |
-| Framework        | **Next.js** (App Router)                                        |
-| UI runtime       | **React**                                                       |
-| Language         | **TypeScript** (strict)                                         |
-| Styling          | **Tailwind CSS**                                                |
-| Components       | **shadcn/ui** (Radix-based primitives, registered in this repo) |
-| Chat UI          | **Assistant UI** (`@assistant-ui/react`)                        |
+| Layer            | Default                                                             |
+| ---------------- | ------------------------------------------------------------------- |
+| Framework        | **Next.js** (App Router)                                            |
+| UI runtime       | **React**                                                           |
+| Language         | **TypeScript** (strict)                                             |
+| Styling          | **Tailwind CSS**                                                    |
+| Components       | **shadcn/ui** (Radix-based primitives, registered in this repo)     |
+| Chat UI          | **Assistant UI** (`@assistant-ui/react`)                            |
 | Model SDK        | **AI SDK 6** (`ai`, `@ai-sdk/openai`, `@assistant-ui/react-ai-sdk`) |
-| Agent runtime    | **LangGraph**                                                   |
-| Observability    | **Langfuse**                                                    |
-| End-to-end tests | **Playwright**                                                  |
+| Agent runtime    | **LangGraph**                                                       |
+| Observability    | **Langfuse**                                                        |
+| End-to-end tests | **Playwright**                                                      |
 
 If you are about to reach for something outside this list, stop and get
 approval first — see "What requires approval" below.
@@ -45,7 +45,7 @@ router**. This is a hard architectural rule, not a suggestion.
 
 When implementing a new flow, the question to ask first is:
 
-> *Is this a simple chat turn or a multi-step workflow?*
+> _Is this a simple chat turn or a multi-step workflow?_
 
 - Simple chat → LangGraph router node → AI SDK 6 stream → Assistant UI.
 - Multi-step → LangGraph graph with explicit state and nodes.
@@ -73,7 +73,7 @@ project owner:
 - A **second Postgres** client, **ORM** (Prisma, Drizzle, TypeORM, …), or any
   **new primary database** — see `docs/database.md`
 
-When in doubt, the answer is *ask first*, not *add it and see*.
+When in doubt, the answer is _ask first_, not _add it and see_.
 
 ---
 

@@ -6,6 +6,8 @@ import {
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { RouterAbPanel, payloadFromMessageParts } from "@/components/assistant-ui/router-ab-panel";
+import { PanelErrorBoundary } from "@/components/assistant-ui/panel-error-boundary";
 import { Button } from "@/components/ui/button";
 import { KbdHint } from "@/components/kbd-hint";
 import { cn } from "@/lib/utils";
@@ -57,7 +59,14 @@ export const Thread: FC<{
   notesDisabled?: boolean;
   workflowContent?: ReactNode;
   showWelcome?: boolean;
-}> = ({ threadId, notesDisabled = false, workflowContent, showWelcome = true }) => {
+  routerAbOn?: boolean;
+}> = ({
+  threadId,
+  notesDisabled = false,
+  workflowContent,
+  showWelcome = true,
+  routerAbOn = false,
+}) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
@@ -88,7 +97,13 @@ export const Thread: FC<{
           <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
             {workflowContent}
             <ThreadPrimitive.Messages>
-              {() => <ThreadMessage threadId={threadId} notesDisabled={notesDisabled} />}
+              {() => (
+                <ThreadMessage
+                  threadId={threadId}
+                  notesDisabled={notesDisabled}
+                  routerAbOn={routerAbOn}
+                />
+              )}
             </ThreadPrimitive.Messages>
           </div>
 
@@ -110,16 +125,19 @@ export const Thread: FC<{
   );
 };
 
-const ThreadMessage: FC<{ threadId: string | null; notesDisabled: boolean }> = ({
-  threadId,
-  notesDisabled,
-}) => {
+const ThreadMessage: FC<{
+  threadId: string | null;
+  notesDisabled: boolean;
+  routerAbOn: boolean;
+}> = ({ threadId, notesDisabled, routerAbOn }) => {
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
 
   if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
-  return <AssistantMessage threadId={threadId} notesDisabled={notesDisabled} />;
+  return (
+    <AssistantMessage threadId={threadId} notesDisabled={notesDisabled} routerAbOn={routerAbOn} />
+  );
 };
 
 const ThreadScrollToBottom: FC = () => {
@@ -278,11 +296,13 @@ const MessageError: FC = () => {
   );
 };
 
-const AssistantMessage: FC<{ threadId: string | null; notesDisabled: boolean }> = ({
-  threadId,
-  notesDisabled,
-}) => {
+const AssistantMessage: FC<{
+  threadId: string | null;
+  notesDisabled: boolean;
+  routerAbOn: boolean;
+}> = ({ threadId, notesDisabled, routerAbOn }) => {
   const messageId = useAuiState((s) => s.message.id);
+  const parts = useAuiState((s) => s.message.parts);
   const [notesOpen, setNotesOpen] = useState(false);
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
@@ -330,6 +350,11 @@ const AssistantMessage: FC<{ threadId: string | null; notesDisabled: boolean }> 
         <AssistantActionBar />
       </div>
       {notesOpen && <ThreadNoteEditor threadId={threadId} disabled={notesDisabled} />}
+      {routerAbOn && (
+        <PanelErrorBoundary>
+          <RouterAbPanel initialPayload={payloadFromMessageParts(parts)} />
+        </PanelErrorBoundary>
+      )}
     </MessagePrimitive.Root>
   );
 };

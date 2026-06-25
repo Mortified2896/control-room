@@ -40,13 +40,13 @@ Key properties:
 
 ### Exported helpers
 
-| Helper                              | When to use                                                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `isDbConfigured()`                  | Cheap, synchronous boolean — "is `CONTROL_ROOM_DATABASE_URL` set?". Use before expensive work or in handlers. |
-| `getPool()`                         | Escape hatch — returns the lazy singleton. Prefer `withClient` / `withTransaction`.                          |
-| `withClient(fn)`                    | Run `fn` with a pooled client. Throws if DB is not configured or unreachable.                                |
-| `withTransaction(fn)`               | Same as `withClient` but wraps `fn` in `BEGIN` / `COMMIT` / `ROLLBACK`.                                       |
-| `tryDb(fn, fallback)`               | Never throws. Returns `fallback` if the DB is unconfigured or any error occurs. Use on read paths that should keep working when the DB is down. |
+| Helper                | When to use                                                                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isDbConfigured()`    | Cheap, synchronous boolean — "is `CONTROL_ROOM_DATABASE_URL` set?". Use before expensive work or in handlers.                                   |
+| `getPool()`           | Escape hatch — returns the lazy singleton. Prefer `withClient` / `withTransaction`.                                                             |
+| `withClient(fn)`      | Run `fn` with a pooled client. Throws if DB is not configured or unreachable.                                                                   |
+| `withTransaction(fn)` | Same as `withClient` but wraps `fn` in `BEGIN` / `COMMIT` / `ROLLBACK`.                                                                         |
+| `tryDb(fn, fallback)` | Never throws. Returns `fallback` if the DB is unconfigured or any error occurs. Use on read paths that should keep working when the DB is down. |
 
 **Read paths** (lists, lookups, health probes, anything the UI can render
 without persisted state) should use `tryDb` so the app stays usable when the
@@ -123,11 +123,13 @@ runner never logs the DSN.
 
 ### Currently applied migrations
 
-| File                              | Purpose                                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------------------- |
-| `db/migrations/0001_init.sql`     | Initial schema (threads, messages, and the persisted chat foundation).                   |
-| `db/migrations/0002_thread_notes.sql` | Adds per-thread note storage.                                                        |
-| `db/migrations/0003_create_room.sql`  | Adds the "create room" workflow tables (episodes, candidates, etc.).                 |
+| File                                           | Purpose                                                                                                                                   |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `db/migrations/0001_init.sql`                  | Initial schema (threads, messages, and the persisted chat foundation).                                                                    |
+| `db/migrations/0002_thread_notes.sql`          | Adds per-thread note storage.                                                                                                             |
+| `db/migrations/0003_create_room.sql`           | Adds the "create room" workflow tables (episodes, candidates, title candidates, etc.).                                                    |
+| `db/migrations/0004_router_ab.sql`             | Router A/B mode persistence: `router_ab_sessions` (one row per prompt run) + `router_ab_feedback` (one row per session).                  |
+| `db/migrations/0005_router_ab_side_b_text.sql` | Adds `side_b_text` and `side_b_latency_ms` columns to `router_ab_sessions` so the panel can re-hydrate Side B output after a page reload. |
 
 For design notes and the reasoning behind the schema, see
 `docs/POSTGRES_PLAN.md`. For UUID-related incidents, see
@@ -146,6 +148,8 @@ All Postgres reads and writes outside of migrations flow through
 - `lib/repo/create-room.ts` — the "create room" workflow tables introduced by
   `0003_create_room.sql` (episodes, candidates, title candidates, selection).
 - `lib/repo/feedback-helpers.ts` — small helpers shared by the feedback path.
+- `lib/repo/router-ab.ts` — Router A/B mode persistence (`router_ab_sessions`
+  - `router_ab_feedback`). Read paths use `withClient`; writes throw on failure.
 - `lib/repo/types.ts` — shared row/DTO types.
 
 Route handlers in `app/api/**` call into these modules; they should not

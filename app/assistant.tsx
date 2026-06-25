@@ -2,9 +2,11 @@
 
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
+import { routerAbDataSchemas } from "@/lib/assistant-ui/router-ab-data-schemas";
 import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai";
 import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
+import { RouterAbToggle, ReasoningLevelSelect } from "@/components/assistant-ui/router-ab-controls";
 import { KbdHint } from "@/components/kbd-hint";
 import { Button } from "@/components/ui/button";
 import { useMediaQuery } from "@/components/layout/use-media-query";
@@ -42,6 +44,9 @@ function triggerTarget(target: ShortcutTarget) {
   }
 }
 
+type ReasoningLevel = "low" | "medium" | "high";
+type ModelTier = "cheap" | "expensive";
+
 type ModelOption = {
   providerId: string;
   providerLabel: string;
@@ -49,11 +54,14 @@ type ModelOption = {
   modelLabel: string;
   enabled: boolean;
   reason?: string;
+  reasoningLevels: ReadonlyArray<ReasoningLevel>;
+  tier: ModelTier;
 };
 
 type ModelsResponse = {
   models: ModelOption[];
   defaultModelId: string | null;
+  defaultReasoningLevel: ReasoningLevel;
 };
 
 type ThreadListItem = {
@@ -109,15 +117,38 @@ const ChatPane: FC<{
   threadId: string | null;
   initialMessages: UIMessage[];
   notesDisabled: boolean;
+  routerAbOn: boolean;
+  reasoningLevel: ReasoningLevel;
   onFinish: () => void;
-}> = ({ modelId, threadId, initialMessages, notesDisabled, onFinish }) => {
+}> = ({
+  modelId,
+  threadId,
+  initialMessages,
+  notesDisabled,
+  routerAbOn,
+  reasoningLevel,
+  onFinish,
+}) => {
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
         api: "/api/chat",
+        // Static body bits only. We use `prepareSendMessagesRequest` to inject
+        // the *current* reasoning level + routerAb toggle at send time so
+        // changes between sends are reflected in the next request.
         body: { modelId, threadId },
+        prepareSendMessagesRequest: ({ body, messages }) => ({
+          body: {
+            ...body,
+            messages,
+            modelId,
+            threadId,
+            reasoningLevel,
+            routerAb: routerAbOn,
+          },
+        }),
       }),
-    [modelId, threadId],
+    [modelId, threadId, reasoningLevel, routerAbOn],
   );
 
   const runtime = useChatRuntime({
@@ -126,11 +157,15 @@ const ChatPane: FC<{
     onFinish,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     transport,
+    // Type-validate the Router A/B data parts emitted by /api/chat and
+    // keep them attached to the assistant message state so the panel can
+    // pick them up via `useAuiState((s) => s.message.parts)`.
+    dataPartSchemas: routerAbDataSchemas,
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread threadId={threadId} notesDisabled={notesDisabled} />
+      <Thread threadId={threadId} notesDisabled={notesDisabled} routerAbOn={routerAbOn} />
     </AssistantRuntimeProvider>
   );
 };
@@ -276,6 +311,56 @@ const ModelSelector: FC<{
   );
 };
 
+/**
+ * Row of secondary controls that live below the model picker:
+ *   - the reasoning-level dropdown (Side A's reasoning effort),
+ *   - the Router A/B on/off toggle.
+ *
+ * The reasoning-level dropdown is always visible — Side A always uses the
+ * user's pick — and only lists levels supported by the currently-selected
+ * model. The A/B toggle controls whether the recommender runs at all.
+ */
+const RouterControlsBar: FC<{
+  models: ModelOption[];
+  selectedModelId: string | null;
+  reasoningLevel: ReasoningLevel;
+  onReasoningChange: (next: ReasoningLevel) => void;
+  routerAbOn: boolean;
+  onRouterAbChange: (next: boolean) => void;
+}> = ({
+  models,
+  selectedModelId,
+  reasoningLevel,
+  onReasoningChange,
+  routerAbOn,
+  onRouterAbChange,
+}) => {
+  const selectedModel = useMemo(
+    () => models.find((m) => m.modelId === selectedModelId) ?? null,
+    [models, selectedModelId],
+  );
+  const supportedLevels: ReadonlyArray<ReasoningLevel> = selectedModel
+    ? selectedModel.reasoningLevels
+    : ["low"];
+  // If the persisted reasoning level is no longer supported by the new
+  // model, snap to the cheapest supported level so the dropdown stays sane.
+  useEffect(() => {
+    if (supportedLevels.includes(reasoningLevel)) return;
+    if (supportedLevels.length === 0) return;
+    onReasoningChange(supportedLevels[0]);
+  }, [supportedLevels, reasoningLevel, onReasoningChange]);
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-background px-3 py-2 sm:px-4">
+      <ReasoningLevelSelect
+        value={reasoningLevel}
+        options={supportedLevels}
+        onChange={onReasoningChange}
+      />
+      <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
+    </div>
+  );
+};
+
 const MobileHeader: FC<{
   activeThreadTitle: string;
   onOpenSidebar: () => void;
@@ -359,6 +444,8 @@ export const Assistant = () => {
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<ReasoningLevel>("low");
+  const [routerAbOn, setRouterAbOn] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCoarsePointer = useMediaQuery("(pointer: coarse)");
   const newChatCounter = useRef(0);
@@ -403,6 +490,9 @@ export const Assistant = () => {
           prev && data.models.some((m) => m.modelId === prev && m.enabled)
             ? prev
             : data.defaultModelId,
+        );
+        setSelectedReasoningLevel((prev) =>
+          prev && data.defaultReasoningLevel ? prev : data.defaultReasoningLevel,
         );
         setModelsError(null);
       } catch (err) {
@@ -564,6 +654,15 @@ export const Assistant = () => {
           loading={modelsLoading}
         />
 
+        <RouterControlsBar
+          models={models}
+          selectedModelId={selectedModelId}
+          reasoningLevel={selectedReasoningLevel}
+          onReasoningChange={setSelectedReasoningLevel}
+          routerAbOn={routerAbOn}
+          onRouterAbChange={setRouterAbOn}
+        />
+
         {!dbConfigured && (
           <div className="border-b border-border bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
             Working offline — chats and notes in this session may not persist.
@@ -588,6 +687,8 @@ export const Assistant = () => {
               threadId={activeThreadId}
               initialMessages={threadMessages}
               notesDisabled={!dbConfigured || threadsLoading}
+              routerAbOn={routerAbOn}
+              reasoningLevel={selectedReasoningLevel}
               onFinish={() => void refreshThreads()}
             />
           )}
