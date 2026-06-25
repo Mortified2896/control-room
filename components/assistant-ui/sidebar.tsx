@@ -5,6 +5,7 @@ import { KbdHint } from "@/components/kbd-hint";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { cn } from "@/lib/utils";
 import { MessageSquare, Plus, Search, X } from "lucide-react";
+import Link from "next/link";
 import { useState, type FC, type FormEvent } from "react";
 
 import { SHORTCUT_TARGETS } from "@/lib/shortcuts";
@@ -136,18 +137,19 @@ export const Sidebar: FC<SidebarProps> = ({
           <div className="hidden sm:block">
             <ShortcutsHelp />
           </div>
-          <button
-            type="button"
+          <Link
+            href="/settings/router"
             data-shortcut-target={SHORTCUT_TARGETS.userSettings}
             className="aui-sidebar-settings flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground/60 transition-colors hover:bg-muted/30 hover:text-muted-foreground"
-            aria-label="Open user settings (press comma)"
+            aria-label="Open router settings (press comma)"
+            onClick={() => onClose?.()}
           >
             <div className="flex size-6 items-center justify-center rounded-full bg-muted/40 text-[10px] font-medium">
-              U
+              R
             </div>
-            <span>User Settings</span>
+            <span>Router Settings</span>
             <KbdHint combo="," className="aui-sidebar-settings-shortcut ml-auto bg-background/60" />
-          </button>
+          </Link>
         </div>
       </div>
     </div>

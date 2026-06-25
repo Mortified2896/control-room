@@ -86,9 +86,9 @@ explaining the choice.
 - Persisted feedback (Prefer A / Prefer B / Tie / Bad router) is recorded
   in `router_ab_feedback` and survives page reload.
 
-See `lib/router/settings.ts` for the full settings surface; no Settings UI
-is shipped in the MVP — set values via the `CONTROL_ROOM_ROUTER_SETTINGS`
-env var (see `.env.example`).
+See `lib/router/schema.ts` for the full settings surface. The Settings UI
+at `/settings/router` writes to a singleton row in Postgres; the env var
+remains the fallback when the DB is not configured (see `.env.example`).
 
 ## Tests
 

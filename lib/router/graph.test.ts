@@ -158,6 +158,15 @@ test("graph respects allowExpensiveModels=true by enabling expensive picks", asy
     settingsOverride: {
       ...DEFAULT_ROUTER_SETTINGS,
       allowExpensiveModels: true,
+      // The Settings UI is the source of truth for which combos the user
+      // has authorized; for this test we authorize the expensive combo
+      // we want the LLM to recommend.
+      allowedCombos: [
+        ...DEFAULT_ROUTER_SETTINGS.allowedCombos,
+        { modelId: "gpt-5.5", reasoningLevel: "low" as const },
+        { modelId: "gpt-5.5", reasoningLevel: "medium" as const },
+        { modelId: "gpt-5.5", reasoningLevel: "high" as const },
+      ],
       // Keep the cost cap generous so the budget guard doesn't reject this.
       maxCostPerRecommendationUsd: 1.0,
       maxCostPerAbRunUsd: 1.0,

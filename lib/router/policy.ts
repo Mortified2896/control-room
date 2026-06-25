@@ -8,7 +8,8 @@
  * Hard rules from the brief (encoded here):
  *   1. The router must never choose from every model that is technically
  *      available. It may only choose from the explicit allowlist exported
- *      by `lib/providers/listRouterAllowedPool(allowExpensive)`.
+ *      by `lib/providers/listRouterAllowedPool(allowExpensive)`, further
+ *      intersected with the user-curated `settings.allowedCombos`.
  *   2. Expensive model + high reasoning must never be recommended unless
  *      `allowExpensiveModels` is true.
  *   3. Long prompts must automatically exclude expensive model/reasoning
@@ -60,21 +61,35 @@ export function estimateCostUsd(combo: RouterSideCombo): number {
  *     are excluded.
  *   - `settings.allowLongPromptWhenExpensive` — when false, expensive-tier
  *     entries are also excluded if `recentChars >= settings.longPromptThresholdChars`.
+ *   - `settings.allowedCombos` — explicit (modelId, reasoningLevel) pairs
+ *     the user has authorized. The runtime pool is the intersection of
+ *     this list, the tier-filtered registry pool, and (for long prompts)
+ *     the expensive auto-exclusion rule.
  *   - `recentChars` — approximate size of the user prompt + recent context
  *     in characters. The chat route computes this.
  *
  * Output: the (modelId, reasoningLevel) pairs the router may pick from.
+ *
+ * The intersection is performed in this order:
+ *   1. Apply the registry tier filter (allowExpensiveModels).
+ *   2. Intersect with the user's explicit allowlist (allowedCombos).
+ *   3. If the prompt is long and the user has not opted in to expensive
+ *      models on long prompts, drop any remaining expensive entries.
  */
 export function resolveAllowedPool(
   settings: RouterSettings,
   recentChars: number,
 ): ReadonlyArray<RouterAllowlistEntry> {
   const base = listRouterAllowedPool(settings.allowExpensiveModels);
+  const allowedKey = new Set(settings.allowedCombos.map((c) => `${c.modelId}|${c.reasoningLevel}`));
+  const intersected = base.filter((entry) =>
+    allowedKey.has(`${entry.modelId}|${entry.reasoningLevel}`),
+  );
   const isLong = recentChars >= settings.longPromptThresholdChars;
   if (isLong && !settings.allowLongPromptWhenExpensive) {
-    return base.filter((entry) => entry.tier !== "expensive");
+    return intersected.filter((entry) => entry.tier !== "expensive");
   }
-  return base;
+  return intersected;
 }
 
 /**

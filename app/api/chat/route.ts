@@ -16,7 +16,8 @@ import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thre
 import { createMessage } from "@/lib/repo/threads";
 import { resolveModel, getDefaultRouterModelId } from "@/lib/providers";
 import type { ReasoningLevel } from "@/lib/providers/types";
-import { getRouterSettings, type RouterSettings } from "@/lib/router/schema";
+import { type RouterSettings } from "@/lib/router/schema";
+import { getEffectiveRouterSettings } from "@/lib/router/settings-store";
 import { runRouterGraph, type RouterGraphOutput } from "@/lib/router/graph";
 import {
   buildRouterRecentTurns,
@@ -202,7 +203,10 @@ export async function POST(req: Request) {
   // If the user has the A/B toggle off, or settings.abEnabled is false, or
   // the router throws, we still answer Side A and skip Side B.
   const routerAbEnabled = Boolean(routerAbOn);
-  const settings: RouterSettings = getRouterSettings();
+  // Read the effective settings from the DB-backed singleton (or env
+  // fallback when the DB is not configured). The Settings UI at
+  // /settings/router writes to that singleton.
+  const settings: RouterSettings = await getEffectiveRouterSettings();
   const latestText = latestUserText(messages);
   const recentTurns = buildRouterRecentTurns(messages);
   const recentChars = computeRouterRecentChars(latestText, recentTurns);
