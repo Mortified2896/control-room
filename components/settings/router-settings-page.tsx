@@ -291,8 +291,6 @@ function formatRelativeAge(ageMs: number | null): string {
   return `${days}d ago`;
 }
 
-const REASONING_LEVELS: ReadonlyArray<ReasoningLevel> = ["low", "medium", "high"];
-
 const CAPABILITY_LABELS: ReadonlyArray<{
   key: "reasoning" | "vision" | "images" | "functionCalling" | "structuredOutput" | "streaming";
   label: string;
@@ -474,39 +472,28 @@ function reasoningCellState(input: {
   configured: boolean;
   routerOn: boolean;
   level: ReasoningLevel;
-  supportedLevels: ReadonlyArray<ReasoningLevel>;
   allowedComboKeys: Set<string>;
   modelId: string;
 }): {
-  supported: boolean;
   checked: boolean;
   disabled: boolean;
-  disabledReason: "unsupported" | "router-off" | "unconfigured";
 } {
-  const { configured, routerOn, level, supportedLevels, allowedComboKeys, modelId } = input;
-  const supported = supportedLevels.includes(level);
-  if (!supported) {
-    return { supported, checked: false, disabled: true, disabledReason: "unsupported" };
-  }
+  const { configured, routerOn, level, allowedComboKeys, modelId } = input;
   if (!configured) {
     // Configured check should never let us get here (the row's router
     // toggle is locked for unconfigured models) but keep it as a
     // defense-in-depth branch.
-    return { supported, checked: false, disabled: true, disabledReason: "unconfigured" };
+    return { checked: false, disabled: true };
   }
   if (!routerOn) {
     return {
-      supported,
       checked: false,
       disabled: true,
-      disabledReason: "router-off",
     };
   }
   return {
-    supported,
     checked: allowedComboKeys.has(comboKey(modelId, level)),
     disabled: false,
-    disabledReason: "unsupported",
   };
 }
 
@@ -573,13 +560,24 @@ export const RouterSettingsPage: FC = () => {
     return m;
   }, [registry]);
 
+  const reasoningLevelsByModel = useMemo(() => {
+    const m = new Map<string, ReadonlyArray<ReasoningLevel>>();
+    for (const [modelId, entries] of registryByModel) {
+      m.set(
+        modelId,
+        Array.from(new Set(entries.map((entry) => entry.reasoningLevel))),
+      );
+    }
+    return m;
+  }, [registryByModel]);
+
   const fallbackModelLevels = useMemo<ReadonlyArray<ReasoningLevel>>(() => {
-    if (!form) return REASONING_LEVELS;
+    const allRegistryLevels = Array.from(new Set(registry.map((e) => e.reasoningLevel)));
+    if (!form) return allRegistryLevels;
     const entries = registryByModel.get(form.fallbackModelId) ?? [];
     const supported = entries.map((e) => e.reasoningLevel);
-    if (supported.length === 0) return REASONING_LEVELS;
-    return supported;
-  }, [form, registryByModel]);
+    return supported.length > 0 ? supported : allRegistryLevels;
+  }, [form, registry, registryByModel]);
 
   // Routable registry model ids: configured + currently available + not
   // stale. Used for the fallback model selector so the user can only
@@ -613,7 +611,7 @@ export const RouterSettingsPage: FC = () => {
     >();
     if (!form) return map;
     for (const entry of registryEntries) {
-      const supported = entry.supportedReasoningLevels;
+      const supported = reasoningLevelsByModel.get(entry.modelId) ?? [];
       const checkedLevels = supported.filter((lvl) =>
         form.allowedComboKeys.has(comboKey(entry.modelId, lvl)),
       );
@@ -632,7 +630,7 @@ export const RouterSettingsPage: FC = () => {
       });
     }
     return map;
-  }, [registryEntries, form]);
+  }, [registryEntries, form, reasoningLevelsByModel]);
 
   /**
    * Effective visible-set for the registry table, after applying
@@ -732,10 +730,10 @@ export const RouterSettingsPage: FC = () => {
     (modelId: string, enabled: boolean) => {
       setForm((prev) => {
         if (!prev) return prev;
-        const entry = registryEntries.find((e) => e.modelId === modelId);
-        if (!entry) return prev;
+        const supported = reasoningLevelsByModel.get(modelId) ?? [];
+        if (supported.length === 0) return prev;
         const next = new Set(prev.allowedComboKeys);
-        for (const lvl of entry.supportedReasoningLevels) {
+        for (const lvl of supported) {
           const k = comboKey(modelId, lvl);
           if (enabled) next.add(k);
           else next.delete(k);
@@ -743,7 +741,7 @@ export const RouterSettingsPage: FC = () => {
         return { ...prev, allowedComboKeys: next };
       });
     },
-    [registryEntries],
+    [reasoningLevelsByModel],
   );
 
   /**
@@ -1509,32 +1507,15 @@ export const RouterSettingsPage: FC = () => {
                       {/* Reasoning column */}
                       <td className="px-3 py-2 text-center" data-label="Reasoning">
                         <div className="flex items-center justify-center gap-2">
-                          {REASONING_LEVELS.map((level) => {
+                          {(reasoningLevelsByModel.get(entry.modelId) ?? []).map((level) => {
                             const cell = reasoningCellState({
                               configured: entry.configured && !entry.stale,
                               routerOn,
                               level,
-                              supportedLevels: entry.supportedReasoningLevels,
                               allowedComboKeys: form.allowedComboKeys,
                               modelId: entry.modelId,
                             });
                             const cellTestId = `registry-reasoning-${entry.modelId}-${level}`;
-                            if (!cell.supported) {
-                              return (
-                                <div key={level} className="flex flex-col items-center gap-0.5">
-                                  <Checkbox
-                                    checked={false}
-                                    disabled
-                                    aria-label={`${entry.displayLabel} does not support ${level} reasoning`}
-                                    data-testid={cellTestId}
-                                    className="size-3.5"
-                                  />
-                                  <span className="text-[9px] uppercase tracking-wide text-muted-foreground/40">
-                                    {level}
-                                  </span>
-                                </div>
-                              );
-                            }
                             return (
                               <div key={level} className="flex flex-col items-center gap-0.5">
                                 <Checkbox

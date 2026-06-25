@@ -120,8 +120,10 @@ test.describe("Router Settings UI", () => {
     // without an extra `.locator("button")` step.
     const cheapLow = page.getByTestId("registry-reasoning-gpt-5.4-mini-low");
     const cheapMedium = page.getByTestId("registry-reasoning-gpt-5.4-mini-medium");
+    const cheapHigh = page.getByTestId("registry-reasoning-gpt-5.4-mini-high");
     await expect(cheapLow).toBeVisible();
     await expect(cheapMedium).toBeVisible();
+    await expect(cheapHigh).toHaveCount(0);
     await expect(cheapLow).toHaveAttribute("data-state", "checked");
     await expect(cheapMedium).toHaveAttribute("data-state", "checked");
 

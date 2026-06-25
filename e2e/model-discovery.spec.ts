@@ -106,9 +106,10 @@ test.describe("Model discovery + unified Model Registry", () => {
     // Tier pill renders for the standard cheap-tier model
     await expect(page.getByTestId("registry-tier-pill-gpt-5.4-mini")).toContainText(/Standard/i);
     await expect(page.getByTestId("registry-tier-pill-gpt-5.5")).toContainText(/Expensive/i);
-    // Reasoning column exposes per-level checkboxes for the configured model
+    // Reasoning column exposes only metadata-supported checkboxes for the configured model.
     await expect(page.getByTestId("registry-reasoning-gpt-5.4-mini-low")).toBeVisible();
     await expect(page.getByTestId("registry-reasoning-gpt-5.4-mini-medium")).toBeVisible();
+    await expect(page.getByTestId("registry-reasoning-gpt-5.4-mini-high")).toHaveCount(0);
     // Router toggle renders and is ON by default for a configured + available model
     await expect(page.getByTestId("registry-router-toggle-gpt-5.4-mini")).toHaveAttribute(
       "data-state",
