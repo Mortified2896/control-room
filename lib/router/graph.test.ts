@@ -43,7 +43,7 @@ test("graph returns a valid recommendation when the LLM output is well-formed", 
   assert.ok(out.recommendation);
 });
 
-test("graph falls back when the LLM recommends a model not in the allowlist", async () => {
+test("fail_loud blocks without fallback when the LLM recommends a model not in the allowlist", async () => {
   stubRecommend(async () => ({
     ok: true,
     value: {
@@ -62,18 +62,23 @@ test("graph falls back when the LLM recommends a model not in the allowlist", as
     },
   }));
   const out = await runRouterGraph(baseInput);
-  assert.equal(out.usedFallback, true);
+  assert.equal(out.usedFallback, false);
   assert.match(out.fallbackReason ?? "", /combo not in allowlist|unknown model/);
-  assert.ok(out.sideB);
+  assert.equal(out.sideB, null);
+  assert.match(out.skipReason ?? "", /No fallback was used/);
 });
 
-test("graph falls back when the LLM call throws", async () => {
+test("suggest_alternative suggests but does not run when the LLM call fails", async () => {
   stubRecommend(async () => ({ ok: false, reason: "openai 503" }));
-  const out = await runRouterGraph(baseInput);
-  assert.equal(out.usedFallback, true);
+  const out = await runRouterGraph({
+    ...baseInput,
+    settingsOverride: { ...DEFAULT_ROUTER_SETTINGS, failureBehavior: "suggest_alternative" },
+  });
+  assert.equal(out.usedFallback, false);
   assert.equal(out.fallbackReason, "openai 503");
-  assert.ok(out.sideB); // deterministic cheapest fallback
-  assert.equal(out.skipReason, null);
+  assert.equal(out.sideB, null);
+  assert.deepEqual(out.suggestedAlternative, { modelId: "gpt-5.4-mini", reasoningLevel: "low" });
+  assert.match(out.skipReason ?? "", /No fallback was used/);
 });
 
 test("graph skips Side B when the budget guard rejects it", async () => {
@@ -189,7 +194,7 @@ test("graph returns skipReason when settings.abEnabled=false", async () => {
   assert.match(out.skipReason ?? "", /disabled/);
 });
 
-test("graph auto-excludes expensive on long prompt unless allowLongPromptWhenExpensive", async () => {
+test("expensive model disabled on long prompt gives a clear blocked reason", async () => {
   stubRecommend(async () => ({
     ok: true,
     value: {
@@ -208,7 +213,7 @@ test("graph auto-excludes expensive on long prompt unless allowLongPromptWhenExp
     },
   }));
   // allowExpensiveModels=true but the prompt is long, so the graph should
-  // still refuse to recommend an expensive combo and fall back.
+  // still refuse to recommend an expensive combo without silent fallback.
   const out = await runRouterGraph({
     ...baseInput,
     recentChars: DEFAULT_ROUTER_SETTINGS.longPromptThresholdChars + 10,
@@ -219,9 +224,10 @@ test("graph auto-excludes expensive on long prompt unless allowLongPromptWhenExp
       maxCostPerAbRunUsd: 1.0,
     },
   });
-  assert.equal(out.usedFallback, true);
+  assert.equal(out.usedFallback, false);
   assert.match(out.fallbackReason ?? "", /allowlist|combo not in allowlist|unknown model/);
-  assert.equal(out.sideB?.modelId, "gpt-5.4-mini"); // cheap fallback
+  assert.equal(out.sideB, null);
+  assert.match(out.skipReason ?? "", /No fallback was used/);
 });
 
 function afterEach() {

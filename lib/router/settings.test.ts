@@ -128,9 +128,10 @@ test("parseRouterSettingsForSave accepts a null threshold (use default)", () => 
   }
 });
 
-test("parseRouterSettingsForSave rejects a fallback not in the allowlist", () => {
+test("parseRouterSettingsForSave rejects a fallback not in the allowlist when auto_fallback is enabled", () => {
   const result = parseRouterSettingsForSave({
     allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
+    failureBehavior: "auto_fallback",
     fallbackModelId: "gpt-5.4-mini",
     fallbackReasoningLevel: "medium", // medium is allowed by the model but unchecked
   });

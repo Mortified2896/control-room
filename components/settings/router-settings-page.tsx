@@ -29,7 +29,7 @@ import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import type { RouterSettings } from "@/lib/router/schema";
+import type { RouterFailureBehavior, RouterSettings } from "@/lib/router/schema";
 import type { ReasoningLevel } from "@/lib/providers/types";
 
 /**
@@ -67,7 +67,7 @@ import type { ReasoningLevel } from "@/lib/providers/types";
  *
  *   C. Router Global Settings  (only settings that affect the router
  *      globally stay here)
- *      - fallback model + reasoning level
+ *      - failure behavior
  *      - allow expensive models
  *      - allow expensive on long prompts
  *      - long prompt threshold
@@ -152,8 +152,7 @@ type RouterSettingsDto = {
 
 type FormState = {
   allowedComboKeys: Set<string>;
-  fallbackModelId: string;
-  fallbackReasoningLevel: ReasoningLevel;
+  failureBehavior: RouterFailureBehavior;
   allowExpensiveModels: boolean;
   allowLongPromptWhenExpensive: boolean;
   longPromptThresholdChars: string;
@@ -197,8 +196,7 @@ function initialForm(dto: RouterSettingsDto): FormState {
     allowedComboKeys: new Set(
       dto.effective.allowedCombos.map((c) => comboKey(c.modelId, c.reasoningLevel)),
     ),
-    fallbackModelId: dto.effective.fallbackModelId,
-    fallbackReasoningLevel: dto.effective.fallbackReasoningLevel,
+    failureBehavior: dto.effective.failureBehavior,
     allowExpensiveModels: dto.effective.allowExpensiveModels,
     allowLongPromptWhenExpensive: dto.effective.allowLongPromptWhenExpensive,
     longPromptThresholdChars:
@@ -241,14 +239,6 @@ function formToPayload(
     }
   }
 
-  const fallbackKey = comboKey(form.fallbackModelId, form.fallbackReasoningLevel);
-  if (cleanedKeys.length > 0 && !cleanedKeys.includes(fallbackKey)) {
-    errors.push({
-      field: "fallbackCombo",
-      message: `Fallback (${form.fallbackModelId} / ${form.fallbackReasoningLevel}) must be one of the checked combinations.`,
-    });
-  }
-
   const allowedCombos = cleanedKeys.map((k) => {
     const [modelId, reasoningLevel] = k.split("|") as [string, ReasoningLevel];
     return { modelId, reasoningLevel };
@@ -259,8 +249,7 @@ function formToPayload(
       allowExpensiveModels: form.allowExpensiveModels,
       allowLongPromptWhenExpensive: form.allowLongPromptWhenExpensive,
       longPromptThresholdChars: threshold,
-      fallbackModelId: form.fallbackModelId,
-      fallbackReasoningLevel: form.fallbackReasoningLevel,
+      failureBehavior: form.failureBehavior,
       allowedCombos,
     },
     clientErrors: errors,
@@ -270,8 +259,7 @@ function formToPayload(
 function hasFormChanged(form: FormState, baseline: FormState): boolean {
   if (form.allowExpensiveModels !== baseline.allowExpensiveModels) return true;
   if (form.allowLongPromptWhenExpensive !== baseline.allowLongPromptWhenExpensive) return true;
-  if (form.fallbackModelId !== baseline.fallbackModelId) return true;
-  if (form.fallbackReasoningLevel !== baseline.fallbackReasoningLevel) return true;
+  if (form.failureBehavior !== baseline.failureBehavior) return true;
   if (form.longPromptThresholdChars !== baseline.longPromptThresholdChars) return true;
   if (form.allowedComboKeys.size !== baseline.allowedComboKeys.size) return true;
   for (const k of form.allowedComboKeys) {
@@ -563,30 +551,10 @@ export const RouterSettingsPage: FC = () => {
   const reasoningLevelsByModel = useMemo(() => {
     const m = new Map<string, ReadonlyArray<ReasoningLevel>>();
     for (const [modelId, entries] of registryByModel) {
-      m.set(
-        modelId,
-        Array.from(new Set(entries.map((entry) => entry.reasoningLevel))),
-      );
+      m.set(modelId, Array.from(new Set(entries.map((entry) => entry.reasoningLevel))));
     }
     return m;
   }, [registryByModel]);
-
-  const fallbackModelLevels = useMemo<ReadonlyArray<ReasoningLevel>>(() => {
-    const allRegistryLevels = Array.from(new Set(registry.map((e) => e.reasoningLevel)));
-    if (!form) return allRegistryLevels;
-    const entries = registryByModel.get(form.fallbackModelId) ?? [];
-    const supported = entries.map((e) => e.reasoningLevel);
-    return supported.length > 0 ? supported : allRegistryLevels;
-  }, [form, registry, registryByModel]);
-
-  // Routable registry model ids: configured + currently available + not
-  // stale. Used for the fallback model selector so the user can only
-  // pick a model the router can actually recommend.
-  const routableModelIds = useMemo(() => {
-    const out = new Set<string>();
-    for (const e of registry) out.add(e.modelId);
-    return out;
-  }, [registry]);
 
   const registryEntries = useMemo(() => dto?.effectiveRegistry.models ?? [], [dto]);
   const selectorPrefs = useMemo(() => dto?.effectiveRegistry.selectorPrefs ?? {}, [dto]);
@@ -700,22 +668,9 @@ export const RouterSettingsPage: FC = () => {
     return sorted;
   }, [registryEntries, selectorPrefs, registryRowState, sortMode, filterMode, searchQuery]);
 
-  const update = useCallback(
-    (patch: Partial<FormState>) => {
-      setForm((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, ...patch };
-        const supported = (registryByModel.get(next.fallbackModelId) ?? []).map(
-          (e) => e.reasoningLevel,
-        );
-        if (supported.length > 0 && !supported.includes(next.fallbackReasoningLevel)) {
-          next.fallbackReasoningLevel = supported[0];
-        }
-        return next;
-      });
-    },
-    [registryByModel],
-  );
+  const update = useCallback((patch: Partial<FormState>) => {
+    setForm((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
 
   /**
    * Toggle the row's Router switch. The semantics:
@@ -1589,69 +1544,44 @@ export const RouterSettingsPage: FC = () => {
             affect every router run. Everything model-specific has
             moved into the Model Registry above. */}
         <section
-          aria-labelledby="fallback-heading"
-          className={cn(
-            "rounded-lg border border-border/60 bg-card p-4 sm:p-6",
-            errorsByField.has("fallbackCombo") && "border-destructive/60",
-          )}
-          data-testid="router-settings-section-fallback"
+          aria-labelledby="failure-behavior-heading"
+          className="rounded-lg border border-border/60 bg-card p-4 sm:p-6"
+          data-testid="router-settings-section-failure-behavior"
         >
-          <h2 id="fallback-heading" className="text-sm font-semibold">
+          <h2 id="failure-behavior-heading" className="text-sm font-semibold">
             C · Router global settings
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
             Model-specific knobs (Manual, Router, Reasoning) live in the Model Registry above. This
-            section only holds the router-wide safety and fallback controls.
+            section only holds router-wide safety controls.
           </p>
 
-          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="fallback-model">Fallback model</Label>
-              <select
-                id="fallback-model"
-                data-testid="router-settings-fallback-model"
-                value={form.fallbackModelId}
-                onChange={(e) => update({ fallbackModelId: e.target.value })}
-                className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:ring-[3px]"
-              >
-                {[...routableModelIds].sort().map((modelId) => {
-                  const alias = registryByModel.get(modelId)?.[0];
-                  return (
-                    <option key={modelId} value={modelId}>
-                      {alias?.modelLabel ?? modelId} ({alias?.tier ?? "unknown"})
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="fallback-reasoning">Fallback reasoning level</Label>
-              <select
-                id="fallback-reasoning"
-                data-testid="router-settings-fallback-reasoning"
-                value={form.fallbackReasoningLevel}
-                onChange={(e) =>
-                  update({ fallbackReasoningLevel: e.target.value as ReasoningLevel })
-                }
-                className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:ring-[3px]"
-              >
-                {fallbackModelLevels.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {errorsByField.has("fallbackCombo") && (
-            <p
-              role="alert"
-              className="mt-2 text-xs text-destructive"
-              data-testid="router-settings-error-fallbackCombo"
-            >
-              {errorsByField.get("fallbackCombo")?.[0]?.message}
+          <div className="mt-4 rounded-md border border-border/60 px-3 py-3">
+            <Label htmlFor="failure-behavior">Failure behavior</Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Choose what happens when the selected or router-recommended model/reasoning
+              combination cannot run.
             </p>
-          )}
+            <select
+              id="failure-behavior"
+              data-testid="router-settings-failure-behavior"
+              value={form.failureBehavior}
+              onChange={(e) => update({ failureBehavior: e.target.value as RouterFailureBehavior })}
+              className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 mt-3 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:ring-[3px]"
+            >
+              <option value="fail_loud">Fail loud — stop and show a clear error</option>
+              <option value="suggest_alternative">
+                Suggest alternative — stop and require explicit approval
+              </option>
+              <option value="auto_fallback">
+                Auto fallback — advanced, not recommended for evaluation
+              </option>
+            </select>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Fail loud is the default. No alternative model is run unless auto fallback is
+              explicitly selected.
+            </p>
+          </div>
 
           <div className="mt-4 space-y-4">
             <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-3">

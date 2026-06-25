@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: [
     "100.97.94.76",
     "hermes-agent",
+    "hermes-agent.taile0361b.ts.net",
     "10.10.10.80",
     // localhost dev origins — required so Turbopack dev resources (HMR,
     // RSC payload) aren't blocked when running `next dev` locally.

@@ -34,6 +34,8 @@ export type RouterAllowedCombo = {
   reasoningLevel: ReasoningLevel;
 };
 
+export type RouterFailureBehavior = "fail_loud" | "suggest_alternative" | "auto_fallback";
+
 export type RouterSettings = {
   /** Master kill-switch. When false, the router never runs and Side B is skipped. */
   abEnabled: boolean;
@@ -53,9 +55,11 @@ export type RouterSettings = {
   maxCostPerAbRunUsd: number;
   /** Model id the router uses for its own recommendation call. */
   routerModelId: string;
-  /** Model id used when the router fails or returns a disallowed value. */
+  /** What happens when a selected/recommended combo cannot run. Defaults to fail-loud. */
+  failureBehavior: RouterFailureBehavior;
+  /** Legacy only: retained for persisted payload compatibility; not used unless auto_fallback is enabled. */
   fallbackModelId: string;
-  /** Reasoning level used when the router fails or returns a disallowed value. */
+  /** Legacy only: retained for persisted payload compatibility; not used unless auto_fallback is enabled. */
   fallbackReasoningLevel: ReasoningLevel;
   /**
    * Explicit (modelId, reasoningLevel) pairs the user has authorized the
@@ -92,6 +96,7 @@ export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
   maxCostPerRecommendationUsd: 0.03,
   maxCostPerAbRunUsd: 0.3,
   routerModelId: "gpt-5.4-mini",
+  failureBehavior: "fail_loud",
   fallbackModelId: "gpt-5.4-mini",
   fallbackReasoningLevel: DEFAULT_REASONING_LEVEL,
   allowedCombos: DEFAULT_ALLOWED_COMBOS,
@@ -101,6 +106,10 @@ const REASONING_LEVELS: ReadonlyArray<ReasoningLevel> = ["low", "medium", "high"
 
 function isReasoningLevel(value: unknown): value is ReasoningLevel {
   return typeof value === "string" && (REASONING_LEVELS as ReadonlyArray<string>).includes(value);
+}
+
+function isFailureBehavior(value: unknown): value is RouterFailureBehavior {
+  return value === "fail_loud" || value === "suggest_alternative" || value === "auto_fallback";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -193,6 +202,14 @@ export function parseRouterSettings(input: unknown): RouterSettings {
       throw new Error("routerModelId must be a non-empty string");
     }
     out.routerModelId = input.routerModelId.trim();
+  }
+  if (input.failureBehavior !== undefined) {
+    if (!isFailureBehavior(input.failureBehavior)) {
+      throw new Error(
+        "failureBehavior must be one of 'fail_loud' | 'suggest_alternative' | 'auto_fallback'",
+      );
+    }
+    out.failureBehavior = input.failureBehavior;
   }
   if (input.fallbackModelId !== undefined) {
     if (typeof input.fallbackModelId !== "string" || input.fallbackModelId.trim().length === 0) {
@@ -351,6 +368,18 @@ export function parseRouterSettingsForSave(
     }
   }
 
+  let failureBehavior = DEFAULT_ROUTER_SETTINGS.failureBehavior;
+  if (b.failureBehavior !== undefined) {
+    if (isFailureBehavior(b.failureBehavior)) {
+      failureBehavior = b.failureBehavior;
+    } else {
+      errors.push({
+        field: "failureBehavior",
+        message: "failureBehavior must be one of fail_loud, suggest_alternative, or auto_fallback.",
+      });
+    }
+  }
+
   let fallbackModelId = DEFAULT_ROUTER_SETTINGS.fallbackModelId;
   if (b.fallbackModelId !== undefined) {
     if (typeof b.fallbackModelId === "string" && b.fallbackModelId.trim().length > 0) {
@@ -483,11 +512,10 @@ export function parseRouterSettingsForSave(
     }
   }
 
-  // Stage 2: fallback must be in the allowlist. We always check (even
-  // when the allowlist was rejected as invalid) so the user gets a
-  // clear "fallback not in pool" error when every combo was rejected
-  // for other reasons.
-  if (b.allowedCombos !== undefined) {
+  // Stage 2: legacy fallback must be in the allowlist only when automatic
+  // fallback is explicitly enabled. The default fail_loud/suggest paths do
+  // not silently run another combo and should not force a fallback choice.
+  if (failureBehavior === "auto_fallback" && b.allowedCombos !== undefined) {
     const inAllowlist = allowedCombos.some(
       (c) => c.modelId === fallbackModelId && c.reasoningLevel === fallbackReasoningLevel,
     );
@@ -513,6 +541,7 @@ export function parseRouterSettingsForSave(
       maxCostPerRecommendationUsd,
       maxCostPerAbRunUsd,
       routerModelId,
+      failureBehavior,
       fallbackModelId,
       fallbackReasoningLevel,
       allowedCombos,

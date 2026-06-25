@@ -6,7 +6,8 @@
  * memory, no agent loop, no vector store — just five small nodes that
  * prepare a prompt, resolve the allowlist, call GPT-5.4 Mini with a Zod
  * structured-output schema, validate the response, and apply the budget
- * guard. Anything that goes wrong falls back to `pickFallback`.
+ * guard. By default, invalid or blocked recommendations fail loudly; automatic
+ * fallback only happens when the explicit advanced setting enables it.
  *
  * The graph is compiled once at module load and reused per request — there
  * is no per-call compilation overhead.
@@ -65,8 +66,10 @@ export type RouterGraphOutput = {
   recommendation: RouterRecommendation | null;
   /** True when the router output was rejected or it threw and we used a fallback. */
   usedFallback: boolean;
-  /** Reason we fell back, when usedFallback=true. Persisted for observability. */
+  /** Reason the recommendation was blocked/fell back. Persisted for observability. */
   fallbackReason: string | null;
+  /** Suggested alternative in suggest_alternative mode; never run automatically. */
+  suggestedAlternative: RouterSideCombo | null;
   /** Human-readable reason Side B was skipped. Surfaced in the UI. */
   skipReason: string | null;
   /** Combined estimated cost in USD, including the router call. */
@@ -101,6 +104,7 @@ const RouterState = Annotation.Root({
   sideBPicked: Annotation<RouterSideCombo | null>(),
   usedFallback: Annotation<boolean>(),
   fallbackReason: Annotation<string | null>(),
+  suggestedAlternative: Annotation<RouterSideCombo | null>(),
 
   // `apply_budget` outputs
   sideBFinal: Annotation<RouterSideCombo | null>(),
@@ -159,6 +163,7 @@ async function llmRecommendNode(state: RouterStateShape): Promise<Partial<Router
       sideBPicked: null,
       usedFallback: false,
       fallbackReason: null,
+      suggestedAlternative: null,
     };
   }
   if (state.allowlist.length === 0) {
@@ -169,6 +174,7 @@ async function llmRecommendNode(state: RouterStateShape): Promise<Partial<Router
       sideBPicked: null,
       usedFallback: false,
       fallbackReason: null,
+      suggestedAlternative: null,
     };
   }
   const modelId = state.settings.routerModelId || getDefaultRouterModelId();
@@ -191,6 +197,7 @@ async function llmRecommendNode(state: RouterStateShape): Promise<Partial<Router
       sideBPicked: null,
       usedFallback: false,
       fallbackReason: null,
+      suggestedAlternative: null,
     };
   }
   return {
@@ -200,6 +207,7 @@ async function llmRecommendNode(state: RouterStateShape): Promise<Partial<Router
     sideBPicked: null,
     usedFallback: false,
     fallbackReason: null,
+    suggestedAlternative: null,
   };
 }
 
@@ -207,26 +215,35 @@ async function llmRecommendNode(state: RouterStateShape): Promise<Partial<Router
 // Node: resolve_recommendation
 // ---------------------------------------------------------------------------
 
-function resolveRecommendationNode(state: RouterStateShape): Partial<RouterStateShape> {
-  // The recommender returned no output at all → fall back to pool cheapest.
-  if (state.routerError) {
-    const fallback = pickFallback(state.allowlist);
+function blockedRecommendation(state: RouterStateShape, reason: string): Partial<RouterStateShape> {
+  const alternative = state.allowlist.length > 0 ? pickFallback(state.allowlist) : null;
+  if (state.settings.failureBehavior === "auto_fallback" && alternative) {
     return {
       recommendation: null,
-      sideBPicked: fallback,
+      sideBPicked: alternative,
       usedFallback: true,
-      fallbackReason: state.routerError,
+      fallbackReason: reason,
+      suggestedAlternative: null,
     };
+  }
+  return {
+    recommendation: null,
+    sideBPicked: null,
+    usedFallback: false,
+    fallbackReason: reason,
+    suggestedAlternative:
+      state.settings.failureBehavior === "suggest_alternative" ? alternative : null,
+  };
+}
+
+function resolveRecommendationNode(state: RouterStateShape): Partial<RouterStateShape> {
+  // The recommender returned no output at all → block by default; optionally suggest.
+  if (state.routerError) {
+    return blockedRecommendation(state, state.routerError);
   }
   const validation = validateRouterOutput(state.rawOutput, state.allowlist);
   if (!validation.ok) {
-    const fallback = pickFallback(state.allowlist);
-    return {
-      recommendation: null,
-      sideBPicked: fallback,
-      usedFallback: true,
-      fallbackReason: validation.reason,
-    };
+    return blockedRecommendation(state, validation.reason);
   }
   const rec = validation.value;
   const combo: RouterSideCombo = {
@@ -235,19 +252,14 @@ function resolveRecommendationNode(state: RouterStateShape): Partial<RouterState
   };
   // Defense in depth: even if validation passed, double-check membership.
   if (!isInAllowedPool(combo, state.allowlist)) {
-    const fallback = pickFallback(state.allowlist);
-    return {
-      recommendation: null,
-      sideBPicked: fallback,
-      usedFallback: true,
-      fallbackReason: "recommendation failed allowlist membership check",
-    };
+    return blockedRecommendation(state, "recommendation failed allowlist membership check");
   }
   return {
     recommendation: rec,
     sideBPicked: combo,
     usedFallback: false,
     fallbackReason: null,
+    suggestedAlternative: null,
   };
 }
 
@@ -270,17 +282,23 @@ function applyBudgetNode(state: RouterStateShape): Partial<RouterStateShape> {
   }
   const sideBPicked = state.sideBPicked;
   if (!sideBPicked) {
+    const reason = state.fallbackReason ?? "no side B picked";
     return {
       sideBFinal: null,
-      skipReason: state.fallbackReason ?? "no side B picked",
+      skipReason: `Run blocked: ${reason}. No fallback was used.`,
       estimatedCostUsd: 0,
     };
   }
   const decision = applyBudgetGuard(state.sideA, sideBPicked, state.settings, state.recentChars);
   if (!decision.keepB) {
+    const blocked = blockedRecommendation(state, decision.reason);
     return {
+      ...blocked,
       sideBFinal: null,
-      skipReason: decision.reason,
+      skipReason:
+        state.settings.failureBehavior === "auto_fallback"
+          ? decision.reason
+          : `Run blocked: ${decision.reason}. No fallback was used.`,
       estimatedCostUsd: decision.estimatedCostUsd,
     };
   }
@@ -338,6 +356,7 @@ export async function runRouterGraph(input: RouterGraphInput): Promise<RouterGra
     sideBPicked: null,
     usedFallback: false,
     fallbackReason: null,
+    suggestedAlternative: null,
     sideBFinal: null,
     skipReason: null,
     estimatedCostUsd: 0,
@@ -355,8 +374,9 @@ export async function runRouterGraph(input: RouterGraphInput): Promise<RouterGra
       sideB: null,
       recommendation: null,
       usedFallback: false,
-      fallbackReason: null,
-      skipReason: `router graph failed: ${reason}`,
+      fallbackReason: `router graph failed: ${reason}`,
+      suggestedAlternative: null,
+      skipReason: `Run blocked: router graph failed: ${reason}. No fallback was used.`,
       estimatedCostUsd: 0,
       settingsUsed: settings,
     };
@@ -366,6 +386,7 @@ export async function runRouterGraph(input: RouterGraphInput): Promise<RouterGra
     recommendation: result.recommendation,
     usedFallback: result.usedFallback,
     fallbackReason: result.fallbackReason,
+    suggestedAlternative: result.suggestedAlternative,
     skipReason: result.skipReason,
     estimatedCostUsd: result.estimatedCostUsd,
     settingsUsed: settings,

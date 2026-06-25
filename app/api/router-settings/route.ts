@@ -9,7 +9,13 @@ import {
   parseRouterSettingsForSave,
   type RouterSettings,
 } from "@/lib/router/schema";
-import { getEffectiveModelsRegistry, registryToRouterAllowlist } from "@/lib/providers/registry";
+import {
+  buildEffectiveRegistry,
+  getEffectiveModelsRegistry,
+  registryToRouterAllowlist,
+} from "@/lib/providers/registry";
+import { EMPTY_DISCOVERY_SNAPSHOT } from "@/lib/repo/openai-models-discovery-types";
+import { EMPTY_SELECTOR_PREFERENCES } from "@/lib/repo/model-selector-prefs-types";
 import { ensureDiscoveryFresh } from "@/lib/providers/openai-discovery";
 import type { ReasoningLevel } from "@/lib/providers/types";
 import { upsertRouterSettingsRow } from "@/lib/repo/router-settings";
@@ -92,6 +98,14 @@ type RouterSettingsDto = {
   };
 };
 
+function getFallbackEffectiveRegistry(): ReturnType<typeof buildEffectiveRegistry> {
+  return buildEffectiveRegistry({
+    discovery: EMPTY_DISCOVERY_SNAPSHOT,
+    selectorPrefs: EMPTY_SELECTOR_PREFERENCES,
+    openaiKeySet: Boolean(process.env.OPENAI_API_KEY?.trim()),
+  });
+}
+
 function serializeDiscovery(
   discovery: Awaited<ReturnType<typeof getEffectiveModelsRegistry>>["discovery"],
 ) {
@@ -126,28 +140,49 @@ function serializeDiscovery(
  * is fire-and-forget and does not block the GET.
  */
 export async function GET() {
-  if (!isDbConfigured()) {
-    return NextResponse.json(
-      { error: "db_not_configured" },
-      { status: 503, headers: { "Cache-Control": "no-store" } },
-    );
+  const configured = isDbConfigured();
+  // Synchronously trigger a refresh only when the DB is configured. Without
+  // Postgres, the settings page should still load in read-only/defaults mode
+  // instead of failing the whole page with db_not_configured.
+  if (configured) {
+    try {
+      await ensureDiscoveryFresh();
+    } catch (err) {
+      // The settings page must still load if OpenAI discovery or its backing
+      // cache is temporarily unavailable. Surface the stale/fallback registry
+      // below instead of failing the whole page.
+      console.error(
+        "[api/router-settings GET] discovery refresh failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
-  // Synchronously trigger a refresh when the cache is empty / stale so
-  // the Settings UI loads with a complete registry on first visit. This
-  // is the ONLY path that calls discovery inline — the chat route
-  // (`/api/chat`, `/api/models`) never does. The brief explicitly
-  // forbids discovery on every chat request; this restriction does NOT
-  // apply to the Settings UI GET, which is the user-facing entry point
-  // for discovery itself.
-  await ensureDiscoveryFresh();
-  const [effective, registry] = await Promise.all([
-    getEffectiveRouterSettings(),
-    getEffectiveModelsRegistry(),
-  ]);
+
+  let effective: RouterSettings;
+  try {
+    effective = await getEffectiveRouterSettings();
+  } catch (err) {
+    console.error(
+      "[api/router-settings GET] settings read failed, using defaults:",
+      err instanceof Error ? err.message : err,
+    );
+    effective = DEFAULT_ROUTER_SETTINGS;
+  }
+
+  let registry: Awaited<ReturnType<typeof getEffectiveModelsRegistry>>;
+  try {
+    registry = await getEffectiveModelsRegistry();
+  } catch (err) {
+    console.error(
+      "[api/router-settings GET] registry read failed, using fallback registry:",
+      err instanceof Error ? err.message : err,
+    );
+    registry = getFallbackEffectiveRegistry();
+  }
   const dto: RouterSettingsDto = {
     effective,
     defaults: DEFAULT_ROUTER_SETTINGS,
-    configured: true,
+    configured,
     registry: registryToRouterAllowlist(registry),
     effectiveRegistry: {
       models: registry.models,
@@ -173,8 +208,8 @@ export async function GET() {
  *
  * Recognized keys (anything else is ignored for forward-compat):
  *   abEnabled, allowExpensiveModels, allowLongPromptWhenExpensive,
- *   longPromptThresholdChars, fallbackModelId, fallbackReasoningLevel,
- *   allowedCombos
+ *   longPromptThresholdChars, failureBehavior, fallbackModelId,
+ *   fallbackReasoningLevel, allowedCombos
  *
  * Responses:
  *   200 { settings }                        — saved
@@ -242,6 +277,7 @@ export async function PUT(req: Request) {
       b.longPromptThresholdChars === undefined
         ? current.longPromptThresholdChars
         : b.longPromptThresholdChars,
+    failureBehavior: b.failureBehavior ?? current.failureBehavior,
     fallbackModelId: b.fallbackModelId ?? current.fallbackModelId,
     fallbackReasoningLevel: b.fallbackReasoningLevel ?? current.fallbackReasoningLevel,
     allowedCombos: b.allowedCombos ?? current.allowedCombos,

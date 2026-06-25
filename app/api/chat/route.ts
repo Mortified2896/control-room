@@ -219,6 +219,7 @@ export async function POST(req: Request) {
         recentTurns,
         sideA: { modelId: result.resolved.modelId, reasoningLevel },
         recentChars,
+        settingsOverride: settings,
       });
     } catch (err: unknown) {
       console.error("[api/chat] router graph failed:", err instanceof Error ? err.message : err);
