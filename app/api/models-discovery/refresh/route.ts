@@ -1,24 +1,33 @@
 import { NextResponse } from "next/server";
 import { isDbConfigured } from "@/lib/db";
 import { refreshOpenAIModels, type RefreshOutcome } from "@/lib/providers/openai-discovery";
+import { getMiniMaxModels } from "@/lib/providers/minimax";
 import { getDiscoverySnapshot } from "@/lib/repo/openai-models-discovery";
 
 export const dynamic = "force-dynamic";
 
 type RefreshResponseBody = {
   outcome:
-    | { kind: "fresh"; source: "openai" | "fake"; modelCount: number; httpStatus: number }
-    | { kind: "cache_fresh"; ageMs: number; modelCount: number }
+    | {
+        kind: "fresh";
+        source: "openai" | "fake";
+        modelCount: number;
+        httpStatus: number;
+        minimaxModelCount: number;
+      }
+    | { kind: "cache_fresh"; ageMs: number; modelCount: number; minimaxModelCount: number }
     | {
         kind: "failed";
         reason: string;
         httpStatus: number | null;
         usedCache: boolean;
         modelCount: number;
+        minimaxModelCount: number;
       };
 };
 
 function serialize(outcome: RefreshOutcome, snapshotModelCount: number): RefreshResponseBody {
+  const minimaxModelCount = getMiniMaxModels().length;
   switch (outcome.kind) {
     case "fresh":
       return {
@@ -27,6 +36,7 @@ function serialize(outcome: RefreshOutcome, snapshotModelCount: number): Refresh
           source: outcome.source,
           modelCount: outcome.modelIds.length,
           httpStatus: outcome.httpStatus,
+          minimaxModelCount,
         },
       };
     case "cache_fresh":
@@ -35,6 +45,7 @@ function serialize(outcome: RefreshOutcome, snapshotModelCount: number): Refresh
           kind: "cache_fresh",
           ageMs: outcome.ageMs,
           modelCount: outcome.snapshot.modelIds.length,
+          minimaxModelCount,
         },
       };
     case "failed":
@@ -45,6 +56,7 @@ function serialize(outcome: RefreshOutcome, snapshotModelCount: number): Refresh
           httpStatus: outcome.httpStatus,
           usedCache: outcome.usedCache,
           modelCount: outcome.snapshot.modelIds.length,
+          minimaxModelCount,
         },
       };
   }
@@ -56,7 +68,11 @@ function serialize(outcome: RefreshOutcome, snapshotModelCount: number): Refresh
 /**
  * POST /api/models-discovery/refresh
  *
- * Force a refresh of the OpenAI model discovery cache.
+ * Force a refresh of provider model metadata.
+ *
+ * OpenAI still uses authenticated discovery and Postgres caching. MiniMax is
+ * env-file static for now, so "refresh" means re-reading the current env-backed
+ * static MiniMax model row; no MiniMax network call or DB migration is added.
  *
  * Behavior:
  *   - With fake mode enabled (`CONTROL_ROOM_FAKE_OPENAI_MODELS=1` or

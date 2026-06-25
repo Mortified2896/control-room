@@ -15,6 +15,11 @@ import { isDbConfigured } from "@/lib/db";
 import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thread-messages";
 import { createMessage } from "@/lib/repo/threads";
 import { resolveModel, getDefaultRouterModelId } from "@/lib/providers";
+import {
+  getRuntimeModel,
+  getRuntimeProviderOptions,
+  ProviderConfigurationError,
+} from "@/lib/providers/runtime";
 import type { ReasoningLevel } from "@/lib/providers/types";
 import { type RouterSettings } from "@/lib/router/schema";
 import { getEffectiveRouterSettings } from "@/lib/router/settings-store";
@@ -164,15 +169,28 @@ export async function POST(req: Request) {
     );
   }
 
-  if (result.resolved.providerId !== "openai") {
-    return Response.json(
-      {
-        error: "provider_not_implemented",
-        providerId: result.resolved.providerId,
-        message: "Provider is not implemented yet",
-      },
-      { status: 501 },
+  const routerAbSupported = result.resolved.providerId === "openai";
+
+  let sideAModel;
+  let sideAProviderOptions;
+  try {
+    sideAModel = getRuntimeModel(result.resolved);
+    sideAProviderOptions = getRuntimeProviderOptions(
+      result.resolved,
+      validReasoningLevel(rawReasoningLevel),
     );
+  } catch (err: unknown) {
+    if (err instanceof ProviderConfigurationError) {
+      return Response.json(
+        {
+          error: "provider_disabled",
+          providerId: err.providerId,
+          reason: err.message,
+        },
+        { status: 503 },
+      );
+    }
+    throw err;
   }
 
   // Only real chat messages go into model context. Ratings, notes, feedback,
@@ -202,7 +220,7 @@ export async function POST(req: Request) {
   // has a model + reasoning level picked before Side A starts streaming.
   // If the user has the A/B toggle off, or settings.abEnabled is false, or
   // the router throws, we still answer Side A and skip Side B.
-  const routerAbEnabled = Boolean(routerAbOn);
+  const routerAbEnabled = Boolean(routerAbOn) && routerAbSupported;
   // Read the effective settings from the DB-backed singleton (or env
   // fallback when the DB is not configured). The Settings UI at
   // /settings/router writes to that singleton.
@@ -286,19 +304,21 @@ export async function POST(req: Request) {
         side: "A",
       })
     : streamText({
-        model: openai(result.resolved.modelId),
+        model: sideAModel,
         messages: modelMessages,
         system,
         tools: {
           ...frontendTools(tools ?? {}),
         },
-        providerOptions: {
-          openai: { reasoningEffort: reasoningLevel },
-        },
+        ...(sideAProviderOptions ? { providerOptions: sideAProviderOptions } : {}),
       });
 
   const stream = createUIMessageStream<RouterAbUiMessage>({
     originalMessages: messages as RouterAbUiMessage[],
+    onError: () =>
+      result.resolved.providerId === "minimax"
+        ? "MiniMax provider error. Check MINIMAX_API_KEY, MINIMAX_BASE_URL, and MINIMAX_DEFAULT_MODEL."
+        : "An error occurred.",
     execute: async ({ writer }) => {
       // Emit the initial router decision as soon as we have it, BEFORE
       // Side A starts streaming. This lets the panel render the

@@ -119,6 +119,7 @@ const ChatPane: FC<{
   notesDisabled: boolean;
   routerAbOn: boolean;
   reasoningLevel: ReasoningLevel;
+  models: ModelOption[];
   onFinish: () => void;
 }> = ({
   modelId,
@@ -127,8 +128,11 @@ const ChatPane: FC<{
   notesDisabled,
   routerAbOn,
   reasoningLevel,
+  models,
   onFinish,
 }) => {
+  const selectedModel = models.find((m) => m.modelId === modelId) ?? null;
+  const effectiveRouterAbOn = routerAbOn && selectedModel?.providerId === "openai";
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
@@ -144,11 +148,11 @@ const ChatPane: FC<{
             modelId,
             threadId,
             reasoningLevel,
-            routerAb: routerAbOn,
+            routerAb: effectiveRouterAbOn,
           },
         }),
       }),
-    [modelId, threadId, reasoningLevel, routerAbOn],
+    [modelId, threadId, reasoningLevel, effectiveRouterAbOn],
   );
 
   const runtime = useChatRuntime({
@@ -165,7 +169,7 @@ const ChatPane: FC<{
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread threadId={threadId} notesDisabled={notesDisabled} routerAbOn={routerAbOn} />
+      <Thread threadId={threadId} notesDisabled={notesDisabled} routerAbOn={effectiveRouterAbOn} />
     </AssistantRuntimeProvider>
   );
 };
@@ -342,6 +346,8 @@ const RouterControlsBar: FC<{
   const supportedLevels: ReadonlyArray<ReasoningLevel> = selectedModel
     ? selectedModel.reasoningLevels
     : ["low"];
+  const supportsReasoningControls = supportedLevels.length > 0;
+  const supportsRouterAb = selectedModel?.providerId === "openai";
   // If the persisted reasoning level is no longer supported by the new
   // model, snap to the cheapest supported level so the dropdown stays sane.
   useEffect(() => {
@@ -349,14 +355,30 @@ const RouterControlsBar: FC<{
     if (supportedLevels.length === 0) return;
     onReasoningChange(supportedLevels[0]);
   }, [supportedLevels, reasoningLevel, onReasoningChange]);
+  useEffect(() => {
+    if (supportsRouterAb || !routerAbOn) return;
+    onRouterAbChange(false);
+  }, [supportsRouterAb, routerAbOn, onRouterAbChange]);
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-background px-3 py-2 sm:px-4">
-      <ReasoningLevelSelect
-        value={reasoningLevel}
-        options={supportedLevels}
-        onChange={onReasoningChange}
-      />
-      <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
+      {supportsReasoningControls ? (
+        <ReasoningLevelSelect
+          value={reasoningLevel}
+          options={supportedLevels}
+          onChange={onReasoningChange}
+        />
+      ) : (
+        <div className="rounded-md border border-border/50 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+          Reasoning controls are not supported for this provider.
+        </div>
+      )}
+      {supportsRouterAb ? (
+        <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
+      ) : (
+        <div className="rounded-md border border-border/50 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+          Router A/B is OpenAI-only.
+        </div>
+      )}
     </div>
   );
 };
@@ -689,6 +711,7 @@ export const Assistant = () => {
               notesDisabled={!dbConfigured || threadsLoading}
               routerAbOn={routerAbOn}
               reasoningLevel={selectedReasoningLevel}
+              models={models}
               onFinish={() => void refreshThreads()}
             />
           )}

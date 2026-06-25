@@ -6,6 +6,12 @@ import {
   getOpenAIModelMeta,
   isOpenAIEnabled,
 } from "./openai";
+import {
+  getMiniMaxModelMeta,
+  getMiniMaxModels,
+  isMiniMaxEnabled,
+  minimaxProvider,
+} from "./minimax";
 import type {
   ModelMeta,
   ModelOption,
@@ -14,29 +20,6 @@ import type {
   ResolveResult,
   RouterAllowlistEntry,
 } from "./types";
-
-const minimaxProvider: { id: ProviderId; label: string; disabledReason: string } = {
-  id: "minimax",
-  label: "MiniMax",
-  disabledReason: "MINIMAX_API_KEY is not configured",
-};
-
-const MINIMAX_MODEL = { id: "minimax-disabled", label: "MiniMax" };
-
-function getMiniMaxModels(): ModelOption[] {
-  return [
-    {
-      providerId: minimaxProvider.id,
-      providerLabel: minimaxProvider.label,
-      modelId: MINIMAX_MODEL.id,
-      modelLabel: MINIMAX_MODEL.label,
-      enabled: false,
-      reason: minimaxProvider.disabledReason,
-      reasoningLevels: [],
-      tier: "cheap",
-    },
-  ];
-}
 
 export function getAvailableModels(): ModelsResponse {
   const models: ModelOption[] = [...getOpenAIModels(), ...getMiniMaxModels()];
@@ -100,6 +83,17 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
     };
   }
 
+  if (found.providerId === minimaxProvider.id && !isMiniMaxEnabled()) {
+    return {
+      ok: false,
+      error: {
+        kind: "provider_disabled",
+        providerId: minimaxProvider.id,
+        reason: minimaxProvider.disabledReason,
+      },
+    };
+  }
+
   return {
     ok: true,
     resolved: { providerId: found.providerId, modelId: found.modelId },
@@ -112,7 +106,7 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
  * to reject disallowed model names before they reach the chat layer.
  */
 export function getModelMeta(modelId: string): ModelMeta | null {
-  return getOpenAIModelMeta(modelId);
+  return getOpenAIModelMeta(modelId) ?? getMiniMaxModelMeta(modelId);
 }
 
 /**

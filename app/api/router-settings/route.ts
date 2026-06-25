@@ -17,7 +17,8 @@ import {
 import { EMPTY_DISCOVERY_SNAPSHOT } from "@/lib/repo/openai-models-discovery-types";
 import { EMPTY_SELECTOR_PREFERENCES } from "@/lib/repo/model-selector-prefs-types";
 import { ensureDiscoveryFresh } from "@/lib/providers/openai-discovery";
-import type { ReasoningLevel } from "@/lib/providers/types";
+import { getMiniMaxConfig, getMiniMaxModels, minimaxProvider } from "@/lib/providers/minimax";
+import type { ProviderId, ReasoningLevel } from "@/lib/providers/types";
 import { upsertRouterSettingsRow } from "@/lib/repo/router-settings";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +52,8 @@ type RouterSettingsDto = {
   }>;
   effectiveRegistry: {
     models: ReadonlyArray<{
+      providerId: ProviderId;
+      providerLabel: string;
       modelId: string;
       displayLabel: string;
       configured: boolean;
@@ -71,7 +74,7 @@ type RouterSettingsDto = {
         structuredOutput: boolean;
         streaming: boolean;
       };
-      provenance: "local_meta" | "discovered_only" | "fake" | "stale";
+      provenance: "local_meta" | "discovered_only" | "fake" | "stale" | "env_static";
     }>;
     defaults: { manualModelId: string | null; reasoningLevel: ReasoningLevel };
     counts: {
@@ -104,6 +107,45 @@ function getFallbackEffectiveRegistry(): ReturnType<typeof buildEffectiveRegistr
     selectorPrefs: EMPTY_SELECTOR_PREFERENCES,
     openaiKeySet: Boolean(process.env.OPENAI_API_KEY?.trim()),
   });
+}
+
+function serializeRegistryModels(
+  registry: Awaited<ReturnType<typeof getEffectiveModelsRegistry>>,
+): RouterSettingsDto["effectiveRegistry"]["models"] {
+  const openaiRows = registry.models.map((m) => ({
+    ...m,
+    providerId: "openai" as const,
+    providerLabel: "OpenAI",
+  }));
+  const minimaxConfig = getMiniMaxConfig();
+  const minimaxRows = getMiniMaxModels().map((m) => ({
+    providerId: minimaxProvider.id,
+    providerLabel: minimaxProvider.label,
+    modelId: m.modelId,
+    displayLabel: m.modelLabel,
+    configured: true,
+    available: m.enabled,
+    stale: false,
+    supportsReasoning: false,
+    supportedReasoningLevels: [] as ReadonlyArray<ReasoningLevel>,
+    tier: "standard" as const,
+    usableForChat: m.enabled,
+    manualSelectorVisible: true,
+    manuallyOverridden: false,
+    routerEligible: false,
+    capabilities: {
+      reasoning: false,
+      vision: false,
+      images: false,
+      functionCalling: false,
+      structuredOutput: false,
+      streaming: true,
+    },
+    provenance: "env_static" as const,
+    // Keep the read above intentional: this row reflects env-file config only.
+    ...(!minimaxConfig.apiKeySet ? { available: false, usableForChat: false } : {}),
+  }));
+  return [...openaiRows, ...minimaxRows];
 }
 
 function serializeDiscovery(
@@ -185,7 +227,7 @@ export async function GET() {
     configured,
     registry: registryToRouterAllowlist(registry),
     effectiveRegistry: {
-      models: registry.models,
+      models: serializeRegistryModels(registry),
       defaults: registry.defaults,
       counts: registry.counts,
       discovery: serializeDiscovery(registry.discovery),

@@ -104,6 +104,8 @@ type EffectiveDiscoveryDto = {
 };
 
 type EffectiveRegistryModelDto = {
+  providerId: "openai" | "minimax";
+  providerLabel: string;
   modelId: string;
   displayLabel: string;
   configured: boolean;
@@ -124,7 +126,7 @@ type EffectiveRegistryModelDto = {
     structuredOutput: boolean;
     streaming: boolean;
   };
-  provenance: "local_meta" | "discovered_only" | "fake" | "stale";
+  provenance: "local_meta" | "discovered_only" | "fake" | "stale" | "env_static";
 };
 
 type RouterSettingsDto = {
@@ -173,6 +175,7 @@ type RefreshStatus =
       kind: "refreshed";
       at: number;
       modelCount: number;
+      minimaxModelCount: number;
       source: "openai" | "fake" | "cache_fresh";
     }
   | { kind: "refresh_error"; at: number; message: string };
@@ -804,13 +807,24 @@ export const RouterSettingsPage: FC = () => {
       }
       const data = (await res.json()) as {
         outcome:
-          | { kind: "fresh"; source: "openai" | "fake"; modelCount: number }
-          | { kind: "cache_fresh"; ageMs: number; modelCount: number }
+          | {
+              kind: "fresh";
+              source: "openai" | "fake";
+              modelCount: number;
+              minimaxModelCount?: number;
+            }
+          | {
+              kind: "cache_fresh";
+              ageMs: number;
+              modelCount: number;
+              minimaxModelCount?: number;
+            }
           | {
               kind: "failed";
               reason: string;
               usedCache: boolean;
               modelCount: number;
+              minimaxModelCount?: number;
             };
       };
       if (data.outcome.kind === "fresh") {
@@ -819,6 +833,7 @@ export const RouterSettingsPage: FC = () => {
           at: Date.now(),
           modelCount: data.outcome.modelCount,
           source: data.outcome.source,
+          minimaxModelCount: data.outcome.minimaxModelCount ?? 0,
         });
       } else if (data.outcome.kind === "cache_fresh") {
         setRefreshStatus({
@@ -826,6 +841,7 @@ export const RouterSettingsPage: FC = () => {
           at: Date.now(),
           modelCount: data.outcome.modelCount,
           source: "cache_fresh",
+          minimaxModelCount: data.outcome.minimaxModelCount ?? 0,
         });
       } else {
         setRefreshStatus({
@@ -918,8 +934,8 @@ export const RouterSettingsPage: FC = () => {
             <h1 className="text-lg font-semibold">Router Settings</h1>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Discover what OpenAI lets you call (Section A), configure each model in a unified
-            registry (Section B), and tune the router&apos;s global safety knobs (Section C).
+            Discover provider models (Section A), configure each model in a unified registry
+            (Section B), and tune the OpenAI-only router&apos;s global safety knobs (Section C).
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -977,7 +993,7 @@ export const RouterSettingsPage: FC = () => {
       )}
 
       <main className="mt-6 space-y-8 pb-12">
-        {/* Section A: OpenAI Model Discovery */}
+        {/* Section A: Provider Model Discovery */}
         <section
           aria-labelledby="discovery-heading"
           className="rounded-lg border border-border/60 bg-card p-4 sm:p-6"
@@ -986,13 +1002,13 @@ export const RouterSettingsPage: FC = () => {
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div>
               <h2 id="discovery-heading" className="text-sm font-semibold">
-                A · OpenAI model discovery
+                A · Provider model discovery
               </h2>
               <p className="mt-1 text-xs text-muted-foreground">
                 Control Room calls OpenAI&apos;s{" "}
-                <code className="rounded bg-muted px-1">/v1/models</code> to learn which model ids
-                are available to your API key. The last successful payload is cached in Postgres and
-                reused until you refresh or it goes stale.
+                <code className="rounded bg-muted px-1">/v1/models</code> to learn which OpenAI
+                model ids are available to your API key. MiniMax is env-file static for now and is
+                re-read from <code className="rounded bg-muted px-1">MINIMAX_DEFAULT_MODEL</code>.
               </p>
             </div>
           </div>
@@ -1123,7 +1139,7 @@ export const RouterSettingsPage: FC = () => {
               ) : (
                 <RefreshCw className="size-3.5" />
               )}
-              Refresh OpenAI models now
+              Refresh OpenAI + MiniMax models now
             </Button>
             {refreshStatus.kind === "refreshed" && (
               <span
@@ -1131,7 +1147,8 @@ export const RouterSettingsPage: FC = () => {
                 data-testid="discovery-refresh-status"
               >
                 Refreshed {formatRelativeAge(Date.now() - refreshStatus.at)} ({refreshStatus.source}
-                , {refreshStatus.modelCount} models).
+                , {refreshStatus.modelCount} OpenAI models, {refreshStatus.minimaxModelCount}{" "}
+                MiniMax model).
               </span>
             )}
             {refreshStatus.kind === "refresh_error" && (
@@ -1159,10 +1176,10 @@ export const RouterSettingsPage: FC = () => {
               B · Model registry
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              One row per discovered OpenAI model. Toggle each model&apos;s visibility in the chat
-              composer (Manual), let the router recommend it (Router), and pick which reasoning
-              levels the router may pair it with (Reasoning). The router can only choose from
-              configured, currently available models — everything else is locked.
+              One row per provider model. Toggle OpenAI model visibility in the chat composer
+              (Manual), let the OpenAI-only router recommend eligible OpenAI models (Router), and
+              pick which reasoning levels the router may pair with OpenAI models. MiniMax appears
+              here for manual chat status but is not router-eligible yet.
             </p>
           </div>
 
@@ -1200,7 +1217,7 @@ export const RouterSettingsPage: FC = () => {
                 <option value="not-configured">Not configured</option>
                 <option value="manual-enabled">Manual enabled</option>
                 <option value="router-enabled">Router enabled</option>
-                <option value="available">Available from OpenAI</option>
+                <option value="available">Available from provider</option>
                 <option value="unavailable">Unavailable</option>
               </select>
             </div>
@@ -1242,8 +1259,8 @@ export const RouterSettingsPage: FC = () => {
                   <th scope="col" className="px-3 py-2 text-left font-medium" data-label="Model">
                     Model
                   </th>
-                  <th scope="col" className="px-3 py-2 text-left font-medium" data-label="OpenAI">
-                    OpenAI
+                  <th scope="col" className="px-3 py-2 text-left font-medium" data-label="Provider">
+                    Provider
                   </th>
                   <th
                     scope="col"
@@ -1304,8 +1321,12 @@ export const RouterSettingsPage: FC = () => {
                   const saving = Boolean(selectorSaving[entry.modelId]);
                   const showInlineWarning =
                     manualVisible && !entry.configured && !warningDismissedFor[entry.modelId];
-                  const manualToggleDisabled = saving;
-                  const routerLocked = !entry.configured || entry.stale;
+                  const manualToggleDisabled = saving || entry.providerId !== "openai";
+                  const routerLocked =
+                    entry.providerId !== "openai" ||
+                    !entry.configured ||
+                    entry.stale ||
+                    !entry.supportsReasoning;
                   // Partial router toggle: the user has checked some but
                   // not all supported levels. Surfaced as a small badge
                   // next to the switch so the binary Switch state stays
@@ -1340,6 +1361,14 @@ export const RouterSettingsPage: FC = () => {
                               fake
                             </span>
                           )}
+                          {entry.provenance === "env_static" && (
+                            <span
+                              data-testid={`registry-badge-env-static-${entry.modelId}`}
+                              className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
+                            >
+                              env
+                            </span>
+                          )}
                           {entry.provenance === "stale" && (
                             <span
                               data-testid={`registry-badge-stale-${entry.modelId}`}
@@ -1367,14 +1396,17 @@ export const RouterSettingsPage: FC = () => {
                         </div>
                       </td>
 
-                      {/* OpenAI column */}
-                      <td className="px-3 py-2" data-label="OpenAI">
+                      {/* Provider column */}
+                      <td className="px-3 py-2" data-label="Provider">
                         <div className="flex flex-col gap-1">
+                          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                            {entry.providerLabel}
+                          </div>
                           <StatusPill
                             ok={entry.available}
                             okLabel="Available"
                             badLabel="Unavailable"
-                            testId={`registry-openai-pill-${entry.modelId}`}
+                            testId={`registry-provider-pill-${entry.modelId}`}
                           />
                           {entry.available ? (
                             <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
@@ -1448,9 +1480,13 @@ export const RouterSettingsPage: FC = () => {
                             </TooltipTrigger>
                             <TooltipContent>
                               {routerLocked
-                                ? entry.stale
-                                  ? "This model disappeared from the latest OpenAI discovery. Refresh to re-enable."
-                                  : "This model has not yet been configured in Control Room and cannot be recommended by the router."
+                                ? entry.providerId !== "openai"
+                                  ? "Router A/B is currently only supported for OpenAI models."
+                                  : entry.stale
+                                    ? "This model disappeared from the latest OpenAI discovery. Refresh to re-enable."
+                                    : !entry.supportsReasoning
+                                      ? "This model has no supported reasoning levels and cannot be recommended by the router."
+                                      : "This model has not yet been configured in Control Room and cannot be recommended by the router."
                                 : routerOn
                                   ? "Router may recommend this model. Uncheck to stop the router from using it."
                                   : "Router will not recommend this model. Toggle on to allow it."}
@@ -1462,6 +1498,11 @@ export const RouterSettingsPage: FC = () => {
                       {/* Reasoning column */}
                       <td className="px-3 py-2 text-center" data-label="Reasoning">
                         <div className="flex items-center justify-center gap-2">
+                          {(reasoningLevelsByModel.get(entry.modelId) ?? []).length === 0 && (
+                            <span className="text-[10px] text-muted-foreground/60">
+                              Not supported
+                            </span>
+                          )}
                           {(reasoningLevelsByModel.get(entry.modelId) ?? []).map((level) => {
                             const cell = reasoningCellState({
                               configured: entry.configured && !entry.stale,
@@ -1529,14 +1570,12 @@ export const RouterSettingsPage: FC = () => {
           )}
 
           <p className="mt-3 text-xs text-muted-foreground/70">
-            <strong>OpenAI</strong> = what OpenAI&apos;s{" "}
-            <code className="rounded bg-muted px-1">/v1/models</code> says you can call.{" "}
-            <strong>Control Room</strong> = whether this build has local metadata (display label,
-            tier, reasoning levels) for it. <strong>Manual</strong> toggles chat-composer visibility
-            and saves immediately. <strong>Router</strong> toggles whether the router may recommend
-            this model and saves with the rest of the form. <strong>Reasoning</strong> lets you
-            fine-tune which reasoning levels the router may pair this model with — enabled only when
-            the Router toggle is on. Unconfigured models cannot enter the router pool, by design.
+            <strong>Provider</strong> = whether the provider/env config says this model can be
+            called now. <strong>Control Room</strong> = whether this build has local metadata
+            (display label, tier, reasoning levels) for it. <strong>Manual</strong> toggles OpenAI
+            chat-composer visibility and saves immediately; MiniMax is env-file static for now.{" "}
+            <strong>Router</strong> and <strong>Reasoning</strong> are OpenAI-only. Unconfigured
+            models cannot enter the router pool, by design.
           </p>
         </section>
 

@@ -16,6 +16,7 @@ import type { SelectorPreferences } from "@/lib/repo/model-selector-prefs-types"
 
 import type { ModelOption, ModelTier as LegacyModelTier, ReasoningLevel } from "./types";
 import { DEFAULT_REASONING_LEVEL } from "./openai";
+import { getMiniMaxModels } from "./minimax";
 import { FAKE_OPENAI_MODEL_IDS, isFakeOpenAIModelsEnabled } from "./openai-models-fake";
 // Defer the server-only repo imports to the async wrappers so unit tests
 // that only exercise `buildEffectiveRegistry` can load this module
@@ -518,9 +519,15 @@ export async function getEffectiveModelsResponse(): Promise<{
     }
     return option;
   });
+  const allModels = [...models, ...getMiniMaxModels()];
+  const defaultModelId =
+    registry.defaults.manualModelId &&
+    allModels.some((m) => m.modelId === registry.defaults.manualModelId && m.enabled)
+      ? registry.defaults.manualModelId
+      : (allModels.find((m) => m.enabled)?.modelId ?? null);
   return {
-    models,
-    defaultModelId: registry.defaults.manualModelId,
+    models: allModels,
+    defaultModelId,
     defaultReasoningLevel: registry.defaults.reasoningLevel,
   };
 }
