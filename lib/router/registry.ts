@@ -117,7 +117,7 @@ export function validateRouterPoolAgainstRegistry(input: {
       });
       continue;
     }
-    if (!entry.known) {
+    if (!entry.configured) {
       errors.push({
         field: "allowedCombos",
         message: `${modelId} is not in the local model registry and cannot enter the router pool. Add it to the manual selector with explicit metadata first.`,

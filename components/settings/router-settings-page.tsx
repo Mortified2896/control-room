@@ -5,11 +5,19 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowUpDown,
   CheckCircle2,
+  Eye,
+  EyeOff,
+  Filter,
+  Info,
   Loader2,
   RefreshCw,
   RotateCcw,
   Save,
+  Search,
+  Sparkles,
+  XCircle,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -32,28 +40,38 @@ import type { ReasoningLevel } from "@/lib/providers/types";
  *      - last refreshed timestamp
  *      - manual refresh button
  *      - refresh status / error
- *      - counts (discovered / known / available / stale / hidden)
+ *      - summary counts in plain English:
+ *        "118 OpenAI models discovered, 3 fully configured, 115
+ *         available but unclassified"
  *      - dev/fake mode banner
  *
  *   B. Manual Model Selector
- *      - show/hide toggle for every discovered OpenAI model
- *      - known / unknown / available / unavailable badges
- *      - hidden models disappear from the manual chat dropdown
+ *      - per-model show/hide toggle for every discovered OpenAI model
+ *      - each row exposes OpenAI availability and Control Room
+ *        configuration as TWO STACKED COLUMNS so the user sees
+ *        "OpenAI says I can use this" vs "Control Room knows about
+ *        this" as separate facts
+ *      - "Unclassified" badge (renamed from "UNKNOWN") for models
+ *        that OpenAI exposes but Control Room has no local metadata
+ *        for; unconfigured models can be opted into for
+ *        experimentation
+ *      - inline warning when the user enables an unconfigured model
+ *      - capability placeholders (disabled): Reasoning, Vision,
+ *        Images, Function calling, Structured output, Streaming
+ *      - sorting + search filter so the table stays usable as the
+ *        OpenAI catalog grows
  *
  *   C. Router Recommendation Pool (existing router settings UI)
  *      - allowed (model + reasoning-level) checkboxes
  *      - fallback model + reasoning level
  *      - allow expensive models / long-prompt safety controls
- *      - explicit "Side B only" copy so the user knows what they're editing
+ *      - explicit "Side B only" copy so the user knows what they're
+ *        editing
+ *      - strict gate: unconfigured + stale models cannot enter the
+ *        pool (router safety unchanged)
  *
- * Pricing knobs (`maxCostPerRecommendationUsd`, `maxCostPerAbRunUsd`) and
- * the router model id are intentionally NOT exposed here — they remain
- * env-only until we have reliable pricing metadata.
- *
- * The component owns its own form state. Save sends a partial payload;
- * the API merges with the current effective settings and re-validates
- * with the strict save parser (which now consults the live registry
- * when available).
+ * Pricing knobs (`maxCostPerRecommendationUsd`, `maxCostPerAbRunUsd`)
+ * and the router model id are intentionally NOT exposed here.
  */
 
 type RegistryEntry = {
@@ -61,7 +79,7 @@ type RegistryEntry = {
   modelLabel: string;
   reasoningLevel: ReasoningLevel;
   tier: "cheap" | "expensive";
-  known: boolean;
+  configured: boolean;
   available: boolean;
   stale: boolean;
 };
@@ -80,7 +98,7 @@ type EffectiveDiscoveryDto = {
 type EffectiveRegistryModelDto = {
   modelId: string;
   displayLabel: string;
-  known: boolean;
+  configured: boolean;
   available: boolean;
   stale: boolean;
   supportsReasoning: boolean;
@@ -88,7 +106,16 @@ type EffectiveRegistryModelDto = {
   tier: "standard" | "expensive" | "unknown";
   usableForChat: boolean;
   manualSelectorVisible: boolean;
+  manuallyOverridden: boolean;
   routerEligible: boolean;
+  capabilities: {
+    reasoning: boolean;
+    vision: boolean;
+    images: boolean;
+    functionCalling: boolean;
+    structuredOutput: boolean;
+    streaming: boolean;
+  };
   provenance: "local_meta" | "discovered_only" | "fake" | "stale";
 };
 
@@ -102,8 +129,9 @@ type RouterSettingsDto = {
     defaults: { manualModelId: string | null; reasoningLevel: ReasoningLevel };
     counts: {
       discovered: number;
-      known: number;
-      available: number;
+      discoveredConfigured: number;
+      discoveredUnclassified: number;
+      configuredAvailable: number;
       stale: number;
       manualSelectorVisible: number;
       routerEligible: number;
@@ -120,7 +148,7 @@ type FormState = {
   fallbackReasoningLevel: ReasoningLevel;
   allowExpensiveModels: boolean;
   allowLongPromptWhenExpensive: boolean;
-  longPromptThresholdChars: string; // string so we can show "blank" cleanly
+  longPromptThresholdChars: string;
 };
 
 type FieldError = { field: string; message: string };
@@ -134,8 +162,16 @@ type SaveStatus =
 type RefreshStatus =
   | { kind: "idle" }
   | { kind: "refreshing" }
-  | { kind: "refreshed"; at: number; modelCount: number; source: "openai" | "fake" | "cache_fresh" }
+  | {
+      kind: "refreshed";
+      at: number;
+      modelCount: number;
+      source: "openai" | "fake" | "cache_fresh";
+    }
   | { kind: "refresh_error"; at: number; message: string };
+
+type SelectorSort = "configured-first" | "unclassified-first" | "hidden-first" | "available";
+type SelectorFilter = "all" | "configured" | "unclassified" | "hidden" | "available";
 
 function comboKey(modelId: string, reasoningLevel: ReasoningLevel): string {
   return `${modelId}|${reasoningLevel}`;
@@ -242,6 +278,18 @@ function formatRelativeAge(ageMs: number | null): string {
 
 const REASONING_LEVELS: ReadonlyArray<ReasoningLevel> = ["low", "medium", "high"];
 
+const CAPABILITY_LABELS: ReadonlyArray<{
+  key: "reasoning" | "vision" | "images" | "functionCalling" | "structuredOutput" | "streaming";
+  label: string;
+}> = [
+  { key: "reasoning", label: "Reasoning" },
+  { key: "vision", label: "Vision" },
+  { key: "images", label: "Images" },
+  { key: "functionCalling", label: "Function calling" },
+  { key: "structuredOutput", label: "Structured output" },
+  { key: "streaming", label: "Streaming" },
+];
+
 const ErrorPanel: FC<{ message: string; onRetry: () => void }> = ({ message, onRetry }) => {
   return (
     <div className="mx-auto flex h-dvh w-full max-w-2xl flex-col items-center justify-center gap-3 p-6 text-center">
@@ -273,6 +321,102 @@ const LoadingPanel: FC = () => {
   );
 };
 
+/**
+ * Small two-line "OK / Not OK" pill used inside the manual-selector table
+ * to keep OpenAI availability and Control Room support visually separate.
+ *
+ *   ✓ Available        (green)
+ *   ✗ Unavailable      (zinc)
+ *
+ *   ✓ Configured       (emerald)
+ *   ⚠ Not configured   (zinc/amber)
+ *
+ * The brief is explicit that these two facts must not be conflated.
+ */
+const StatusPill: FC<{
+  ok: boolean;
+  okLabel: string;
+  badLabel: string;
+  testId?: string;
+}> = ({ ok, okLabel, badLabel, testId }) => {
+  return (
+    <span
+      data-testid={testId}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        ok
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+          : "border-zinc-500/40 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+      )}
+    >
+      {ok ? <CheckCircle2 className="size-3" /> : <XCircle className="size-3" />}
+      {ok ? okLabel : badLabel}
+    </span>
+  );
+};
+
+/**
+ * Renders the future capability placeholders as a column of disabled
+ * checkboxes. The brief calls for these to be present (so the UI is
+ * ready when the capability registry ships) but not yet functional.
+ *
+ * We pass a `populated` map so a configured model with reasoning
+ * metadata shows its check actually checked; everything else stays
+ * unchecked + disabled.
+ */
+const CapabilityList: FC<{
+  capabilities: EffectiveRegistryModelDto["capabilities"];
+  testIdPrefix: string;
+}> = ({ capabilities, testIdPrefix }) => {
+  return (
+    <ul className="flex flex-col gap-1">
+      {CAPABILITY_LABELS.map((cap) => {
+        const checked = capabilities[cap.key];
+        return (
+          <li
+            key={cap.key}
+            className="flex items-center gap-1.5 text-[10px] text-muted-foreground/80"
+          >
+            <Checkbox
+              checked={checked}
+              disabled
+              aria-label={`${cap.label} (future capability placeholder)`}
+              data-testid={`${testIdPrefix}-capability-${cap.key}`}
+              className="size-3"
+            />
+            <span>{cap.label}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+};
+
+/**
+ * Inline warning shown next to the visibility toggle when the user is
+ * about to enable a model Control Room has no local metadata for.
+ * Matches the brief's required copy.
+ */
+const UnconfiguredWarning: FC<{ modelLabel: string }> = ({ modelLabel }) => {
+  return (
+    <div
+      className="mt-1 max-w-[260px] rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-700 dark:text-amber-300"
+      role="note"
+    >
+      <div className="flex items-start gap-1.5">
+        <Info className="mt-0.5 size-3 shrink-0" />
+        <div>
+          <div className="font-medium">Not configured in Control Room</div>
+          <div className="text-amber-700/80 dark:text-amber-300/80">
+            {modelLabel} has not yet been configured in Control Room. Reasoning-level support and
+            router support are unknown.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const RouterSettingsPage: FC = () => {
   const [dto, setDto] = useState<RouterSettingsDto | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -283,6 +427,15 @@ export const RouterSettingsPage: FC = () => {
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus>({ kind: "idle" });
   const [selectorSaving, setSelectorSaving] = useState<Record<string, boolean>>({});
   const [selectorError, setSelectorError] = useState<string | null>(null);
+
+  // Manual-selector UI state (sort + filter + search). The persisted
+  // selector prefs are owned by the backend; this is purely client-side
+  // presentation state so the user can find what they're looking for
+  // without scrolling through 100+ ids.
+  const [sortMode, setSortMode] = useState<SelectorSort>("configured-first");
+  const [filterMode, setFilterMode] = useState<SelectorFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [warningDismissedFor, setWarningDismissedFor] = useState<Record<string, boolean>>({});
 
   const loadSettings = useCallback(async () => {
     setLoadError(null);
@@ -340,7 +493,7 @@ export const RouterSettingsPage: FC = () => {
       modelId: string;
       modelLabel: string;
       tier: "cheap" | "expensive";
-      known: boolean;
+      configured: boolean;
       available: boolean;
       stale: boolean;
       levels: RegistryEntry[];
@@ -353,7 +506,7 @@ export const RouterSettingsPage: FC = () => {
         modelId: e.modelId,
         modelLabel: e.modelLabel,
         tier: e.tier,
-        known: e.known,
+        configured: e.configured,
         available: e.available,
         stale: e.stale,
         levels: registry.filter((r) => r.modelId === e.modelId),
@@ -362,12 +515,67 @@ export const RouterSettingsPage: FC = () => {
     return out;
   }, [registry]);
 
-  // Effective registry entries for Section B (manual selector). These
-  // include unknown / stale / fake models so the user can opt them in.
   const selectorEntries = useMemo(() => dto?.effectiveRegistry.models ?? [], [dto]);
   const selectorPrefs = useMemo(() => dto?.effectiveRegistry.selectorPrefs ?? {}, [dto]);
   const discovery = useMemo(() => dto?.effectiveRegistry.discovery, [dto]);
   const counts = useMemo(() => dto?.effectiveRegistry.counts, [dto]);
+
+  // Effective visible-set for the manual selector table, after applying
+  // the user's sort + filter + search. Persisted prefs are unchanged;
+  // this is presentation-only.
+  const visibleSelectorEntries = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const matchesSearch = (entry: EffectiveRegistryModelDto) =>
+      q.length === 0 ||
+      entry.modelId.toLowerCase().includes(q) ||
+      entry.displayLabel.toLowerCase().includes(q);
+
+    const matchesFilter = (entry: EffectiveRegistryModelDto): boolean => {
+      switch (filterMode) {
+        case "all":
+          return true;
+        case "configured":
+          return entry.configured;
+        case "unclassified":
+          return !entry.configured && !entry.stale;
+        case "hidden": {
+          const pref = selectorPrefs[entry.modelId]?.visible;
+          const visible = pref !== undefined ? pref : entry.manualSelectorVisible;
+          return !visible;
+        }
+        case "available":
+          return entry.available && !entry.stale;
+      }
+    };
+
+    const filtered = selectorEntries.filter((e) => matchesFilter(e) && matchesSearch(e));
+    const sorted = [...filtered];
+    sorted.sort((a, b) => {
+      switch (sortMode) {
+        case "configured-first":
+          // Configured first, then by availability, then alphabetical.
+          if (a.configured !== b.configured) return a.configured ? -1 : 1;
+          if (a.available !== b.available) return a.available ? -1 : 1;
+          return a.modelId.localeCompare(b.modelId);
+        case "unclassified-first":
+          if (a.configured !== b.configured) return a.configured ? 1 : -1;
+          if (a.available !== b.available) return a.available ? -1 : 1;
+          return a.modelId.localeCompare(b.modelId);
+        case "hidden-first": {
+          const aPref = selectorPrefs[a.modelId]?.visible;
+          const bPref = selectorPrefs[b.modelId]?.visible;
+          const aVisible = aPref !== undefined ? aPref : a.manualSelectorVisible;
+          const bVisible = bPref !== undefined ? bPref : b.manualSelectorVisible;
+          if (aVisible !== bVisible) return aVisible ? 1 : -1;
+          return a.modelId.localeCompare(b.modelId);
+        }
+        case "available":
+          if (a.available !== b.available) return a.available ? -1 : 1;
+          return a.modelId.localeCompare(b.modelId);
+      }
+    });
+    return sorted;
+  }, [selectorEntries, selectorPrefs, sortMode, filterMode, searchQuery]);
 
   const update = useCallback(
     (patch: Partial<FormState>) => {
@@ -534,8 +742,6 @@ export const RouterSettingsPage: FC = () => {
           message: `${data.outcome.reason}${data.outcome.usedCache ? " (using cached discovery)" : ""}`,
         });
       }
-      // Re-fetch the combined DTO so the rest of the page picks up the
-      // new ids + counts + (if present) refreshed selector prefs.
       await loadSettings();
     } catch (err) {
       setRefreshStatus({
@@ -549,7 +755,6 @@ export const RouterSettingsPage: FC = () => {
   const onToggleSelectorVisible = useCallback(
     async (modelId: string, visible: boolean) => {
       if (!dto) return;
-      // Optimistic update of the local DTO so the toggle feels instant.
       const nextPrefs: Record<string, { visible: boolean }> = {
         ...dto.effectiveRegistry.selectorPrefs,
         [modelId]: { visible },
@@ -557,6 +762,8 @@ export const RouterSettingsPage: FC = () => {
       setDto({ ...dto, effectiveRegistry: { ...dto.effectiveRegistry, selectorPrefs: nextPrefs } });
       setSelectorSaving((s) => ({ ...s, [modelId]: true }));
       setSelectorError(null);
+      // Reset the inline-warning dismissal when the user re-toggles.
+      setWarningDismissedFor((w) => ({ ...w, [modelId]: false }));
       try {
         const res = await fetch("/api/model-selector-prefs", {
           method: "PUT",
@@ -571,7 +778,6 @@ export const RouterSettingsPage: FC = () => {
           throw new Error(body?.reason ?? `status ${res.status}`);
         }
       } catch (err) {
-        // Revert on failure.
         setDto(dto);
         setSelectorError(err instanceof Error ? err.message : "Save failed");
       } finally {
@@ -600,7 +806,7 @@ export const RouterSettingsPage: FC = () => {
   const isExpensiveAllowed = form.allowExpensiveModels;
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-3xl flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-8">
+    <div className="mx-auto flex h-dvh w-full max-w-4xl flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-8">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
         <div>
           <div className="flex items-center gap-2">
@@ -702,7 +908,60 @@ export const RouterSettingsPage: FC = () => {
             </div>
           )}
 
-          <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3" data-testid="discovery-status">
+          {/* Plain-English summary. The brief calls for "118 OpenAI models
+              discovered, 3 fully configured, 115 available but
+              unclassified" rather than the previous "118 / 3" shorthand. */}
+          <div
+            className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3"
+            data-testid="discovery-summary"
+          >
+            <div
+              className="rounded-md border border-border/60 px-3 py-2"
+              data-testid="discovery-summary-discovered"
+            >
+              <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                OpenAI models discovered
+              </dt>
+              <dd className="mt-1 flex items-baseline gap-1 text-sm">
+                <span className="text-lg font-semibold">{counts?.discovered ?? 0}</span>
+                <span className="text-xs text-muted-foreground/70">total in latest refresh</span>
+              </dd>
+            </div>
+            <div
+              className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2"
+              data-testid="discovery-summary-configured"
+            >
+              <dt className="text-[10px] font-medium uppercase tracking-wide text-emerald-700/80 dark:text-emerald-300/80">
+                Fully configured
+              </dt>
+              <dd className="mt-1 flex items-baseline gap-1 text-sm">
+                <span className="text-lg font-semibold text-emerald-700 dark:text-emerald-300">
+                  {counts?.discoveredConfigured ?? 0}
+                </span>
+                <span className="text-xs text-emerald-700/70 dark:text-emerald-300/70">
+                  have local metadata
+                </span>
+              </dd>
+            </div>
+            <div
+              className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2"
+              data-testid="discovery-summary-unclassified"
+            >
+              <dt className="text-[10px] font-medium uppercase tracking-wide text-amber-700/80 dark:text-amber-300/80">
+                Available but unclassified
+              </dt>
+              <dd className="mt-1 flex items-baseline gap-1 text-sm">
+                <span className="text-lg font-semibold text-amber-700 dark:text-amber-300">
+                  {counts?.discoveredUnclassified ?? 0}
+                </span>
+                <span className="text-xs text-amber-700/70 dark:text-amber-300/70">
+                  no local metadata
+                </span>
+              </dd>
+            </div>
+          </div>
+
+          <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="discovery-status">
             <div className="rounded-md border border-border/60 px-3 py-2">
               <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
                 Last refreshed
@@ -715,19 +974,26 @@ export const RouterSettingsPage: FC = () => {
             </div>
             <div className="rounded-md border border-border/60 px-3 py-2">
               <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-                Discovered / known
+                Stale entries
               </dt>
               <dd className="mt-1 text-sm">
-                {counts ? `${counts.discovered} / ${counts.known}` : "—"}
+                {counts?.stale ?? 0}
+                <span className="ml-1 text-xs text-muted-foreground/70">
+                  configured but disappeared
+                </span>
               </dd>
             </div>
             <div className="rounded-md border border-border/60 px-3 py-2">
               <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-                Available / stale
+                In manual selector
               </dt>
-              <dd className="mt-1 text-sm">
-                {counts ? `${counts.available} / ${counts.stale}` : "—"}
-              </dd>
+              <dd className="mt-1 text-sm">{counts?.manualSelectorVisible ?? 0}</dd>
+            </div>
+            <div className="rounded-md border border-border/60 px-3 py-2">
+              <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                Router eligible
+              </dt>
+              <dd className="mt-1 text-sm">{counts?.routerEligible ?? 0}</dd>
             </div>
           </dl>
 
@@ -801,54 +1067,123 @@ export const RouterSettingsPage: FC = () => {
             </div>
           )}
 
-          <div className="mt-4 overflow-hidden rounded-md border border-border/60">
+          {/* Sort + filter + search controls. The list can be very long
+              (OpenAI's catalog is ~120 entries) so we let the user
+              narrow it. */}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <div className="relative flex-1 min-w-[180px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
+              <Input
+                type="text"
+                placeholder="Search models by id or label…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                data-testid="selector-search"
+                className="pl-8"
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              <Filter className="size-3.5 text-muted-foreground/60" />
+              <select
+                aria-label="Filter"
+                value={filterMode}
+                onChange={(e) => setFilterMode(e.target.value as SelectorFilter)}
+                data-testid="selector-filter"
+                className="border-input bg-background flex h-9 rounded-md border px-2 text-xs shadow-xs outline-none"
+              >
+                <option value="all">All ({selectorEntries.length})</option>
+                <option value="configured">Configured only</option>
+                <option value="unclassified">Unclassified only</option>
+                <option value="available">Available from OpenAI</option>
+                <option value="hidden">Hidden from picker</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <ArrowUpDown className="size-3.5 text-muted-foreground/60" />
+              <select
+                aria-label="Sort"
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value as SelectorSort)}
+                data-testid="selector-sort"
+                className="border-input bg-background flex h-9 rounded-md border px-2 text-xs shadow-xs outline-none"
+              >
+                <option value="configured-first">Configured first</option>
+                <option value="unclassified-first">Unclassified first</option>
+                <option value="hidden-first">Hidden first</option>
+                <option value="available">Available first</option>
+              </select>
+            </div>
+          </div>
+
+          <div
+            className="mt-2 text-xs text-muted-foreground/70"
+            data-testid="selector-result-count"
+          >
+            Showing {visibleSelectorEntries.length} of {selectorEntries.length} models
+            {searchQuery ? ` matching “${searchQuery}”` : ""}
+            {filterMode !== "all" ? ` (filter: ${filterMode})` : ""}.
+          </div>
+
+          <div className="mt-3 overflow-hidden rounded-md border border-border/60">
             <table className="w-full text-sm">
               <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground/70">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Model</th>
-                  <th className="px-3 py-2 text-left font-medium">Status</th>
-                  <th className="px-3 py-2 text-left font-medium">Tier</th>
+                  <th className="px-3 py-2 text-left font-medium">OpenAI</th>
+                  <th className="px-3 py-2 text-left font-medium">Control Room</th>
+                  <th className="px-3 py-2 text-left font-medium">Capabilities</th>
                   <th className="px-3 py-2 text-right font-medium">In selector</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60">
-                {selectorEntries.map((entry) => {
+                {visibleSelectorEntries.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className="px-3 py-6 text-center text-xs text-muted-foreground/60"
+                    >
+                      No models match the current filter / search.
+                    </td>
+                  </tr>
+                )}
+                {visibleSelectorEntries.map((entry) => {
                   const prefVisible = selectorPrefs[entry.modelId]?.visible;
                   const defaultVisible = entry.manualSelectorVisible;
-                  const visible =
-                    prefVisible !== undefined ? prefVisible && entry.usableForChat : defaultVisible;
+                  const visible = prefVisible !== undefined ? prefVisible : defaultVisible;
+                  // The server-computed `manuallyOverridden` only updates
+                  // when we re-fetch the registry. For instant feedback
+                  // after toggling, derive it from the local selector
+                  // prefs map (which is updated optimistically on click).
+                  const manuallyOverridden = prefVisible !== undefined || entry.manuallyOverridden;
                   const saving = Boolean(selectorSaving[entry.modelId]);
-                  const disabled = !entry.usableForChat;
+                  const showInlineWarning =
+                    visible && !entry.configured && !warningDismissedFor[entry.modelId];
+                  const toggleDisabled = saving;
                   return (
                     <tr
                       key={entry.modelId}
                       data-testid={`selector-row-${entry.modelId}`}
-                      className={cn(
-                        "transition-colors",
-                        entry.stale && "bg-muted/20",
-                        disabled && "opacity-60",
-                      )}
+                      data-configured={entry.configured ? "true" : "false"}
+                      className={cn("transition-colors", entry.stale && "bg-muted/20")}
                     >
                       <td className="px-3 py-2 align-top">
                         <div className="font-medium">{entry.displayLabel}</div>
                         <div className="text-[11px] text-muted-foreground/70">{entry.modelId}</div>
-                      </td>
-                      <td className="px-3 py-2 align-top">
-                        <div className="flex flex-wrap gap-1">
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {!entry.configured && !entry.stale && (
+                            <span
+                              data-testid={`selector-badge-unclassified-${entry.modelId}`}
+                              className="inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-700 dark:text-rose-300"
+                            >
+                              unclassified
+                            </span>
+                          )}
                           {entry.provenance === "fake" && (
                             <span
                               data-testid={`selector-badge-fake-${entry.modelId}`}
                               className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
                             >
                               fake
-                            </span>
-                          )}
-                          {entry.provenance === "discovered_only" && (
-                            <span
-                              data-testid={`selector-badge-unknown-${entry.modelId}`}
-                              className="inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-700 dark:text-rose-300"
-                            >
-                              unknown
                             </span>
                           )}
                           {entry.provenance === "stale" && (
@@ -859,39 +1194,73 @@ export const RouterSettingsPage: FC = () => {
                               stale
                             </span>
                           )}
-                          {entry.available ? (
-                            <span className="inline-flex items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-                              available
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full border border-zinc-500/40 bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
-                              unavailable
+                          {manuallyOverridden && (
+                            <span
+                              data-testid={`selector-badge-overridden-${entry.modelId}`}
+                              className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
+                            >
+                              override
                             </span>
                           )}
                         </div>
                       </td>
                       <td className="px-3 py-2 align-top">
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
-                            entry.tier === "expensive"
-                              ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                              : entry.tier === "unknown"
-                                ? "border-zinc-500/40 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300"
-                                : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                        {/* OpenAI column: just availability. The brief
+                            explicitly wants this separated from "Control
+                            Room knows about this model". */}
+                        <div className="flex flex-col gap-1">
+                          <StatusPill
+                            ok={entry.available}
+                            okLabel="Available"
+                            badLabel="Unavailable"
+                            testId={`selector-openai-pill-${entry.modelId}`}
+                          />
+                          {entry.available ? (
+                            <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
+                          ) : (
+                            <EyeOff className="size-3 text-zinc-500/60" />
                           )}
-                        >
-                          {entry.tier}
-                        </span>
+                        </div>
                       </td>
-                      <td className="px-3 py-2 text-right">
-                        <Switch
-                          checked={visible}
-                          disabled={disabled || saving}
-                          onCheckedChange={(v) => void onToggleSelectorVisible(entry.modelId, v)}
-                          aria-label={`Show ${entry.displayLabel} in manual selector`}
-                          data-testid={`selector-toggle-${entry.modelId}`}
+                      <td className="px-3 py-2 align-top">
+                        {/* Control Room column: configured (local
+                            metadata) vs not configured. Independent of
+                            OpenAI availability. */}
+                        <div className="flex flex-col gap-1">
+                          <StatusPill
+                            ok={entry.configured}
+                            okLabel="Configured"
+                            badLabel="Not configured"
+                            testId={`selector-controlroom-pill-${entry.modelId}`}
+                          />
+                          {entry.configured ? (
+                            <Sparkles className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground/60">
+                              no local metadata
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-top">
+                        <CapabilityList
+                          capabilities={entry.capabilities}
+                          testIdPrefix={`selector-${entry.modelId}`}
                         />
+                      </td>
+                      <td className="px-3 py-2 align-top text-right">
+                        <div className="flex flex-col items-end gap-1">
+                          <Switch
+                            checked={visible}
+                            disabled={toggleDisabled}
+                            onCheckedChange={(v) => void onToggleSelectorVisible(entry.modelId, v)}
+                            aria-label={`Show ${entry.displayLabel} in manual selector`}
+                            data-testid={`selector-toggle-${entry.modelId}`}
+                          />
+                          {showInlineWarning && (
+                            <UnconfiguredWarning modelLabel={entry.displayLabel} />
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -899,13 +1268,15 @@ export const RouterSettingsPage: FC = () => {
               </tbody>
             </table>
           </div>
-          {selectorEntries.some((e) => !e.usableForChat) && (
-            <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-              Some models are listed but cannot be used right now (e.g. OPENAI_API_KEY is not
-              configured, or the model is no longer in the latest OpenAI catalog). Refresh discovery
-              above to re-evaluate.
-            </p>
-          )}
+
+          <p className="mt-3 text-xs text-muted-foreground/70">
+            <strong>OpenAI</strong> = what OpenAI&apos;s{" "}
+            <code className="rounded bg-muted px-1">/v1/models</code> says you can call.{" "}
+            <strong>Control Room</strong> = whether this build has local metadata (display label,
+            tier, reasoning levels) for it. Models with ✓ on both rows are the safest picks; the
+            router only ever picks from those. Unclassified models can be enabled for
+            experimentation, but the router will never select them.
+          </p>
         </section>
 
         {/* Section C: Router Recommendation Pool */}
@@ -924,8 +1295,9 @@ export const RouterSettingsPage: FC = () => {
               </h2>
               <p className="mt-1 text-xs text-muted-foreground">
                 The router picks one of the checked combinations below for Side B. Side A (the
-                user&apos;s selected model) is never touched here. Pool entries must be currently
-                available; unknown / stale models cannot enter the router pool.
+                user&apos;s selected model) is never touched here. Only configured, currently
+                available models appear here; unconfigured and stale models cannot enter the router
+                pool.
               </p>
             </div>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">

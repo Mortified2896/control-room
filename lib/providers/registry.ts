@@ -68,8 +68,14 @@ export type EffectiveModelEntry = {
   providerId: "openai";
   modelId: string;
   displayLabel: string;
-  /** Present in the local static alias map. */
-  known: boolean;
+  /**
+   * "Configured" — present in the local static alias map. The model
+   * has known display label, tier, and supported reasoning levels.
+   * Renamed from `known` for UI clarity: the Settings page now renders
+   * "OpenAI / Control Room" as two separate columns, and "Configured"
+   * is the Control Room side.
+   */
+  configured: boolean;
   /** Present in the most recent successful OpenAI discovery snapshot. */
   available: boolean;
   /**
@@ -86,23 +92,67 @@ export type EffectiveModelEntry = {
   supportedReasoningLevels: ReadonlyArray<ReasoningLevel>;
   /** Tier, derived from local metadata or "unknown" for discovered-only. */
   tier: EffectiveModelTier;
-  /** Can this model be the target of a real chat call right now? */
+  /**
+   * Can this model be the target of a real chat call right now? Strict
+   * semantic: configured + available + supports reasoning + OPENAI_API_KEY
+   * set. Unconfigured models are never `usableForChat` because Control
+   * Room has no local metadata to drive their chat-side behavior.
+   */
   usableForChat: boolean;
   /**
    * Should this model appear in the manual chat selector right now?
-   * Combines known + available + supportsReasoning + OPENAI_API_KEY + the
-   * user's explicit show/hide preference (defaulting to true for known
-   * models and false for unknown / stale ones).
+   *
+   * Combines configured + available + supportsReasoning + OPENAI_API_KEY
+   * + the user's explicit show/hide preference.
+   *
+   * Default visibility:
+   *   - configured + available → visible (unless user hid it)
+   *   - configured + stale    → hidden (user must re-enable after re-discovery)
+   *   - unconfigured + available → hidden by default
+   *   - unconfigured + stale → hidden
+   *
+   * Explicit opt-in: when `pref.visible === true` the model is shown
+   * even if it would otherwise be hidden. This is how users can pick
+   * up an unconfigured OpenAI model for experimentation. The brief:
+   * "I should be allowed to enable it in the manual model selector
+   * even if it has no local metadata."
+   *
+   * Even when `manualSelectorVisible === true`, the chat composer still
+   * marks the model with `enabled: false` when OPENAI_API_KEY is unset.
    */
   manualSelectorVisible: boolean;
   /**
+   * Did the user explicitly opt in? Distinguishes "visible by default"
+   * from "visible because the user overrode the default". The Settings
+   * UI shows an inline warning when toggling an unconfigured model on.
+   */
+  manuallyOverridden: boolean;
+  /**
    * Is this model eligible to enter the router pool right now? Strict
-   * subset of `usableForChat`: must be known, available, supports
-   * reasoning. Unknown and stale models are NEVER router-eligible; the
+   * subset: must be configured, available, supports reasoning, AND not
+   * stale. Unconfigured and stale models are NEVER router-eligible; the
    * save-time validator (`lib/router/registry.ts`) enforces this even if
-   * the UI lets the user try.
+   * the UI lets the user try. The brief is explicit:
+   * "Unknown/unclassified models must still NOT be router eligible.
+   * Only locally configured models with explicit metadata may appear in
+   * the router recommendation pool."
    */
   routerEligible: boolean;
+  /**
+   * Capability placeholders — future surface for the capability
+   * registry. Currently only `reasoning` is sourced from local
+   * metadata; the rest are always `false` for every model. They are
+   * rendered in the UI as disabled checkboxes so the capability UI is
+   * in place before the capability registry ships.
+   */
+  capabilities: {
+    reasoning: boolean;
+    vision: boolean;
+    images: boolean;
+    functionCalling: boolean;
+    structuredOutput: boolean;
+    streaming: boolean;
+  };
   /**
    * Provenance marker so the UI can render a "fake / known / unknown"
    * badge without re-deriving the rule. Stable across calls.
@@ -119,11 +169,19 @@ export type EffectiveRegistry = {
   discovery: DiscoverySnapshot;
   selectorPrefs: SelectorPreferences;
   counts: {
+    /** Total ids in the most recent OpenAI discovery snapshot. */
     discovered: number;
-    known: number;
-    available: number;
+    /** Discovered ids that also have local metadata. */
+    discoveredConfigured: number;
+    /** Discovered ids with no local metadata (the brief's "unclassified"). */
+    discoveredUnclassified: number;
+    /** Configured models currently available from OpenAI. */
+    configuredAvailable: number;
+    /** Configured models that disappeared from the latest discovery (stale). */
     stale: number;
+    /** Models in the user's manual selector right now. */
     manualSelectorVisible: number;
+    /** Models the router may pick from (configured + available + supports reasoning). */
     routerEligible: number;
   };
   fakeMode: boolean;
@@ -230,25 +288,30 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
   discoveredOnlyIds.sort();
   const orderedIds = [...knownIds, ...discoveredOnlyIds];
 
-  let knownCount = 0;
-  let availableCount = 0;
+  let configuredAvailableCount = 0;
+  let discoveredConfiguredCount = 0;
+  let discoveredUnclassifiedCount = 0;
   let staleCount = 0;
   let manualVisibleCount = 0;
   let routerEligibleCount = 0;
 
   for (const modelId of orderedIds) {
     const alias = resolveAlias(modelId);
-    const isKnownModel = alias != null;
-    if (isKnownModel) knownCount++;
+    const isConfiguredModel = alias != null;
     const inCurrentDiscovery = availableIds.has(modelId);
     const inPreviousSnapshot = previousIds.has(modelId);
     const available = inCurrentDiscovery;
-    if (available) availableCount++;
     // Stale: was in the previous successful discovery but is no longer in
-    // the current one. Only known + previously-seen models are
-    // "stale" — unknown discovered ids simply vanish on the next refresh.
-    const stale = !available && inPreviousSnapshot && isKnownModel;
+    // the current one. Only configured + previously-seen models are
+    // "stale" — unconfigured discovered ids simply vanish on the next
+    // refresh.
+    const stale = !available && inPreviousSnapshot && isConfiguredModel;
     if (stale) staleCount++;
+
+    if (available) {
+      if (isConfiguredModel) discoveredConfiguredCount++;
+      else discoveredUnclassifiedCount++;
+    }
 
     const tier: EffectiveModelTier = alias
       ? alias.tier === "expensive"
@@ -258,43 +321,62 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
     const supportedReasoningLevels = alias?.reasoningLevels ?? DEFAULT_REASONING_LEVELS;
     const supportsReasoning = supportedReasoningLevels.length > 0;
 
-    const usableForChat = isKnownModel && available && supportsReasoning && input.openaiKeySet;
+    // `usableForChat` is the strict "can Control Room actually drive
+    // a chat call" signal. Unconfigured models are never `usableForChat`
+    // because we have no local metadata for them; the chat route will
+    // refuse them. The brief asks for less-restrictive SELECTOR
+    // behavior, not less-restrictive chat behavior.
+    const usableForChat = isConfiguredModel && available && supportsReasoning && input.openaiKeySet;
+    if (usableForChat) configuredAvailableCount++;
 
-    // Manual selector visibility default:
-    //   - known + available  -> visible (unless user hid it)
-    //   - known + stale      -> hidden (user must re-enable after re-discovery)
-    //   - unknown + available -> hidden by default (brief: "Unknown discovered
-    //     models are hidden from the manual chat selector by default")
-    //   - unknown + stale    -> hidden
+    // Manual selector visibility:
+    //   - Default: configured + available + supports reasoning +
+    //     OPENAI_API_KEY → visible. Everything else → hidden.
+    //   - Override: when the user has an explicit `pref.visible=true`
+    //     on this model id, the model is shown regardless of
+    //     classification. This is the "I want to experiment with this
+    //     unconfigured OpenAI model" path the brief asks for. The
+    //     composer will still gate `enabled` on OPENAI_API_KEY; the
+    //     chat route will refuse the model at runtime if it's not
+    //     configured.
+    //   - Hidden override: explicit `pref.visible=false` wins over any
+    //     default.
     const pref = input.selectorPrefs[modelId];
     let manualSelectorVisible: boolean;
+    let manuallyOverridden = false;
     if (pref && typeof pref.visible === "boolean") {
-      manualSelectorVisible = pref.visible && usableForChat;
+      // The user explicitly set a preference — that overrides the
+      // default. We still keep `manualSelectorVisible` independent of
+      // `usableForChat` for opted-in models so the user can SEE the row
+      // even when OPENAI_API_KEY is unset; the composer shows it
+      // disabled with a clear reason.
+      manualSelectorVisible = pref.visible;
+      manuallyOverridden = true;
     } else {
-      manualSelectorVisible = isKnownModel && available && usableForChat;
+      manualSelectorVisible = isConfiguredModel && available && usableForChat;
     }
     if (manualSelectorVisible) manualVisibleCount++;
 
-    // Router eligibility is the strict subset: known + available +
-    // supportsReasoning. Stale and unknown models are NEVER router
-    // eligible, regardless of selector visibility (the brief: "must
-    // never silently enter the router pool").
-    const routerEligible = isKnownModel && available && supportsReasoning;
+    // Router eligibility is the strict subset: configured + available +
+    // supports reasoning + not stale. Unconfigured and stale models are
+    // NEVER router eligible, regardless of selector visibility (the
+    // brief: "must never silently enter the router pool"). The
+    // explicit-opt-in path cannot override this.
+    const routerEligible = isConfiguredModel && available && supportsReasoning && !stale;
     if (routerEligible) routerEligibleCount++;
 
     // Derive provenance in priority order so the UI can render a stable
-    // badge ("fake" / "known" / "unknown" / "stale") without re-deriving
-    // the rule. The `fake` value only appears when the fake discovery
-    // flag is enabled AND the id is one of the deterministic fake ids —
-    // production never sees fake ids because fakeMode is false and the
-    // fake-only ids are not added to `idsToRender` (see the `if (fakeMode)`
-    // block above).
+    // badge ("fake" / "configured" / "unclassified" / "stale") without
+    // re-deriving the rule. The `fake` value only appears when the fake
+    // discovery flag is enabled AND the id is one of the deterministic
+    // fake ids — production never sees fake ids because fakeMode is
+    // false and the fake-only ids are not added to `idsToRender`.
     let provenance: EffectiveModelEntry["provenance"];
     if (stale) {
       provenance = "stale";
     } else if (fakeMode && FAKE_OPENAI_MODEL_IDS.includes(modelId)) {
       provenance = "fake";
-    } else if (!isKnownModel) {
+    } else if (!isConfiguredModel) {
       provenance = "discovered_only";
     } else {
       provenance = "local_meta";
@@ -304,7 +386,7 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
       providerId: "openai",
       modelId,
       displayLabel: alias?.label ?? modelId,
-      known: isKnownModel,
+      configured: isConfiguredModel,
       available,
       stale,
       supportsReasoning,
@@ -312,18 +394,33 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
       tier,
       usableForChat,
       manualSelectorVisible,
+      manuallyOverridden,
       routerEligible,
+      // Capability placeholders — only `reasoning` is sourced today
+      // from local metadata; the rest are always false until the
+      // capability registry ships. UI surfaces these as disabled
+      // checkboxes so the layout is stable.
+      capabilities: {
+        reasoning: supportsReasoning,
+        vision: false,
+        images: false,
+        functionCalling: false,
+        structuredOutput: false,
+        streaming: true,
+      },
       provenance,
     });
   }
 
-  // Pick a deterministic default model id: the first manualSelectorVisible
-  // entry (cheap tier preferred). When nothing is visible, fall back to
-  // the first known alias id (so the picker can still render a default).
+  // Pick a deterministic default model id: prefer configured + available
+  // (cheap tier) so the picker never opens onto an unconfigured model.
+  // Fall back to any opted-in visible entry, then any configured alias.
   const defaultModelId =
-    entries.find((e) => e.manualSelectorVisible && e.tier !== "expensive")?.modelId ??
+    entries.find((e) => e.manualSelectorVisible && e.configured && e.tier !== "expensive")
+      ?.modelId ??
+    entries.find((e) => e.manualSelectorVisible && e.configured)?.modelId ??
     entries.find((e) => e.manualSelectorVisible)?.modelId ??
-    entries.find((e) => e.known)?.modelId ??
+    entries.find((e) => e.configured)?.modelId ??
     null;
 
   return {
@@ -336,8 +433,9 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
     selectorPrefs: input.selectorPrefs,
     counts: {
       discovered: input.discovery.modelIds.length,
-      known: knownCount,
-      available: availableCount,
+      discoveredConfigured: discoveredConfiguredCount,
+      discoveredUnclassified: discoveredUnclassifiedCount,
+      configuredAvailable: configuredAvailableCount,
       stale: staleCount,
       manualSelectorVisible: manualVisibleCount,
       routerEligible: routerEligibleCount,
@@ -368,9 +466,20 @@ export async function getEffectiveModelsRegistry(): Promise<EffectiveRegistry> {
  * by `app/assistant.tsx` and the chat route's `resolveModel` path.
  *
  * Filters to `manualSelectorVisible === true` so the chat composer only
- * ever shows models the user has opted into, plus the fallback behavior
- * (when the DB is unconfigured / no discovery ever ran, the static
- * catalog is still rendered exactly like pre-discovery).
+ * ever shows models the user has opted into. The `enabled` flag in the
+ * response is set independently:
+ *
+ *   enabled = manualSelectorVisible && openaiKeySet && supportsReasoning
+ *
+ * — so an opted-in unconfigured model is VISIBLE in the picker but
+ * DISABLED until OPENAI_API_KEY is set. The user sees the row and a
+ * clear reason; they cannot pick it for a chat until the key is
+ * configured. This keeps the UX ("experimentation") honest while not
+ * pretending the chat will work without the key.
+ *
+ * Configured + available models with the key set get `enabled: true`.
+ * Everything visible without the key gets `enabled: false` with a
+ * reason string.
  */
 export async function getEffectiveModelsResponse(): Promise<{
   models: ReadonlyArray<ModelOption>;
@@ -380,23 +489,31 @@ export async function getEffectiveModelsResponse(): Promise<{
   const registry = await getEffectiveModelsRegistry();
   const filtered = registry.models.filter((m) => m.manualSelectorVisible);
   const models: ModelOption[] = filtered.map((m) => {
+    const canCallNow =
+      m.configured && m.available && m.supportsReasoning && process.env.OPENAI_API_KEY?.trim();
     const option: ModelOption = {
       providerId: m.providerId,
       providerLabel: "OpenAI",
       modelId: m.modelId,
       modelLabel: m.displayLabel,
-      enabled: m.usableForChat,
+      enabled: Boolean(canCallNow),
       reasoningLevels: m.supportedReasoningLevels,
       tier: legacyTier(m.tier),
     };
-    if (!m.usableForChat) {
-      // Provide a reason string for the model picker when the model is
-      // listed but not currently usable (e.g. the OpenAI key is unset
-      // but the user has explicitly shown it).
+    if (!canCallNow) {
+      // Provide a precise reason string for the model picker when the
+      // model is listed but not currently selectable. Unconfigured
+      // models opted-in via the Settings UI get a different reason
+      // than models that are simply missing the API key.
+      const reason = !m.configured
+        ? "Not configured in Control Room — chat calls will be refused."
+        : !process.env.OPENAI_API_KEY?.trim()
+          ? "OPENAI_API_KEY is not configured."
+          : "Not currently available from OpenAI.";
       return {
         ...option,
         enabled: false,
-        reason: "OPENAI_API_KEY is not configured",
+        reason,
       };
     }
     return option;
@@ -420,7 +537,7 @@ export function registryToRouterAllowlist(registry: EffectiveRegistry): Readonly
   modelLabel: string;
   reasoningLevel: ReasoningLevel;
   tier: LegacyModelTier;
-  known: boolean;
+  configured: boolean;
   available: boolean;
   stale: boolean;
 }> {
@@ -429,19 +546,19 @@ export function registryToRouterAllowlist(registry: EffectiveRegistry): Readonly
     modelLabel: string;
     reasoningLevel: ReasoningLevel;
     tier: LegacyModelTier;
-    known: boolean;
+    configured: boolean;
     available: boolean;
     stale: boolean;
   }> = [];
   for (const entry of registry.models) {
-    if (!entry.routerEligible) continue; // unknown + stale excluded
+    if (!entry.routerEligible) continue; // unconfigured + stale excluded
     for (const lvl of entry.supportedReasoningLevels) {
       out.push({
         modelId: entry.modelId,
         modelLabel: entry.displayLabel,
         reasoningLevel: lvl,
         tier: legacyTier(entry.tier),
-        known: entry.known,
+        configured: entry.configured,
         available: entry.available,
         stale: entry.stale,
       });

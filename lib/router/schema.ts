@@ -441,7 +441,7 @@ export function parseRouterSettingsForSave(
             });
             continue;
           }
-          if (!entry.known) {
+          if (!entry.configured) {
             hasInvalid = true;
             errors.push({
               field: "allowedCombos",

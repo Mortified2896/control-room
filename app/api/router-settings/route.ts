@@ -39,7 +39,7 @@ type RouterSettingsDto = {
     modelLabel: string;
     reasoningLevel: ReasoningLevel;
     tier: "cheap" | "expensive";
-    known: boolean;
+    configured: boolean;
     available: boolean;
     stale: boolean;
   }>;
@@ -47,7 +47,7 @@ type RouterSettingsDto = {
     models: ReadonlyArray<{
       modelId: string;
       displayLabel: string;
-      known: boolean;
+      configured: boolean;
       available: boolean;
       stale: boolean;
       supportsReasoning: boolean;
@@ -55,14 +55,24 @@ type RouterSettingsDto = {
       tier: "standard" | "expensive" | "unknown";
       usableForChat: boolean;
       manualSelectorVisible: boolean;
+      manuallyOverridden: boolean;
       routerEligible: boolean;
+      capabilities: {
+        reasoning: boolean;
+        vision: boolean;
+        images: boolean;
+        functionCalling: boolean;
+        structuredOutput: boolean;
+        streaming: boolean;
+      };
       provenance: "local_meta" | "discovered_only" | "fake" | "stale";
     }>;
     defaults: { manualModelId: string | null; reasoningLevel: ReasoningLevel };
     counts: {
       discovered: number;
-      known: number;
-      available: number;
+      discoveredConfigured: number;
+      discoveredUnclassified: number;
+      configuredAvailable: number;
       stale: number;
       manualSelectorVisible: number;
       routerEligible: number;
