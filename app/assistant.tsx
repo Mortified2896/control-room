@@ -1,6 +1,10 @@
 "use client";
 
-import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
+import {
+  AssistantRuntimeProvider,
+  useLocalRuntime,
+  type ThreadMessageLike,
+} from "@assistant-ui/react";
 import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
 import { routerAbDataSchemas } from "@/lib/assistant-ui/router-ab-data-schemas";
 import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai";
@@ -127,6 +131,24 @@ function isLocalThreadId(id: string | null | undefined): boolean {
   return !id || id.startsWith("local-");
 }
 
+function uiMessagesToThreadMessageLikes(messages: readonly UIMessage[]): ThreadMessageLike[] {
+  return messages
+    .filter(
+      (message) =>
+        message.role === "user" || message.role === "assistant" || message.role === "system",
+    )
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.parts
+        .filter(
+          (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => ({ type: "text" as const, text: part.text })),
+    }));
+}
+
 function extractTextFromLocalMessages(messages: readonly unknown[]): string {
   const last = [...messages].reverse().find((m) => (m as { role?: unknown }).role === "user");
   const content = (last as { content?: unknown } | undefined)?.content;
@@ -149,7 +171,7 @@ const CodexChatPane: FC<{
   notesDisabled: boolean;
   routerAbOn: boolean;
   onFinish: () => void;
-}> = ({ modelId, threadId, notesDisabled, routerAbOn, onFinish }) => {
+}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, onFinish }) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
     : "gpt-5.4-mini";
@@ -181,7 +203,7 @@ const CodexChatPane: FC<{
         };
       },
     },
-    undefined,
+    { initialMessages: uiMessagesToThreadMessageLikes(initialMessages) },
   );
 
   return (
