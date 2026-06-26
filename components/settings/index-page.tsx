@@ -1,107 +1,84 @@
 "use client";
 
-import Link from "next/link";
-import { ArrowRight, Bot, Sparkles } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Bot, Sparkles, Zap } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import { AgentBackendsPage } from "@/components/settings/agent-backends-page";
+import { RouterSettingsPage } from "@/components/settings/router-settings-page";
 import { cn } from "@/lib/utils";
 
-/**
- * Top-level /settings landing page.
- *
- * Two sub-pages exist:
- *   1. Router Settings — controls the model picker + Router A/B
- *      behavior for the chat composer (requires DB).
- *   2. Agent Backends — status + smoke-test surface for non-model
- *      backends like the Codex CLI (no DB required).
- *
- * The Codex card surfaces a tiny live preview by hitting
- * `/api/agent-backends/codex/status` once on mount so the operator
- * can see whether Codex is set up without having to click in.
- */
+type SettingsTab = "codex" | "openai" | "minimax";
 
-const SUBTITLE: Record<string, string> = {
-  router: "Tune how the chat composer picks models and runs Router A/B side-by-side comparisons.",
-  codex:
-    "Status + smoke test for the Codex CLI / ChatGPT subscription backend. Does not affect the chat composer.",
-};
+const TABS: ReadonlyArray<{
+  id: SettingsTab;
+  label: string;
+  description: string;
+  icon: ReactNode;
+}> = [
+  {
+    id: "codex",
+    label: "Codex subscription",
+    description: "Codex CLI + ChatGPT subscription backend and chat selector options.",
+    icon: <Bot className="size-4" />,
+  },
+  {
+    id: "openai",
+    label: "OpenAI API",
+    description: "OPENAI_API_KEY models, manual visibility, and OpenAI-only Router A/B.",
+    icon: <Sparkles className="size-4" />,
+  },
+  {
+    id: "minimax",
+    label: "MiniMax API key",
+    description: "MINIMAX_API_KEY model access and MiniMax token-plan status.",
+    icon: <Zap className="size-4" />,
+  },
+];
 
 export function SettingsIndexPage() {
-  return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Configure Control Room. Each section is independent — pick one to dig in.
-        </p>
-      </div>
-      <SettingsCard
-        href="/settings/router"
-        icon={<Sparkles className="size-4" />}
-        title="OpenAI API + MiniMax API models"
-        subtitle="Manual chat models and the OpenAI-only router. OpenAI uses OPENAI_API_KEY with API billing; MiniMax uses MINIMAX_API_KEY with a MiniMax token plan."
-        accent="text-violet-700 dark:text-violet-300 bg-violet-500/10 ring-violet-500/20"
-        trailing={
-          <div className="flex flex-wrap justify-end gap-1">
-            <Badge>OpenAI API</Badge>
-            <Badge>MiniMax API</Badge>
-          </div>
-        }
-      />
-      <CodexCard />
-    </div>
-  );
-}
+  const [tab, setTab] = useState<SettingsTab>("codex");
+  const active = TABS.find((t) => t.id === tab) ?? TABS[0];
 
-function SettingsCard(props: {
-  href: string;
-  icon: React.ReactNode;
-  title: string;
-  subtitle: string;
-  accent: string;
-  trailing?: React.ReactNode;
-}) {
   return (
-    <Link
-      href={props.href}
-      className="group flex items-start gap-4 rounded-lg border border-border/60 bg-card/50 p-5 shadow-xs transition-colors hover:border-border hover:bg-card"
-    >
-      <span
-        className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset",
-          props.accent,
-        )}
-      >
-        {props.icon}
-      </span>
-      <div className="flex-1">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold">{props.title}</h2>
-          {props.trailing}
+    <div className="mx-auto flex h-dvh w-full max-w-6xl flex-col gap-5 overflow-y-auto px-4 py-6 sm:px-8">
+      <header className="space-y-2 border-b border-border/60 pb-4">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+          <p className="text-sm text-muted-foreground">
+            Provider and backend settings in one place. Use provider tabs to control manual chat
+            visibility, router eligibility, and backend access paths.
+          </p>
         </div>
-        <p className="mt-1 text-sm text-muted-foreground">{props.subtitle}</p>
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Settings provider tabs">
+          {TABS.map((item) => (
+            <Button
+              key={item.id}
+              type="button"
+              variant={tab === item.id ? "default" : "outline"}
+              size="sm"
+              onClick={() => setTab(item.id)}
+              role="tab"
+              aria-selected={tab === item.id}
+              className={cn("gap-2", tab !== item.id && "bg-background")}
+            >
+              {item.icon}
+              {item.label}
+            </Button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">{active.description}</p>
+      </header>
+
+      <div role="tabpanel" className="min-h-0 flex-1">
+        {tab === "codex" ? (
+          <AgentBackendsPage embedded />
+        ) : tab === "openai" ? (
+          <RouterSettingsPage embedded providerFilter="openai" />
+        ) : (
+          <RouterSettingsPage embedded providerFilter="minimax" />
+        )}
       </div>
-      <ArrowRight className="size-4 shrink-0 self-center text-muted-foreground/60 transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
-    </Link>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded bg-muted/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-      {children}
-    </span>
-  );
-}
-
-function CodexCard() {
-  return (
-    <SettingsCard
-      href="/settings/agent-backends"
-      icon={<Bot className="size-4" />}
-      title="Agent Backends"
-      subtitle={SUBTITLE.codex}
-      accent="text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 ring-emerald-500/20"
-      trailing={<Badge>Codex · ChatGPT subscription</Badge>}
-    />
+    </div>
   );
 }

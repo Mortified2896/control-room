@@ -148,7 +148,7 @@ function relativeTime(iso: string, now: number): string {
   return `${h}h ago`;
 }
 
-export function AgentBackendsPage() {
+export function AgentBackendsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [status, setStatus] = useState<CodexStatusDto | null>(null);
   const [refresh, setRefresh] = useState<RefreshState>({ kind: "idle" });
   const [chat, setChat] = useState<ChatState>({ kind: "idle" });
@@ -224,21 +224,28 @@ export function AgentBackendsPage() {
   const chatDisabled = !status || status.status !== "logged_in" || chat.kind === "sending";
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <div className="flex items-center gap-3">
-        <Button asChild variant="ghost" size="icon-sm" aria-label="Back to settings">
-          <Link href="/settings">
-            <ArrowLeft />
-          </Link>
-        </Button>
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Agent Backends</h1>
-          <p className="text-sm text-muted-foreground">
-            Backends that can execute tasks on the server. Status is read-only and refreshed on
-            demand. These are not chat model providers.
-          </p>
+    <div
+      className={cn(
+        "flex w-full flex-col gap-6",
+        embedded ? "" : "mx-auto max-w-3xl px-4 py-6 sm:px-6",
+      )}
+    >
+      {!embedded && (
+        <div className="flex items-center gap-3">
+          <Button asChild variant="ghost" size="icon-sm" aria-label="Back to settings">
+            <Link href="/settings">
+              <ArrowLeft />
+            </Link>
+          </Button>
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">Agent Backends</h1>
+            <p className="text-sm text-muted-foreground">
+              Backends that can execute tasks on the server. Status is read-only and refreshed on
+              demand. These are not chat model providers.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Codex status card */}
       <section

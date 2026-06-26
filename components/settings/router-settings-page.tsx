@@ -103,8 +103,10 @@ type EffectiveDiscoveryDto = {
   isStale: boolean;
 };
 
+type SettingsProviderId = "openai" | "minimax";
+
 type EffectiveRegistryModelDto = {
-  providerId: "openai" | "minimax";
+  providerId: SettingsProviderId;
   providerLabel: string;
   modelId: string;
   displayLabel: string;
@@ -488,7 +490,10 @@ function reasoningCellState(input: {
   };
 }
 
-export const RouterSettingsPage: FC = () => {
+export const RouterSettingsPage: FC<{
+  embedded?: boolean;
+  providerFilter?: SettingsProviderId;
+}> = ({ embedded = false, providerFilter }) => {
   const [dto, setDto] = useState<RouterSettingsDto | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
@@ -559,7 +564,13 @@ export const RouterSettingsPage: FC = () => {
     return m;
   }, [registryByModel]);
 
-  const registryEntries = useMemo(() => dto?.effectiveRegistry.models ?? [], [dto]);
+  const registryEntries = useMemo(
+    () =>
+      (dto?.effectiveRegistry.models ?? []).filter((entry) =>
+        providerFilter ? entry.providerId === providerFilter : true,
+      ),
+    [dto, providerFilter],
+  );
   const selectorPrefs = useMemo(() => dto?.effectiveRegistry.selectorPrefs ?? {}, [dto]);
   const discovery = useMemo(() => dto?.effectiveRegistry.discovery, [dto]);
   const counts = useMemo(() => dto?.effectiveRegistry.counts, [dto]);
@@ -922,15 +933,22 @@ export const RouterSettingsPage: FC = () => {
   const isExpensiveAllowed = form.allowExpensiveModels;
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-6xl flex-col gap-0 overflow-y-auto px-4 py-6 sm:px-8">
+    <div
+      className={cn(
+        "flex w-full max-w-6xl flex-col gap-0 overflow-y-auto",
+        embedded ? "" : "mx-auto h-dvh px-4 py-6 sm:px-8",
+      )}
+    >
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">
         <div>
           <div className="flex items-center gap-2">
-            <Button asChild variant="ghost" size="icon-sm" aria-label="Back to chat">
-              <Link href="/">
-                <ArrowLeft className="size-4" />
-              </Link>
-            </Button>
+            {!embedded && (
+              <Button asChild variant="ghost" size="icon-sm" aria-label="Back to chat">
+                <Link href="/">
+                  <ArrowLeft className="size-4" />
+                </Link>
+              </Button>
+            )}
             <h1 className="text-lg font-semibold">Router Settings</h1>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -1176,7 +1194,12 @@ export const RouterSettingsPage: FC = () => {
         >
           <div>
             <h2 id="registry-heading" className="text-sm font-semibold">
-              B · Model registry
+              B ·{" "}
+              {providerFilter === "openai"
+                ? "OpenAI API models"
+                : providerFilter === "minimax"
+                  ? "MiniMax API models"
+                  : "Model registry"}
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
               One row per provider model. OpenAI API rows are direct API calls billed to OpenAI API
