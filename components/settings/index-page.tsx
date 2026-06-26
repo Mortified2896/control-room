@@ -37,9 +37,15 @@ export function SettingsIndexPage() {
       <SettingsCard
         href="/settings/router"
         icon={<Sparkles className="size-4" />}
-        title="Router Settings"
-        subtitle={SUBTITLE.router}
+        title="OpenAI API + MiniMax API models"
+        subtitle="Manual chat models and the OpenAI-only router. OpenAI uses OPENAI_API_KEY with API billing; MiniMax uses MINIMAX_API_KEY with a MiniMax token plan."
         accent="text-violet-700 dark:text-violet-300 bg-violet-500/10 ring-violet-500/20"
+        trailing={
+          <div className="flex flex-wrap justify-end gap-1">
+            <Badge>OpenAI API</Badge>
+            <Badge>MiniMax API</Badge>
+          </div>
+        }
       />
       <CodexCard />
     </div>
@@ -79,6 +85,14 @@ function SettingsCard(props: {
   );
 }
 
+function Badge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded bg-muted/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
 function CodexCard() {
   return (
     <SettingsCard
@@ -87,11 +101,7 @@ function CodexCard() {
       title="Agent Backends"
       subtitle={SUBTITLE.codex}
       accent="text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 ring-emerald-500/20"
-      trailing={
-        <span className="rounded bg-muted/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-          Codex
-        </span>
-      }
+      trailing={<Badge>Codex · ChatGPT subscription</Badge>}
     />
   );
 }

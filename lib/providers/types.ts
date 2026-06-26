@@ -23,6 +23,10 @@ export type ReasoningLevel = "low" | "medium" | "high";
 
 export type ModelTier = "cheap" | "expensive";
 
+export type AccessPath = "openai_api" | "minimax_api" | "codex_chatgpt";
+export type BillingLabel = "API billed" | "MiniMax token plan" | "ChatGPT subscription";
+export type CapabilityKind = "model_provider" | "agent_backend";
+
 export type ModelOption = {
   providerId: ProviderId;
   providerLabel: string;
@@ -30,6 +34,10 @@ export type ModelOption = {
   modelLabel: string;
   enabled: boolean;
   reason?: string;
+  accessPath: AccessPath;
+  billingLabel: BillingLabel;
+  capabilityKind: CapabilityKind;
+  description: string;
   /**
    * Reasoning levels this model may be paired with. The router-side allowlist
    * is the intersection of (provider-known levels) ∩ (router policy) — the UI

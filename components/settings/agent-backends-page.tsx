@@ -258,8 +258,9 @@ export function AgentBackendsPage() {
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              Authenticated via the Codex CLI / ChatGPT account login. Subscription usage is billed
-              against the operator's ChatGPT plan, not Control Room's OpenAI key.
+              Access: Codex CLI + ChatGPT login. Billing/access: ChatGPT/Codex subscription when
+              usingSubscription=true. This backend does not use OPENAI_API_KEY and is not API
+              billed.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -293,11 +294,17 @@ export function AgentBackendsPage() {
             </dd>
           </div>
           <div className="space-y-0.5">
+            <dt className="text-xs uppercase tracking-wide text-muted-foreground">Access path</dt>
+            <dd>Codex CLI + ChatGPT login</dd>
+          </div>
+          <div className="space-y-0.5">
             <dt className="text-xs uppercase tracking-wide text-muted-foreground">Auth type</dt>
             <dd>
               {status ? (
                 status.auth.type ? (
-                  <span>{AUTH_TYPE_LABEL[status.auth.type]}</span>
+                  <span>
+                    {status.auth.type} · {AUTH_TYPE_LABEL[status.auth.type]}
+                  </span>
                 ) : status.status === "not_logged_in" ? (
                   <span className="text-muted-foreground">not logged in</span>
                 ) : (
@@ -321,7 +328,9 @@ export function AgentBackendsPage() {
             </dd>
           </div>
           <div className="space-y-0.5">
-            <dt className="text-xs uppercase tracking-wide text-muted-foreground">Subscription</dt>
+            <dt className="text-xs uppercase tracking-wide text-muted-foreground">
+              usingSubscription
+            </dt>
             <dd>
               {status?.usingSubscription ? (
                 <span className="text-emerald-700 dark:text-emerald-300">

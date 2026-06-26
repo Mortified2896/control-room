@@ -1005,10 +1005,13 @@ export const RouterSettingsPage: FC = () => {
                 A · Provider model discovery
               </h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Control Room calls OpenAI&apos;s{" "}
-                <code className="rounded bg-muted px-1">/v1/models</code> to learn which OpenAI
-                model ids are available to your API key. MiniMax is env-file static for now and is
-                re-read from <code className="rounded bg-muted px-1">MINIMAX_DEFAULT_MODEL</code>.
+                OpenAI API models use <code className="rounded bg-muted px-1">OPENAI_API_KEY</code>
+                and OpenAI API billing. Control Room calls OpenAI&apos;s{" "}
+                <code className="rounded bg-muted px-1">/v1/models</code> to learn which model ids
+                are available to that API key. MiniMax API models use{" "}
+                <code className="rounded bg-muted px-1">MINIMAX_API_KEY</code> and a MiniMax token
+                plan; the model id is env-file static for now and re-read from{" "}
+                <code className="rounded bg-muted px-1">MINIMAX_DEFAULT_MODEL</code>.
               </p>
             </div>
           </div>
@@ -1176,10 +1179,12 @@ export const RouterSettingsPage: FC = () => {
               B · Model registry
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              One row per provider model. Toggle OpenAI model visibility in the chat composer
-              (Manual), let the OpenAI-only router recommend eligible OpenAI models (Router), and
-              pick which reasoning levels the router may pair with OpenAI models. MiniMax appears
-              here for manual chat status but is not router-eligible yet.
+              One row per provider model. OpenAI API rows are direct API calls billed to OpenAI API
+              usage; MiniMax API rows are direct MiniMax API calls using the MiniMax key/token plan.
+              Toggle OpenAI model visibility in the chat composer (Manual), let the OpenAI-only
+              router recommend eligible OpenAI models (Router), and pick which reasoning levels the
+              router may pair with OpenAI models. MiniMax appears here for manual chat status but is
+              not router-eligible yet.
             </p>
           </div>
 
@@ -1342,7 +1347,11 @@ export const RouterSettingsPage: FC = () => {
                     >
                       {/* Model column */}
                       <td className="px-3 py-2">
-                        <div className="font-medium">{entry.displayLabel}</div>
+                        <div className="font-medium">
+                          {entry.providerId === "openai"
+                            ? `OpenAI API · ${entry.displayLabel}`
+                            : entry.displayLabel}
+                        </div>
                         <div className="text-[11px] text-muted-foreground/70">{entry.modelId}</div>
                         <div className="mt-1 flex flex-wrap gap-1">
                           {!entry.configured && !entry.stale && (
@@ -1408,6 +1417,11 @@ export const RouterSettingsPage: FC = () => {
                             badLabel="Unavailable"
                             testId={`registry-provider-pill-${entry.modelId}`}
                           />
+                          <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {entry.providerId === "openai"
+                              ? "API billed"
+                              : "MiniMax key · token plan"}
+                          </span>
                           {entry.available ? (
                             <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
                           ) : (

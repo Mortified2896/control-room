@@ -55,10 +55,15 @@ export function getOpenAIModels(): ModelOption[] {
   const hasKey = Boolean(process.env.OPENAI_API_KEY?.trim());
   return OPENAI_MODEL_METAS.map((m) => ({
     providerId: m.providerId,
-    providerLabel: openaiProvider.label,
+    providerLabel: "OpenAI API",
     modelId: m.modelId,
-    modelLabel: m.modelLabel,
+    modelLabel: `OpenAI API · ${m.modelLabel}`,
     enabled: hasKey,
+    accessPath: "openai_api",
+    billingLabel: "API billed",
+    capabilityKind: "model_provider",
+    description:
+      "Access: OpenAI API key · API billed. Direct OpenAI API call; not subscription-backed.",
     reasoningLevels: m.reasoningLevels,
     tier: m.tier,
     ...(hasKey ? {} : { reason: DISABLED_REASON }),

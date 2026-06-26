@@ -115,12 +115,12 @@ function serializeRegistryModels(
   const openaiRows = registry.models.map((m) => ({
     ...m,
     providerId: "openai" as const,
-    providerLabel: "OpenAI",
+    providerLabel: "OpenAI API",
   }));
   const minimaxConfig = getMiniMaxConfig();
   const minimaxRows = getMiniMaxModels().map((m) => ({
     providerId: minimaxProvider.id,
-    providerLabel: minimaxProvider.label,
+    providerLabel: "MiniMax API",
     modelId: m.modelId,
     displayLabel: m.modelLabel,
     configured: true,

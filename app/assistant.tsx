@@ -54,9 +54,24 @@ type ModelOption = {
   modelLabel: string;
   enabled: boolean;
   reason?: string;
+  accessPath?: "openai_api" | "minimax_api" | "codex_chatgpt";
+  billingLabel?: "API billed" | "MiniMax token plan" | "ChatGPT subscription";
+  capabilityKind?: "model_provider" | "agent_backend";
+  description?: string;
   reasoningLevels: ReadonlyArray<ReasoningLevel>;
   tier: ModelTier;
 };
+
+function selectedAccessExplanation(model: ModelOption | undefined): string {
+  if (!model) return "";
+  if (model.accessPath === "minimax_api") {
+    return "Access: MiniMax API key · MiniMax token plan/subscription";
+  }
+  if (model.accessPath === "codex_chatgpt") {
+    return "Access: Codex CLI · ChatGPT subscription";
+  }
+  return "Access: OpenAI API key · API billed";
+}
 
 type ModelsResponse = {
   models: ModelOption[];
@@ -201,6 +216,7 @@ const ModelSelector: FC<{
     : loading
       ? "Loading models…"
       : "Select model";
+  const selectedExplanation = selectedAccessExplanation(selected);
 
   const modelOptions = (() => {
     // Assign ⌘1..⌘9 to the first 9 *enabled* models in display order.
@@ -241,9 +257,11 @@ const ModelSelector: FC<{
         >
           <div className="min-w-0 flex-1">
             <div className="truncate font-medium">{m.modelLabel}</div>
-            <div className="truncate text-[10px] text-muted-foreground">
-              {m.providerLabel}
-              {disabled && m.reason ? ` — ${m.reason}` : ""}
+            <div className="flex flex-wrap items-center gap-1 truncate text-[10px] text-muted-foreground">
+              <span>{m.billingLabel ?? m.providerLabel}</span>
+              {m.accessPath === "minimax_api" ? <span>· MiniMax key</span> : null}
+              {m.accessPath === "openai_api" ? <span>· OpenAI key</span> : null}
+              {disabled && m.reason ? <span>— {m.reason}</span> : null}
             </div>
           </div>
           {shortcutIndex !== undefined && (
@@ -272,12 +290,23 @@ const ModelSelector: FC<{
       >
         <span className="size-1.5 rounded-full bg-emerald-500/80" aria-hidden />
         <span className="truncate">{triggerLabel}</span>
+        {selected?.billingLabel ? (
+          <span className="hidden shrink-0 rounded bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">
+            {selected.billingLabel}
+          </span>
+        ) : null}
         <ChevronDown className="size-3 shrink-0 opacity-70" />
         <KbdHint
           combo="m"
           className="aui-model-selector-shortcut pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 bg-background/60"
         />
       </button>
+
+      {selectedExplanation ? (
+        <div className="ml-2 hidden min-w-0 truncate text-[11px] text-muted-foreground md:block">
+          {selectedExplanation}
+        </div>
+      ) : null}
 
       {open && !isPhone && (
         <div className="absolute left-4 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
@@ -298,7 +327,8 @@ const ModelSelector: FC<{
                   Select model
                 </DialogPrimitive.Title>
                 <DialogPrimitive.Description className="mt-1 text-xs text-muted-foreground">
-                  Choose the model for this chat.
+                  Choose the model/backend for this chat. Access path and billing are shown for each
+                  option.
                 </DialogPrimitive.Description>
               </div>
               <div className="overflow-y-auto py-1">

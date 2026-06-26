@@ -34,10 +34,15 @@ export function getMiniMaxModels(): ModelOption[] {
   return [
     {
       providerId: minimaxProvider.id,
-      providerLabel: minimaxProvider.label,
+      providerLabel: "MiniMax API",
       modelId: config.defaultModel,
-      modelLabel: config.defaultModel,
+      modelLabel: `MiniMax API · ${config.defaultModel}`,
       enabled: config.apiKeySet,
+      accessPath: "minimax_api",
+      billingLabel: "MiniMax token plan",
+      capabilityKind: "model_provider",
+      description:
+        "Access: MiniMax API key · MiniMax token plan/subscription. Direct MiniMax API call.",
       ...(config.apiKeySet ? {} : { reason: MINIMAX_DISABLED_REASON }),
       reasoningLevels: [],
       tier: "cheap",

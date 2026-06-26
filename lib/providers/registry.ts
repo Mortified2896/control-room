@@ -494,10 +494,15 @@ export async function getEffectiveModelsResponse(): Promise<{
       m.configured && m.available && m.supportsReasoning && process.env.OPENAI_API_KEY?.trim();
     const option: ModelOption = {
       providerId: m.providerId,
-      providerLabel: "OpenAI",
+      providerLabel: "OpenAI API",
       modelId: m.modelId,
-      modelLabel: m.displayLabel,
+      modelLabel: `OpenAI API · ${m.displayLabel}`,
       enabled: Boolean(canCallNow),
+      accessPath: "openai_api",
+      billingLabel: "API billed",
+      capabilityKind: "model_provider",
+      description:
+        "Access: OpenAI API key · API billed. Direct OpenAI API call; not subscription-backed.",
       reasoningLevels: m.supportedReasoningLevels,
       tier: legacyTier(m.tier),
     };
