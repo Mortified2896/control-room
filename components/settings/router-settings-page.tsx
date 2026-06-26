@@ -265,8 +265,11 @@ function formToPayload(
 
   return {
     payload: {
-      allowExpensiveModels: form.allowExpensiveModels,
-      allowLongPromptWhenExpensive: form.allowLongPromptWhenExpensive,
+      // Section B's per-model Router/reasoning controls are now the source of truth.
+      // Keep the legacy global expensive guards open so hidden global switches cannot
+      // contradict an explicitly enabled table row.
+      allowExpensiveModels: true,
+      allowLongPromptWhenExpensive: true,
       longPromptThresholdChars: threshold,
       failureBehavior: form.failureBehavior,
       allowedCombos,
@@ -276,8 +279,6 @@ function formToPayload(
 }
 
 function hasFormChanged(form: FormState, baseline: FormState): boolean {
-  if (form.allowExpensiveModels !== baseline.allowExpensiveModels) return true;
-  if (form.allowLongPromptWhenExpensive !== baseline.allowLongPromptWhenExpensive) return true;
   if (form.failureBehavior !== baseline.failureBehavior) return true;
   if (form.longPromptThresholdChars !== baseline.longPromptThresholdChars) return true;
   if (form.allowedComboKeys.size !== baseline.allowedComboKeys.size) return true;
@@ -971,7 +972,6 @@ export const RouterSettingsPage: FC<{
 
   const isDirty = hasFormChanged(form, baseline);
   const isSaving = saveStatus.kind === "saving";
-  const isExpensiveAllowed = form.allowExpensiveModels;
 
   return (
     <div
@@ -1805,35 +1805,6 @@ export const RouterSettingsPage: FC<{
           </div>
 
           <div className="mt-4 space-y-4">
-            <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-3">
-              <div>
-                <div className="text-sm font-medium">Allow expensive models</div>
-                <p className="text-xs text-muted-foreground">
-                  When off, the router cannot recommend any expensive-tier combination.
-                </p>
-              </div>
-              <Switch
-                checked={form.allowExpensiveModels}
-                onCheckedChange={(v) => update({ allowExpensiveModels: v })}
-                data-testid="router-settings-allow-expensive"
-                aria-label="Allow expensive models"
-              />
-            </label>
-            <label className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-3">
-              <div>
-                <div className="text-sm font-medium">Allow expensive models on long prompts</div>
-                <p className="text-xs text-muted-foreground">
-                  When off, expensive combos are also excluded automatically for prompts at or above
-                  the long-prompt threshold.
-                </p>
-              </div>
-              <Switch
-                checked={form.allowLongPromptWhenExpensive}
-                onCheckedChange={(v) => update({ allowLongPromptWhenExpensive: v })}
-                data-testid="router-settings-allow-long-expensive"
-                aria-label="Allow expensive models on long prompts"
-              />
-            </label>
             <div className="rounded-md border border-border/60 px-3 py-3">
               <Label htmlFor="long-prompt-threshold">Long prompt threshold (characters)</Label>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -1868,14 +1839,6 @@ export const RouterSettingsPage: FC<{
               )}
             </div>
           </div>
-
-          {!isExpensiveAllowed && registry.some((e) => e.tier === "expensive") && (
-            <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-              Expensive-tier combinations are disabled until you turn on &ldquo;Allow expensive
-              models&rdquo; above. The router cannot pick an expensive combo unless that switch is
-              on.
-            </p>
-          )}
         </section>
       </main>
     </div>

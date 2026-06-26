@@ -43,12 +43,23 @@ import { DEFAULT_ROUTER_SETTINGS, getRouterSettings, type RouterSettings } from 
 let cache: { settings: RouterSettings; cachedAtMs: number } | null = null;
 const CACHE_TTL_MS = 3_000;
 
+function normalizeTableDrivenRouterSettings(settings: RouterSettings): RouterSettings {
+  return {
+    ...settings,
+    // Section B's explicit per-model/per-reasoning allowlist is now the source
+    // of truth. Keep the legacy global expensive gates open so hidden persisted
+    // false values cannot silently override a table-enabled model.
+    allowExpensiveModels: true,
+    allowLongPromptWhenExpensive: true,
+  };
+}
+
 export async function getEffectiveRouterSettings(): Promise<RouterSettings> {
   const now = Date.now();
   if (cache && now - cache.cachedAtMs < CACHE_TTL_MS) {
     return cache.settings;
   }
-  const settings = await readFreshSettings();
+  const settings = normalizeTableDrivenRouterSettings(await readFreshSettings());
   cache = { settings, cachedAtMs: now };
   return settings;
 }
