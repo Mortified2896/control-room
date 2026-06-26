@@ -7,6 +7,7 @@ import {
   runCodexExec,
 } from "@/lib/codex/runner";
 import { probeCodexStatus } from "@/lib/codex/status";
+import { assertModelExecutionAllowed, ProviderAccessError } from "@/lib/providers/access-control";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 150; // Next.js route timeout (seconds); runner timeout is 120s
@@ -75,6 +76,22 @@ export async function POST(req: Request): Promise<NextResponse> {
     typeof requestedModel === "string" && isCodexModelId(requestedModel)
       ? requestedModel
       : CODEX_DEFAULT_MODEL_ID;
+
+  try {
+    await assertModelExecutionAllowed({
+      providerId: "codex_subscription",
+      modelId: `codex:${model}`,
+      surface: "backend_test",
+    });
+  } catch (err) {
+    if (err instanceof ProviderAccessError) {
+      return NextResponse.json(
+        { ok: false, responseText: null, error: err.message, exitCode: null },
+        { status: err.status, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    throw err;
+  }
 
   // Quick preflight: if Codex is not installed at all, short-circuit
   // with a clear message rather than letting execFile fail with a

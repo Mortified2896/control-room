@@ -935,8 +935,8 @@ export const RouterSettingsPage: FC<{
   return (
     <div
       className={cn(
-        "flex w-full max-w-6xl flex-col gap-0 overflow-y-auto",
-        embedded ? "" : "mx-auto h-dvh px-4 py-6 sm:px-8",
+        "flex w-full max-w-6xl flex-col gap-0",
+        embedded ? "" : "mx-auto h-dvh overflow-y-auto px-4 py-6 sm:px-8",
       )}
     >
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 pb-4">

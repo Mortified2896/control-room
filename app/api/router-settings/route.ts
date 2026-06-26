@@ -19,6 +19,7 @@ import { EMPTY_SELECTOR_PREFERENCES } from "@/lib/repo/model-selector-prefs-type
 import { ensureDiscoveryFresh } from "@/lib/providers/openai-discovery";
 import { getMiniMaxConfig, getMiniMaxModels, minimaxProvider } from "@/lib/providers/minimax";
 import type { ProviderId, ReasoningLevel } from "@/lib/providers/types";
+import { getProviderAccessSettings } from "@/lib/providers/access-control";
 import { upsertRouterSettingsRow } from "@/lib/repo/router-settings";
 
 export const dynamic = "force-dynamic";
@@ -221,13 +222,33 @@ export async function GET() {
     );
     registry = getFallbackEffectiveRegistry();
   }
-  const dto: RouterSettingsDto = {
+  const providerAccess = await getProviderAccessSettings();
+  const openaiAccess = providerAccess.find((p) => p.provider_id === "openai_api");
+  const minimaxAccess = providerAccess.find((p) => p.provider_id === "minimax_api");
+
+  const dto: RouterSettingsDto & { providerAccess: typeof providerAccess } = {
     effective,
     defaults: DEFAULT_ROUTER_SETTINGS,
     configured,
     registry: registryToRouterAllowlist(registry),
     effectiveRegistry: {
-      models: serializeRegistryModels(registry),
+      models: serializeRegistryModels(registry).map((m) => {
+        const access = m.providerId === "openai" ? openaiAccess : minimaxAccess;
+        if (!access?.enabled) {
+          return {
+            ...m,
+            available: false,
+            usableForChat: false,
+            manualSelectorVisible: false,
+            routerEligible: false,
+          };
+        }
+        return {
+          ...m,
+          manualSelectorVisible: m.manualSelectorVisible && access.allow_manual,
+          routerEligible: m.routerEligible && access.allow_router,
+        };
+      }),
       defaults: registry.defaults,
       counts: registry.counts,
       discovery: serializeDiscovery(registry.discovery),
@@ -236,6 +257,7 @@ export async function GET() {
       ),
       fakeMode: registry.fakeMode,
     },
+    providerAccess,
   };
   return NextResponse.json(dto, { headers: { "Cache-Control": "no-store" } });
 }

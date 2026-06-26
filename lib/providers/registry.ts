@@ -18,6 +18,7 @@ import type { ModelOption, ModelTier as LegacyModelTier, ReasoningLevel } from "
 import { DEFAULT_REASONING_LEVEL } from "./openai";
 import { getMiniMaxModels } from "./minimax";
 import { FAKE_OPENAI_MODEL_IDS, isFakeOpenAIModelsEnabled } from "./openai-models-fake";
+import { getProviderAccessSettings } from "./access-control";
 // Defer the server-only repo imports to the async wrappers so unit tests
 // that only exercise `buildEffectiveRegistry` can load this module
 // without a Postgres pool and without a `server-only` runtime shim.
@@ -487,11 +488,24 @@ export async function getEffectiveModelsResponse(): Promise<{
   defaultModelId: string | null;
   defaultReasoningLevel: ReasoningLevel;
 }> {
-  const registry = await getEffectiveModelsRegistry();
-  const filtered = registry.models.filter((m) => m.manualSelectorVisible);
+  const [registry, access] = await Promise.all([
+    getEffectiveModelsRegistry(),
+    getProviderAccessSettings(),
+  ]);
+  const openaiAccess = access.find((p) => p.provider_id === "openai_api");
+  const minimaxAccess = access.find((p) => p.provider_id === "minimax_api");
+  const codexAccess = access.find((p) => p.provider_id === "codex_subscription");
+  const filtered = registry.models.filter(
+    (m) => m.manualSelectorVisible && openaiAccess?.enabled && openaiAccess.allow_manual,
+  );
   const models: ModelOption[] = filtered.map((m) => {
     const canCallNow =
-      m.configured && m.available && m.supportsReasoning && process.env.OPENAI_API_KEY?.trim();
+      openaiAccess?.enabled &&
+      openaiAccess.allow_manual &&
+      m.configured &&
+      m.available &&
+      m.supportsReasoning &&
+      process.env.OPENAI_API_KEY?.trim();
     const option: ModelOption = {
       providerId: m.providerId,
       providerLabel: "OpenAI API",
@@ -515,7 +529,11 @@ export async function getEffectiveModelsResponse(): Promise<{
         ? "Not configured in Control Room — chat calls will be refused."
         : !process.env.OPENAI_API_KEY?.trim()
           ? "OPENAI_API_KEY is not configured."
-          : "Not currently available from OpenAI.";
+          : !openaiAccess?.enabled
+            ? "OpenAI API provider is disabled in Settings."
+            : !openaiAccess.allow_manual
+              ? "OpenAI API manual chat is disabled in Settings."
+              : "Not currently available from OpenAI.";
       return {
         ...option,
         enabled: false,
@@ -524,35 +542,52 @@ export async function getEffectiveModelsResponse(): Promise<{
     }
     return option;
   });
+  const codexEnabled = Boolean(codexAccess?.enabled && codexAccess.allow_manual);
   const codexModels: ModelOption[] = [
     {
       providerId: "codex",
       providerLabel: "Codex",
       modelId: "codex:gpt-5.4-mini",
-      modelLabel: "Codex · GPT-5.4 Mini",
-      enabled: true,
+      modelLabel: "Codex · GPT-5.4 Mini · included",
+      enabled: codexEnabled,
       accessPath: "codex_chatgpt",
       billingLabel: "ChatGPT subscription",
       capabilityKind: "agent_backend",
       description: "Access: Codex CLI · ChatGPT subscription. Does not use OPENAI_API_KEY.",
       reasoningLevels: [],
       tier: "cheap",
+      ...(codexEnabled
+        ? {}
+        : { reason: "Codex subscription manual chat is disabled in Settings." }),
     },
     {
       providerId: "codex",
       providerLabel: "Codex",
       modelId: "codex:gpt-5.5",
-      modelLabel: "Codex · GPT-5.5",
-      enabled: true,
+      modelLabel: "Codex · GPT-5.5 · included",
+      enabled: codexEnabled,
       accessPath: "codex_chatgpt",
       billingLabel: "ChatGPT subscription",
       capabilityKind: "agent_backend",
       description: "Access: Codex CLI · ChatGPT subscription. Does not use OPENAI_API_KEY.",
       reasoningLevels: [],
       tier: "expensive",
+      ...(codexEnabled
+        ? {}
+        : { reason: "Codex subscription manual chat is disabled in Settings." }),
     },
   ];
-  const allModels = [...models, ...getMiniMaxModels(), ...codexModels];
+  const minimaxModels = getMiniMaxModels().map((m) => ({
+    ...m,
+    modelLabel: `${m.modelLabel} · token plan`,
+    enabled: Boolean(m.enabled && minimaxAccess?.enabled && minimaxAccess.allow_manual),
+    reason: !minimaxAccess?.enabled
+      ? "MiniMax API key provider is disabled in Settings."
+      : !minimaxAccess.allow_manual
+        ? "MiniMax manual chat is disabled in Settings."
+        : m.reason,
+  }));
+  const allModels = [...models, ...minimaxModels, ...codexModels];
   const defaultModelId =
     registry.defaults.manualModelId &&
     allModels.some((m) => m.modelId === registry.defaults.manualModelId && m.enabled)

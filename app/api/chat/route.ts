@@ -15,6 +15,7 @@ import { isDbConfigured } from "@/lib/db";
 import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thread-messages";
 import { createMessage } from "@/lib/repo/threads";
 import { resolveModel, getDefaultRouterModelId } from "@/lib/providers";
+import { assertModelExecutionAllowed, ProviderAccessError } from "@/lib/providers/access-control";
 import {
   getRuntimeModel,
   getRuntimeProviderOptions,
@@ -169,16 +170,32 @@ export async function POST(req: Request) {
     );
   }
 
+  const reasoningLevel = validReasoningLevel(rawReasoningLevel);
+
+  try {
+    await assertModelExecutionAllowed({
+      providerId: result.resolved.providerId,
+      modelId: result.resolved.modelId,
+      surface: "manual_chat",
+      reasoningLevel,
+    });
+  } catch (err) {
+    if (err instanceof ProviderAccessError) {
+      return Response.json(
+        { error: "provider_access_blocked", providerId: err.providerId, reason: err.message },
+        { status: err.status },
+      );
+    }
+    throw err;
+  }
+
   const routerAbSupported = result.resolved.providerId === "openai";
 
   let sideAModel;
   let sideAProviderOptions;
   try {
     sideAModel = getRuntimeModel(result.resolved);
-    sideAProviderOptions = getRuntimeProviderOptions(
-      result.resolved,
-      validReasoningLevel(rawReasoningLevel),
-    );
+    sideAProviderOptions = getRuntimeProviderOptions(result.resolved, reasoningLevel);
   } catch (err: unknown) {
     if (err instanceof ProviderConfigurationError) {
       return Response.json(
@@ -197,7 +214,6 @@ export async function POST(req: Request) {
   // traces, debug metadata, and routing metadata are not loaded here.
   const modelMessages = await convertToModelMessages(messages);
   const threadId = validThreadId(rawThreadId);
-  const reasoningLevel = validReasoningLevel(rawReasoningLevel);
 
   // Persist the user message synchronously so we have a stable
   // `user_message_id` to attach to the A/B session row. If the DB is
@@ -232,6 +248,12 @@ export async function POST(req: Request) {
   let routerOutput: RouterGraphOutput | null = null;
   if (routerAbEnabled && settings.abEnabled) {
     try {
+      await assertModelExecutionAllowed({
+        providerId: "openai",
+        modelId: settings.routerModelId || getDefaultRouterModelId(),
+        surface: "router",
+        reasoningLevel: "low",
+      });
       routerOutput = await runRouterGraph({
         latestUserText: latestText,
         recentTurns,
