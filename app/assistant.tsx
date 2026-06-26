@@ -1,6 +1,6 @@
 "use client";
 
-import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
 import { routerAbDataSchemas } from "@/lib/assistant-ui/router-ab-data-schemas";
 import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai";
@@ -127,6 +127,70 @@ function isLocalThreadId(id: string | null | undefined): boolean {
   return !id || id.startsWith("local-");
 }
 
+function extractTextFromLocalMessages(messages: readonly unknown[]): string {
+  const last = [...messages].reverse().find((m) => (m as { role?: unknown }).role === "user");
+  const content = (last as { content?: unknown } | undefined)?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      const p = part as { type?: unknown; text?: unknown };
+      return p.type === "text" && typeof p.text === "string" ? p.text : "";
+    })
+    .join("\n")
+    .trim();
+}
+
+const CodexChatPane: FC<{
+  modelId: string | null;
+  threadId: string | null;
+  initialMessages: UIMessage[];
+  notesDisabled: boolean;
+  routerAbOn: boolean;
+  onFinish: () => void;
+}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, onFinish }) => {
+  const codexModel = modelId?.startsWith("codex:")
+    ? modelId.slice("codex:".length)
+    : "gpt-5.4-mini";
+  const runtime = useLocalRuntime(
+    {
+      async run({ messages, abortSignal }) {
+        const message = extractTextFromLocalMessages(messages);
+        const response = await fetch("/api/agent-backends/codex/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, model: codexModel }),
+          signal: abortSignal,
+        });
+        const data = (await response.json()) as {
+          ok: boolean;
+          responseText: string | null;
+          error: string | null;
+        };
+        onFinish();
+        return {
+          content: [
+            {
+              type: "text",
+              text: data.ok
+                ? (data.responseText ?? "")
+                : `Codex backend error: ${data.error ?? "Unknown error"}`,
+            },
+          ],
+        };
+      },
+    },
+    { initialMessages: initialMessages as never },
+  );
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread threadId={threadId} notesDisabled={notesDisabled} routerAbOn={routerAbOn} />
+    </AssistantRuntimeProvider>
+  );
+};
+
 const ChatPane: FC<{
   modelId: string | null;
   threadId: string | null;
@@ -147,6 +211,18 @@ const ChatPane: FC<{
   onFinish,
 }) => {
   const selectedModel = models.find((m) => m.modelId === modelId) ?? null;
+  if (selectedModel?.providerId === "codex") {
+    return (
+      <CodexChatPane
+        modelId={modelId}
+        threadId={threadId}
+        initialMessages={initialMessages}
+        notesDisabled={notesDisabled}
+        routerAbOn={false}
+        onFinish={onFinish}
+      />
+    );
+  }
   const effectiveRouterAbOn = routerAbOn && selectedModel?.providerId === "openai";
   const transport = useMemo(
     () =>

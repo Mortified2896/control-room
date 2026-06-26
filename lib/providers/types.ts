@@ -28,7 +28,7 @@ export type BillingLabel = "API billed" | "MiniMax token plan" | "ChatGPT subscr
 export type CapabilityKind = "model_provider" | "agent_backend";
 
 export type ModelOption = {
-  providerId: ProviderId;
+  providerId: ProviderId | "codex";
   providerLabel: string;
   modelId: string;
   modelLabel: string;

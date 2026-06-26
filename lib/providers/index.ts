@@ -17,6 +17,7 @@ import type {
   ModelOption,
   ModelsResponse,
   ResolveResult,
+  ProviderId,
   RouterAllowlistEntry,
 } from "./types";
 
@@ -44,7 +45,7 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
       return {
         ok: true,
         resolved: {
-          providerId: firstEnabled.providerId,
+          providerId: firstEnabled.providerId as ProviderId,
           modelId: firstEnabled.modelId,
         },
       };
@@ -65,7 +66,7 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
       ok: false,
       error: {
         kind: "provider_disabled",
-        providerId: found.providerId,
+        providerId: found.providerId as ProviderId,
         reason: found.reason ?? "Provider is not configured",
       },
     };
@@ -76,7 +77,7 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
       ok: false,
       error: {
         kind: "provider_disabled",
-        providerId: openaiProvider.id,
+        providerId: openaiProvider.id as ProviderId,
         reason: openaiProvider.disabledReason,
       },
     };
@@ -95,7 +96,7 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
 
   return {
     ok: true,
-    resolved: { providerId: found.providerId, modelId: found.modelId },
+    resolved: { providerId: found.providerId as ProviderId, modelId: found.modelId },
   };
 }
 

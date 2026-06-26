@@ -524,7 +524,35 @@ export async function getEffectiveModelsResponse(): Promise<{
     }
     return option;
   });
-  const allModels = [...models, ...getMiniMaxModels()];
+  const codexModels: ModelOption[] = [
+    {
+      providerId: "codex",
+      providerLabel: "Codex",
+      modelId: "codex:gpt-5.4-mini",
+      modelLabel: "Codex · GPT-5.4 Mini",
+      enabled: true,
+      accessPath: "codex_chatgpt",
+      billingLabel: "ChatGPT subscription",
+      capabilityKind: "agent_backend",
+      description: "Access: Codex CLI · ChatGPT subscription. Does not use OPENAI_API_KEY.",
+      reasoningLevels: [],
+      tier: "cheap",
+    },
+    {
+      providerId: "codex",
+      providerLabel: "Codex",
+      modelId: "codex:gpt-5.5",
+      modelLabel: "Codex · GPT-5.5",
+      enabled: true,
+      accessPath: "codex_chatgpt",
+      billingLabel: "ChatGPT subscription",
+      capabilityKind: "agent_backend",
+      description: "Access: Codex CLI · ChatGPT subscription. Does not use OPENAI_API_KEY.",
+      reasoningLevels: [],
+      tier: "expensive",
+    },
+  ];
+  const allModels = [...models, ...getMiniMaxModels(), ...codexModels];
   const defaultModelId =
     registry.defaults.manualModelId &&
     allModels.some((m) => m.modelId === registry.defaults.manualModelId && m.enabled)
