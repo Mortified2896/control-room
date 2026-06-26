@@ -25,6 +25,7 @@ import {
 } from "@/lib/providers/minimax";
 import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
 import type { ProviderId, ReasoningLevel } from "@/lib/providers/types";
+import { CODEX_MODEL_OPTIONS } from "@/lib/codex/runner";
 import { getProviderAccessSettings } from "@/lib/providers/access-control";
 import { upsertRouterSettingsRow } from "@/lib/repo/router-settings";
 
@@ -59,7 +60,7 @@ type RouterSettingsDto = {
   }>;
   effectiveRegistry: {
     models: ReadonlyArray<{
-      providerId: ProviderId;
+      providerId: ProviderId | "codex";
       providerLabel: string;
       modelId: string;
       displayLabel: string;
@@ -165,7 +166,32 @@ async function serializeRegistryModels(
     // Keep the read above intentional: this row reflects env-file config only.
     ...(!minimaxConfig.apiKeySet ? { available: false, usableForChat: false } : {}),
   }));
-  return [...openaiRows, ...minimaxRows];
+  const codexRows = CODEX_MODEL_OPTIONS.map((m) => ({
+    providerId: "codex" as const,
+    providerLabel: "Codex subscription",
+    modelId: `codex:${m.id}`,
+    displayLabel: `Codex · ${m.label}`,
+    configured: true,
+    available: true,
+    stale: false,
+    supportsReasoning: false,
+    supportedReasoningLevels: [] as ReadonlyArray<ReasoningLevel>,
+    tier: m.id === "gpt-5.5" ? ("expensive" as const) : ("standard" as const),
+    usableForChat: true,
+    manualSelectorVisible: true,
+    manuallyOverridden: false,
+    routerEligible: false,
+    capabilities: {
+      reasoning: false,
+      vision: false,
+      images: false,
+      functionCalling: false,
+      structuredOutput: false,
+      streaming: true,
+    },
+    provenance: "env_static" as const,
+  }));
+  return [...openaiRows, ...codexRows, ...minimaxRows];
 }
 
 function serializeDiscovery(
@@ -261,6 +287,7 @@ export async function GET() {
   const providerAccess = await getProviderAccessSettings();
   const openaiAccess = providerAccess.find((p) => p.provider_id === "openai_api");
   const minimaxAccess = providerAccess.find((p) => p.provider_id === "minimax_api");
+  const codexAccess = providerAccess.find((p) => p.provider_id === "codex_subscription");
 
   const dto: RouterSettingsDto & { providerAccess: typeof providerAccess } = {
     effective,
@@ -269,7 +296,12 @@ export async function GET() {
     registry: registryToRouterAllowlist(registry),
     effectiveRegistry: {
       models: (await serializeRegistryModels(registry)).map((m) => {
-        const access = m.providerId === "openai" ? openaiAccess : minimaxAccess;
+        const access =
+          m.providerId === "openai"
+            ? openaiAccess
+            : m.providerId === "codex"
+              ? codexAccess
+              : minimaxAccess;
         if (!access?.enabled) {
           return {
             ...m,
