@@ -513,7 +513,6 @@ export const RouterSettingsPage: FC<{
   const [serverErrors, setServerErrors] = useState<ReadonlyArray<FieldError>>([]);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus>({ kind: "idle" });
-  const [minimaxRefreshStatus, setMiniMaxRefreshStatus] = useState<RefreshStatus>({ kind: "idle" });
   const [selectorSaving, setSelectorSaving] = useState<Record<string, boolean>>({});
   const [selectorError, setSelectorError] = useState<string | null>(null);
 
@@ -831,48 +830,34 @@ export const RouterSettingsPage: FC<{
         throw new Error(body?.error ?? `status ${res.status}`);
       }
       const data = (await res.json()) as {
-        outcome:
-          | {
-              kind: "fresh";
-              source: "openai" | "fake";
-              modelCount: number;
-              minimaxModelCount?: number;
-            }
-          | {
-              kind: "cache_fresh";
-              ageMs: number;
-              modelCount: number;
-              minimaxModelCount?: number;
-            }
-          | {
-              kind: "failed";
-              reason: string;
-              usedCache: boolean;
-              modelCount: number;
-              minimaxModelCount?: number;
-            };
+        outcome: {
+          kind: "fresh" | "partial_failed" | "failed";
+          modelCount: number;
+          minimaxModelCount: number;
+          providers?: Record<string, { kind: string; reason?: string; usedCache?: boolean }>;
+        };
       };
-      if (data.outcome.kind === "fresh") {
-        setRefreshStatus({
-          kind: "refreshed",
-          at: Date.now(),
-          modelCount: data.outcome.modelCount,
-          source: data.outcome.source,
-          minimaxModelCount: data.outcome.minimaxModelCount ?? 0,
-        });
-      } else if (data.outcome.kind === "cache_fresh") {
-        setRefreshStatus({
-          kind: "refreshed",
-          at: Date.now(),
-          modelCount: data.outcome.modelCount,
-          source: "cache_fresh",
-          minimaxModelCount: data.outcome.minimaxModelCount ?? 0,
-        });
-      } else {
+      const failed = Object.entries(data.outcome.providers ?? {}).filter(
+        ([, provider]) => provider.kind === "failed",
+      );
+      if (failed.length > 0) {
         setRefreshStatus({
           kind: "refresh_error",
           at: Date.now(),
-          message: `${data.outcome.reason}${data.outcome.usedCache ? " (using cached discovery)" : ""}`,
+          message: failed
+            .map(
+              ([name, provider]) =>
+                `${name}: ${provider.reason ?? "refresh failed"}${provider.usedCache ? " (using cache)" : ""}`,
+            )
+            .join("; "),
+        });
+      } else {
+        setRefreshStatus({
+          kind: "refreshed",
+          at: Date.now(),
+          modelCount: data.outcome.modelCount,
+          source: "openai",
+          minimaxModelCount: data.outcome.minimaxModelCount,
         });
       }
       await loadSettings();
@@ -881,57 +866,6 @@ export const RouterSettingsPage: FC<{
         kind: "refresh_error",
         at: Date.now(),
         message: err instanceof Error ? err.message : "Refresh failed",
-      });
-    }
-  }, [loadSettings]);
-
-  const onRefreshMiniMaxDiscovery = useCallback(async () => {
-    setMiniMaxRefreshStatus({ kind: "refreshing" });
-    try {
-      const res = await fetch("/api/models-discovery/minimax/refresh", {
-        method: "POST",
-        cache: "no-store",
-      });
-      if (res.status === 503) {
-        setMiniMaxRefreshStatus({
-          kind: "refresh_error",
-          at: Date.now(),
-          message: "DB not configured — cannot persist MiniMax discovery.",
-        });
-        return;
-      }
-      const data = (await res.json().catch(() => null)) as {
-        outcome?:
-          | { kind: "fresh"; modelCount: number }
-          | { kind: "cache_fresh"; modelCount: number }
-          | { kind: "failed"; reason: string; usedCache: boolean; modelCount: number };
-        error?: string;
-      } | null;
-      if (!res.ok && data?.outcome?.kind !== "failed")
-        throw new Error(data?.error ?? `status ${res.status}`);
-      const outcome = data?.outcome;
-      if (!outcome) throw new Error(data?.error ?? "Refresh failed");
-      if (outcome.kind === "failed") {
-        setMiniMaxRefreshStatus({
-          kind: "refresh_error",
-          at: Date.now(),
-          message: `${outcome.reason}${outcome.usedCache ? " (using cached MiniMax discovery)" : ""}`,
-        });
-      } else {
-        setMiniMaxRefreshStatus({
-          kind: "refreshed",
-          at: Date.now(),
-          modelCount: outcome.modelCount,
-          source: outcome.kind === "cache_fresh" ? "cache_fresh" : "minimax",
-          minimaxModelCount: outcome.modelCount,
-        });
-      }
-      await loadSettings();
-    } catch (err) {
-      setMiniMaxRefreshStatus({
-        kind: "refresh_error",
-        at: Date.now(),
-        message: err instanceof Error ? err.message : "MiniMax refresh failed",
       });
     }
   }, [loadSettings]);
@@ -1274,51 +1208,21 @@ export const RouterSettingsPage: FC<{
               ) : (
                 <RefreshCw className="size-3.5" />
               )}
-              Refresh OpenAI models now
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void onRefreshMiniMaxDiscovery()}
-              disabled={minimaxRefreshStatus.kind === "refreshing"}
-              data-testid="minimax-discovery-refresh-button"
-            >
-              {minimaxRefreshStatus.kind === "refreshing" ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="size-3.5" />
-              )}
-              Refresh MiniMax models now
+              Refresh all provider models now
             </Button>
             {refreshStatus.kind === "refreshed" && (
               <span
                 className="text-xs text-muted-foreground"
                 data-testid="discovery-refresh-status"
               >
-                Refreshed {formatRelativeAge(Date.now() - refreshStatus.at)} ({refreshStatus.source}
-                , {refreshStatus.modelCount} OpenAI models).
+                Refreshed {formatRelativeAge(Date.now() - refreshStatus.at)} (
+                {refreshStatus.modelCount} OpenAI models, {refreshStatus.minimaxModelCount} MiniMax
+                models).
               </span>
             )}
             {refreshStatus.kind === "refresh_error" && (
               <span className="text-xs text-destructive" data-testid="discovery-refresh-error">
                 Refresh failed: {refreshStatus.message}
-              </span>
-            )}
-            {minimaxRefreshStatus.kind === "refreshed" && (
-              <span
-                className="text-xs text-muted-foreground"
-                data-testid="minimax-discovery-refresh-status"
-              >
-                Refreshed MiniMax {formatRelativeAge(Date.now() - minimaxRefreshStatus.at)} (
-                {minimaxRefreshStatus.minimaxModelCount} models).
-              </span>
-            )}
-            {minimaxRefreshStatus.kind === "refresh_error" && (
-              <span
-                className="text-xs text-destructive"
-                data-testid="minimax-discovery-refresh-error"
-              >
-                MiniMax refresh failed: {minimaxRefreshStatus.message}
               </span>
             )}
           </div>
