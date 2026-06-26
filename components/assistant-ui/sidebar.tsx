@@ -138,16 +138,16 @@ export const Sidebar: FC<SidebarProps> = ({
             <ShortcutsHelp />
           </div>
           <Link
-            href="/settings/router"
+            href="/settings"
             data-shortcut-target={SHORTCUT_TARGETS.userSettings}
             className="aui-sidebar-settings flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground/60 transition-colors hover:bg-muted/30 hover:text-muted-foreground"
-            aria-label="Open router settings (press comma)"
+            aria-label="Open settings (press comma)"
             onClick={() => onClose?.()}
           >
             <div className="flex size-6 items-center justify-center rounded-full bg-muted/40 text-[10px] font-medium">
-              R
+              S
             </div>
-            <span>Router Settings</span>
+            <span>Settings</span>
             <KbdHint combo="," className="aui-sidebar-settings-shortcut ml-auto bg-background/60" />
           </Link>
         </div>

@@ -16,7 +16,6 @@ import type {
   ModelMeta,
   ModelOption,
   ModelsResponse,
-  ProviderId,
   ResolveResult,
   RouterAllowlistEntry,
 } from "./types";
