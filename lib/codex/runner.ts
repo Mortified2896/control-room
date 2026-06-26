@@ -231,7 +231,24 @@ export type CodexChatResult =
  * sandbox because this MVP is read-only smoke testing. A future
  * "projects" surface will need a per-project sandbox config.
  */
-export async function runCodexExec(binary: string, prompt: string): Promise<CodexChatResult> {
+export const CODEX_MODEL_OPTIONS = [
+  { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+  { id: "gpt-5.5", label: "GPT-5.5" },
+] as const;
+
+export type CodexModelId = (typeof CODEX_MODEL_OPTIONS)[number]["id"];
+
+export function isCodexModelId(value: string): value is CodexModelId {
+  return CODEX_MODEL_OPTIONS.some((m) => m.id === value);
+}
+
+export const CODEX_DEFAULT_MODEL_ID: CodexModelId = "gpt-5.4-mini";
+
+export async function runCodexExec(
+  binary: string,
+  prompt: string,
+  opts: { model?: CodexModelId } = {},
+): Promise<CodexChatResult> {
   // Defensive: limit prompt size so a runaway client can't OOM us.
   if (typeof prompt !== "string") {
     return {
@@ -266,6 +283,8 @@ export async function runCodexExec(binary: string, prompt: string): Promise<Code
   const argv: ReadonlyArray<string> = [
     "exec",
     "--skip-git-repo-check",
+    "--model",
+    opts.model ?? CODEX_DEFAULT_MODEL_ID,
     "-c",
     'approval="never"',
     "-c",

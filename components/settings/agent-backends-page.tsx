@@ -70,12 +70,27 @@ type CodexStatusDto = {
   errorMessage: string | null;
 };
 
+type CodexModelId = "gpt-5.4-mini" | "gpt-5.5";
+
 type CodexChatResponse = {
   ok: boolean;
   responseText: string | null;
   error: string | null;
   exitCode: number | null;
 };
+
+const CODEX_MODELS: ReadonlyArray<{ id: CodexModelId; label: string; description: string }> = [
+  {
+    id: "gpt-5.4-mini",
+    label: "Codex · GPT-5.4 Mini",
+    description: "Access: Codex CLI · ChatGPT subscription",
+  },
+  {
+    id: "gpt-5.5",
+    label: "Codex · GPT-5.5",
+    description: "Access: Codex CLI · ChatGPT subscription",
+  },
+];
 
 type ChatState =
   | { kind: "idle" }
@@ -138,6 +153,7 @@ export function AgentBackendsPage() {
   const [refresh, setRefresh] = useState<RefreshState>({ kind: "idle" });
   const [chat, setChat] = useState<ChatState>({ kind: "idle" });
   const [draft, setDraft] = useState<string>("Reply with only: pong");
+  const [codexModel, setCodexModel] = useState<CodexModelId>("gpt-5.4-mini");
   const [now, setNow] = useState<number>(() => Date.now());
 
   const loadStatus = useCallback(async () => {
@@ -178,7 +194,7 @@ export function AgentBackendsPage() {
         method: "POST",
         cache: "no-store",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, model: codexModel }),
       });
       const payload = (await r.json()) as CodexChatResponse;
       // We treat both HTTP 200 with `ok: true` and HTTP 200/503 with
@@ -201,7 +217,7 @@ export function AgentBackendsPage() {
         },
       });
     }
-  }, [draft]);
+  }, [draft, codexModel]);
 
   const pill = status ? STATUS_PILL[status.status] : null;
   const PillIcon = pill?.icon ?? Loader2;
@@ -397,7 +413,7 @@ export function AgentBackendsPage() {
         <div className="space-y-1">
           <h2 className="text-base font-semibold">Codex backend test</h2>
           <p className="text-xs text-muted-foreground">
-            Sends the prompt below to <code className="font-mono">codex exec</code> in a
+            Sends the prompt below to <code className="font-mono">codex exec --model</code> in a
             hermes-owned scratch directory (
             <code className="font-mono">~/tmp/control-room-codex-smoke</code>), with approval
             prompts disabled and the sandbox set to read-only. This page does not touch the
@@ -412,6 +428,26 @@ export function AgentBackendsPage() {
             void sendChat();
           }}
         >
+          <div className="space-y-1.5">
+            <Label htmlFor="codex-model">Codex model</Label>
+            <select
+              id="codex-model"
+              value={codexModel}
+              onChange={(e) => setCodexModel(e.target.value as CodexModelId)}
+              disabled={chatDisabled}
+              className="border-input bg-background flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs outline-none"
+            >
+              {CODEX_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {CODEX_MODELS.find((m) => m.id === codexModel)?.description}. This does not use
+              OPENAI_API_KEY and is not API billed.
+            </p>
+          </div>
           <div className="space-y-1.5">
             <Label htmlFor="codex-prompt">Prompt</Label>
             <Input
@@ -456,7 +492,7 @@ export function AgentBackendsPage() {
           <div className="mt-4 rounded-md border border-border/60 bg-muted/30 p-3 text-sm">
             <div className="flex items-center gap-2 text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
-              Sending to Codex…
+              Sending to Codex ({CODEX_MODELS.find((m) => m.id === codexModel)?.label})…
             </div>
             <p className="mt-2 font-mono text-xs text-muted-foreground">&gt; {chat.message}</p>
           </div>

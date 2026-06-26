@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { resolveCodexBinary, runCodexExec } from "@/lib/codex/runner";
+import {
+  CODEX_DEFAULT_MODEL_ID,
+  isCodexModelId,
+  resolveCodexBinary,
+  runCodexExec,
+} from "@/lib/codex/runner";
 import { probeCodexStatus } from "@/lib/codex/status";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +14,7 @@ export const maxDuration = 150; // Next.js route timeout (seconds); runner timeo
 /**
  * POST /api/agent-backends/codex/chat
  *
- * Body: { message: string }
+ * Body: { message: string, model?: "gpt-5.4-mini" | "gpt-5.5" }
  *
  * Runs `codex exec <message>` non-interactively in a hermes-owned
  * scratch directory (`/home/hermes/tmp/control-room-codex-smoke`),
@@ -53,12 +58,23 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
   const message = (body as { message?: unknown }).message;
+  const requestedModel = (body as { model?: unknown }).model;
   if (typeof message !== "string") {
     return NextResponse.json(
       { ok: false, responseText: null, error: "message must be a string", exitCode: null },
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );
   }
+  if (requestedModel !== undefined && typeof requestedModel !== "string") {
+    return NextResponse.json(
+      { ok: false, responseText: null, error: "model must be a string", exitCode: null },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const model =
+    typeof requestedModel === "string" && isCodexModelId(requestedModel)
+      ? requestedModel
+      : CODEX_DEFAULT_MODEL_ID;
 
   // Quick preflight: if Codex is not installed at all, short-circuit
   // with a clear message rather than letting execFile fail with a
@@ -94,7 +110,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
-  const result = await runCodexExec(binary, message);
+  const result = await runCodexExec(binary, message, { model });
   // The runner already returns the structured shape, but we re-shape
   // here to make the contract explicit and decoupled from runner
   // internals.
