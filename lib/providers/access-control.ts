@@ -2,6 +2,8 @@ import "server-only";
 
 import { isDbConfigured, tryDb, withClient } from "@/lib/db";
 import { getModelMeta } from "@/lib/providers";
+import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
+import { getMiniMaxConfig } from "./minimax";
 import type { ReasoningLevel } from "./types";
 
 export type StableProviderId = "codex_subscription" | "openai_api" | "minimax_api";
@@ -184,6 +186,20 @@ export async function assertModelExecutionAllowed(args: {
     );
   if (providerId !== "codex_subscription") {
     const meta = getModelMeta(args.modelId);
+    if (!meta && providerId === "minimax_api") {
+      const snapshot = await getMiniMaxDiscoverySnapshot();
+      const config = getMiniMaxConfig();
+      const allowedIds = new Set(
+        snapshot.modelIds.length > 0 ? snapshot.modelIds : [config.defaultModel],
+      );
+      if (!allowedIds.has(args.modelId)) {
+        throw new ProviderAccessError(
+          providerId,
+          "Model does not belong to the requested provider.",
+        );
+      }
+      return;
+    }
     if (!meta || stableProviderId(meta.providerId) !== providerId)
       throw new ProviderAccessError(providerId, "Model does not belong to the requested provider.");
     if (

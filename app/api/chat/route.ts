@@ -15,6 +15,7 @@ import { isDbConfigured } from "@/lib/db";
 import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thread-messages";
 import { createMessage } from "@/lib/repo/threads";
 import { resolveModel, getDefaultRouterModelId } from "@/lib/providers";
+import { getEffectiveModelsResponse } from "@/lib/providers/registry";
 import { assertModelExecutionAllowed, ProviderAccessError } from "@/lib/providers/access-control";
 import {
   getRuntimeModel,
@@ -137,7 +138,15 @@ export async function POST(req: Request) {
     routerAb?: boolean;
   } = await req.json();
 
-  const result = resolveModel(modelId);
+  let result = resolveModel(modelId);
+
+  if (!result.ok && result.error.kind === "unknown_model" && modelId) {
+    const effectiveModels = await getEffectiveModelsResponse();
+    const dynamic = effectiveModels.models.find((m) => m.modelId === modelId && m.enabled);
+    if (dynamic && (dynamic.providerId === "minimax" || dynamic.providerId === "openai")) {
+      result = { ok: true, resolved: { providerId: dynamic.providerId, modelId: dynamic.modelId } };
+    }
+  }
 
   if (!result.ok) {
     const err = result.error;

@@ -17,7 +17,13 @@ import {
 import { EMPTY_DISCOVERY_SNAPSHOT } from "@/lib/repo/openai-models-discovery-types";
 import { EMPTY_SELECTOR_PREFERENCES } from "@/lib/repo/model-selector-prefs-types";
 import { ensureDiscoveryFresh } from "@/lib/providers/openai-discovery";
-import { getMiniMaxConfig, getMiniMaxModels, minimaxProvider } from "@/lib/providers/minimax";
+import { ensureMiniMaxDiscoveryFresh } from "@/lib/providers/minimax-discovery";
+import {
+  getDiscoveredMiniMaxModels,
+  getMiniMaxConfig,
+  minimaxProvider,
+} from "@/lib/providers/minimax";
+import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
 import type { ProviderId, ReasoningLevel } from "@/lib/providers/types";
 import { getProviderAccessSettings } from "@/lib/providers/access-control";
 import { upsertRouterSettingsRow } from "@/lib/repo/router-settings";
@@ -97,6 +103,16 @@ type RouterSettingsDto = {
       ageMs: number | null;
       isStale: boolean;
     };
+    minimaxDiscovery: {
+      modelIds: ReadonlyArray<string>;
+      fetchedAt: string | null;
+      httpStatus: number | null;
+      source: "minimax" | "fallback";
+      rawCount: number | null;
+      errorMessage: string | null;
+      ageMs: number | null;
+      isStale: boolean;
+    };
     selectorPrefs: Record<string, { visible: boolean }>;
     fakeMode: boolean;
   };
@@ -110,23 +126,26 @@ function getFallbackEffectiveRegistry(): ReturnType<typeof buildEffectiveRegistr
   });
 }
 
-function serializeRegistryModels(
+async function serializeRegistryModels(
   registry: Awaited<ReturnType<typeof getEffectiveModelsRegistry>>,
-): RouterSettingsDto["effectiveRegistry"]["models"] {
+): Promise<RouterSettingsDto["effectiveRegistry"]["models"]> {
   const openaiRows = registry.models.map((m) => ({
     ...m,
     providerId: "openai" as const,
     providerLabel: "OpenAI API",
   }));
   const minimaxConfig = getMiniMaxConfig();
-  const minimaxRows = getMiniMaxModels().map((m) => ({
+  const minimaxSnapshot = await getMiniMaxDiscoverySnapshot();
+  const minimaxRows = (await getDiscoveredMiniMaxModels()).map((m) => ({
     providerId: minimaxProvider.id,
     providerLabel: "MiniMax API",
     modelId: m.modelId,
     displayLabel: m.modelLabel,
     configured: true,
     available: m.enabled,
-    stale: false,
+    stale: minimaxSnapshot.fetchedAt
+      ? Date.now() - minimaxSnapshot.fetchedAt.getTime() >= 24 * 60 * 60 * 1000
+      : true,
     supportsReasoning: false,
     supportedReasoningLevels: [] as ReadonlyArray<ReasoningLevel>,
     tier: "standard" as const,
@@ -165,6 +184,22 @@ function serializeDiscovery(
   };
 }
 
+function serializeMiniMaxDiscovery(
+  discovery: Awaited<ReturnType<typeof getMiniMaxDiscoverySnapshot>>,
+) {
+  const ageMs = discovery.fetchedAt ? Date.now() - discovery.fetchedAt.getTime() : null;
+  return {
+    modelIds: discovery.modelIds,
+    fetchedAt: discovery.fetchedAt ? discovery.fetchedAt.toISOString() : null,
+    httpStatus: discovery.httpStatus,
+    source: discovery.source,
+    rawCount: discovery.rawCount,
+    errorMessage: discovery.errorMessage,
+    ageMs,
+    isStale: ageMs === null ? true : ageMs >= 24 * 60 * 60 * 1000,
+  };
+}
+
 /**
  * GET /api/router-settings
  *
@@ -189,7 +224,7 @@ export async function GET() {
   // instead of failing the whole page with db_not_configured.
   if (configured) {
     try {
-      await ensureDiscoveryFresh();
+      await Promise.all([ensureDiscoveryFresh(), ensureMiniMaxDiscoveryFresh()]);
     } catch (err) {
       // The settings page must still load if OpenAI discovery or its backing
       // cache is temporarily unavailable. Surface the stale/fallback registry
@@ -222,6 +257,7 @@ export async function GET() {
     );
     registry = getFallbackEffectiveRegistry();
   }
+  const minimaxDiscovery = await getMiniMaxDiscoverySnapshot();
   const providerAccess = await getProviderAccessSettings();
   const openaiAccess = providerAccess.find((p) => p.provider_id === "openai_api");
   const minimaxAccess = providerAccess.find((p) => p.provider_id === "minimax_api");
@@ -232,7 +268,7 @@ export async function GET() {
     configured,
     registry: registryToRouterAllowlist(registry),
     effectiveRegistry: {
-      models: serializeRegistryModels(registry).map((m) => {
+      models: (await serializeRegistryModels(registry)).map((m) => {
         const access = m.providerId === "openai" ? openaiAccess : minimaxAccess;
         if (!access?.enabled) {
           return {
@@ -252,6 +288,7 @@ export async function GET() {
       defaults: registry.defaults,
       counts: registry.counts,
       discovery: serializeDiscovery(registry.discovery),
+      minimaxDiscovery: serializeMiniMaxDiscovery(minimaxDiscovery),
       selectorPrefs: Object.fromEntries(
         Object.entries(registry.selectorPrefs).map(([k, v]) => [k, { visible: v.visible }]),
       ),

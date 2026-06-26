@@ -16,7 +16,7 @@ import type { SelectorPreferences } from "@/lib/repo/model-selector-prefs-types"
 
 import type { ModelOption, ModelTier as LegacyModelTier, ReasoningLevel } from "./types";
 import { DEFAULT_REASONING_LEVEL } from "./openai";
-import { getMiniMaxModels } from "./minimax";
+import { getDiscoveredMiniMaxModels } from "./minimax";
 import { FAKE_OPENAI_MODEL_IDS, isFakeOpenAIModelsEnabled } from "./openai-models-fake";
 import { getProviderAccessSettings } from "./access-control";
 // Defer the server-only repo imports to the async wrappers so unit tests
@@ -577,7 +577,7 @@ export async function getEffectiveModelsResponse(): Promise<{
         : { reason: "Codex subscription manual chat is disabled in Settings." }),
     },
   ];
-  const minimaxModels = getMiniMaxModels().map((m) => ({
+  const minimaxModels = (await getDiscoveredMiniMaxModels()).map((m) => ({
     ...m,
     modelLabel: `${m.modelLabel} · token plan`,
     enabled: Boolean(m.enabled && minimaxAccess?.enabled && minimaxAccess.allow_manual),

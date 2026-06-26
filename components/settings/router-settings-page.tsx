@@ -103,6 +103,17 @@ type EffectiveDiscoveryDto = {
   isStale: boolean;
 };
 
+type MiniMaxDiscoveryDto = {
+  modelIds: ReadonlyArray<string>;
+  fetchedAt: string | null;
+  httpStatus: number | null;
+  source: "minimax" | "fallback";
+  rawCount: number | null;
+  errorMessage: string | null;
+  ageMs: number | null;
+  isStale: boolean;
+};
+
 type SettingsProviderId = "openai" | "minimax";
 
 type EffectiveRegistryModelDto = {
@@ -149,6 +160,7 @@ type RouterSettingsDto = {
       routerEligible: number;
     };
     discovery: EffectiveDiscoveryDto;
+    minimaxDiscovery: MiniMaxDiscoveryDto;
     selectorPrefs: Record<string, { visible: boolean }>;
     fakeMode: boolean;
   };
@@ -178,7 +190,7 @@ type RefreshStatus =
       at: number;
       modelCount: number;
       minimaxModelCount: number;
-      source: "openai" | "fake" | "cache_fresh";
+      source: "openai" | "fake" | "minimax" | "cache_fresh";
     }
   | { kind: "refresh_error"; at: number; message: string };
 
@@ -501,6 +513,7 @@ export const RouterSettingsPage: FC<{
   const [serverErrors, setServerErrors] = useState<ReadonlyArray<FieldError>>([]);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus>({ kind: "idle" });
+  const [minimaxRefreshStatus, setMiniMaxRefreshStatus] = useState<RefreshStatus>({ kind: "idle" });
   const [selectorSaving, setSelectorSaving] = useState<Record<string, boolean>>({});
   const [selectorError, setSelectorError] = useState<string | null>(null);
 
@@ -573,6 +586,7 @@ export const RouterSettingsPage: FC<{
   );
   const selectorPrefs = useMemo(() => dto?.effectiveRegistry.selectorPrefs ?? {}, [dto]);
   const discovery = useMemo(() => dto?.effectiveRegistry.discovery, [dto]);
+  const minimaxDiscovery = useMemo(() => dto?.effectiveRegistry.minimaxDiscovery, [dto]);
   const counts = useMemo(() => dto?.effectiveRegistry.counts, [dto]);
 
   /**
@@ -871,6 +885,57 @@ export const RouterSettingsPage: FC<{
     }
   }, [loadSettings]);
 
+  const onRefreshMiniMaxDiscovery = useCallback(async () => {
+    setMiniMaxRefreshStatus({ kind: "refreshing" });
+    try {
+      const res = await fetch("/api/models-discovery/minimax/refresh", {
+        method: "POST",
+        cache: "no-store",
+      });
+      if (res.status === 503) {
+        setMiniMaxRefreshStatus({
+          kind: "refresh_error",
+          at: Date.now(),
+          message: "DB not configured — cannot persist MiniMax discovery.",
+        });
+        return;
+      }
+      const data = (await res.json().catch(() => null)) as {
+        outcome?:
+          | { kind: "fresh"; modelCount: number }
+          | { kind: "cache_fresh"; modelCount: number }
+          | { kind: "failed"; reason: string; usedCache: boolean; modelCount: number };
+        error?: string;
+      } | null;
+      if (!res.ok && data?.outcome?.kind !== "failed")
+        throw new Error(data?.error ?? `status ${res.status}`);
+      const outcome = data?.outcome;
+      if (!outcome) throw new Error(data?.error ?? "Refresh failed");
+      if (outcome.kind === "failed") {
+        setMiniMaxRefreshStatus({
+          kind: "refresh_error",
+          at: Date.now(),
+          message: `${outcome.reason}${outcome.usedCache ? " (using cached MiniMax discovery)" : ""}`,
+        });
+      } else {
+        setMiniMaxRefreshStatus({
+          kind: "refreshed",
+          at: Date.now(),
+          modelCount: outcome.modelCount,
+          source: outcome.kind === "cache_fresh" ? "cache_fresh" : "minimax",
+          minimaxModelCount: outcome.modelCount,
+        });
+      }
+      await loadSettings();
+    } catch (err) {
+      setMiniMaxRefreshStatus({
+        kind: "refresh_error",
+        at: Date.now(),
+        message: err instanceof Error ? err.message : "MiniMax refresh failed",
+      });
+    }
+  }, [loadSettings]);
+
   /**
    * Persist manual-selector visibility for a single model.
    *
@@ -1028,8 +1093,9 @@ export const RouterSettingsPage: FC<{
                 <code className="rounded bg-muted px-1">/v1/models</code> to learn which model ids
                 are available to that API key. MiniMax API models use{" "}
                 <code className="rounded bg-muted px-1">MINIMAX_API_KEY</code> and a MiniMax token
-                plan; the model id is env-file static for now and re-read from{" "}
-                <code className="rounded bg-muted px-1">MINIMAX_DEFAULT_MODEL</code>.
+                plan. Control Room calls MiniMax&apos;s OpenAI-compatible{" "}
+                <code className="rounded bg-muted px-1">/v1/models</code> endpoint and keeps a 24h
+                cached snapshot.
               </p>
             </div>
           </div>
@@ -1134,6 +1200,54 @@ export const RouterSettingsPage: FC<{
             </div>
           </dl>
 
+          <div
+            className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3"
+            data-testid="minimax-discovery-status"
+          >
+            <div className="rounded-md border border-border/60 px-3 py-2">
+              <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                MiniMax models discovered
+              </dt>
+              <dd className="mt-1 flex items-baseline gap-1 text-sm">
+                <span className="text-lg font-semibold">
+                  {minimaxDiscovery?.modelIds.length ?? 0}
+                </span>
+                <span className="text-xs text-muted-foreground/70">total in latest refresh</span>
+              </dd>
+            </div>
+            <div className="rounded-md border border-border/60 px-3 py-2">
+              <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                MiniMax last refreshed
+              </dt>
+              <dd className="mt-1 text-sm">
+                {minimaxDiscovery?.fetchedAt
+                  ? `${formatRelativeAge(minimaxDiscovery.ageMs)} (${minimaxDiscovery.source})`
+                  : "never"}
+              </dd>
+            </div>
+            <div className="rounded-md border border-border/60 px-3 py-2">
+              <dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                MiniMax status
+              </dt>
+              <dd className="mt-1 text-sm">
+                {minimaxDiscovery?.isStale ? "stale / needs refresh" : "fresh"}
+              </dd>
+            </div>
+          </div>
+
+          {minimaxDiscovery?.errorMessage && (
+            <div
+              data-testid="minimax-discovery-error"
+              className="mt-3 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              <div>
+                <div className="font-medium">Last MiniMax refresh failed</div>
+                <div className="text-destructive/80">{minimaxDiscovery.errorMessage}</div>
+              </div>
+            </div>
+          )}
+
           {discovery?.errorMessage && (
             <div
               data-testid="discovery-error"
@@ -1160,7 +1274,21 @@ export const RouterSettingsPage: FC<{
               ) : (
                 <RefreshCw className="size-3.5" />
               )}
-              Refresh OpenAI + MiniMax models now
+              Refresh OpenAI models now
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void onRefreshMiniMaxDiscovery()}
+              disabled={minimaxRefreshStatus.kind === "refreshing"}
+              data-testid="minimax-discovery-refresh-button"
+            >
+              {minimaxRefreshStatus.kind === "refreshing" ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+              Refresh MiniMax models now
             </Button>
             {refreshStatus.kind === "refreshed" && (
               <span
@@ -1168,13 +1296,29 @@ export const RouterSettingsPage: FC<{
                 data-testid="discovery-refresh-status"
               >
                 Refreshed {formatRelativeAge(Date.now() - refreshStatus.at)} ({refreshStatus.source}
-                , {refreshStatus.modelCount} OpenAI models, {refreshStatus.minimaxModelCount}{" "}
-                MiniMax model).
+                , {refreshStatus.modelCount} OpenAI models).
               </span>
             )}
             {refreshStatus.kind === "refresh_error" && (
               <span className="text-xs text-destructive" data-testid="discovery-refresh-error">
                 Refresh failed: {refreshStatus.message}
+              </span>
+            )}
+            {minimaxRefreshStatus.kind === "refreshed" && (
+              <span
+                className="text-xs text-muted-foreground"
+                data-testid="minimax-discovery-refresh-status"
+              >
+                Refreshed MiniMax {formatRelativeAge(Date.now() - minimaxRefreshStatus.at)} (
+                {minimaxRefreshStatus.minimaxModelCount} models).
+              </span>
+            )}
+            {minimaxRefreshStatus.kind === "refresh_error" && (
+              <span
+                className="text-xs text-destructive"
+                data-testid="minimax-discovery-refresh-error"
+              >
+                MiniMax refresh failed: {minimaxRefreshStatus.message}
               </span>
             )}
           </div>
