@@ -149,7 +149,7 @@ const CodexChatPane: FC<{
   notesDisabled: boolean;
   routerAbOn: boolean;
   onFinish: () => void;
-}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, onFinish }) => {
+}> = ({ modelId, threadId, notesDisabled, routerAbOn, onFinish }) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
     : "gpt-5.4-mini";
@@ -181,7 +181,7 @@ const CodexChatPane: FC<{
         };
       },
     },
-    { initialMessages: initialMessages as never },
+    undefined,
   );
 
   return (
