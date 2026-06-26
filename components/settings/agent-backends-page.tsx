@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { CODEX_CATALOG_MODELS, type CodexModelId } from "@/lib/providers/codex-catalog";
 import { cn } from "@/lib/utils";
 
 /**
@@ -70,8 +71,6 @@ type CodexStatusDto = {
   errorMessage: string | null;
 };
 
-type CodexModelId = "gpt-5.4-mini" | "gpt-5.5";
-
 type CodexChatResponse = {
   ok: boolean;
   responseText: string | null;
@@ -79,18 +78,17 @@ type CodexChatResponse = {
   exitCode: number | null;
 };
 
-const CODEX_MODELS: ReadonlyArray<{ id: CodexModelId; label: string; description: string }> = [
-  {
-    id: "gpt-5.4-mini",
-    label: "Codex · GPT-5.4 Mini",
-    description: "Access: Codex CLI · ChatGPT subscription",
-  },
-  {
-    id: "gpt-5.5",
-    label: "Codex · GPT-5.5",
-    description: "Access: Codex CLI · ChatGPT subscription",
-  },
-];
+const CODEX_MODELS: ReadonlyArray<{
+  id: CodexModelId;
+  label: string;
+  description: string;
+  note?: string;
+}> = CODEX_CATALOG_MODELS.map((m) => ({
+  id: m.id,
+  label: `Codex · ${m.label}`,
+  description: "Access: Codex CLI / ChatGPT login · Official Codex catalog",
+  note: "note" in m ? m.note : m.mayBePlanGated ? "May require Pro" : undefined,
+}));
 
 type ChatState =
   | { kind: "idle" }
@@ -453,6 +451,11 @@ export function AgentBackendsPage({ embedded = false }: { embedded?: boolean } =
             <p className="text-xs text-muted-foreground">
               {CODEX_MODELS.find((m) => m.id === codexModel)?.description}. This does not use
               OPENAI_API_KEY and is not API billed.
+              {CODEX_MODELS.find((m) => m.id === codexModel)?.note ? (
+                <span className="ml-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                  {CODEX_MODELS.find((m) => m.id === codexModel)?.note}
+                </span>
+              ) : null}
             </p>
           </div>
           <div className="space-y-1.5">

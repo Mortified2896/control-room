@@ -1529,7 +1529,9 @@ export const RouterSettingsPage: FC<{
                                       data-testid={`registry-badge-env-static-${entry.modelId}`}
                                       className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
                                     >
-                                      {entry.providerId === "codex" ? "Codex catalog" : "env"}
+                                      {entry.providerId === "codex"
+                                        ? "Official Codex catalog"
+                                        : "env"}
                                     </span>
                                   )}
                                   {entry.providerId === "codex" &&
@@ -1538,7 +1540,7 @@ export const RouterSettingsPage: FC<{
                                         data-testid={`registry-badge-plan-gated-${entry.modelId}`}
                                         className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
                                       >
-                                        May require Pro/eligible Codex account
+                                        May require Pro
                                       </span>
                                     )}
                                   {entry.provenance === "stale" && (

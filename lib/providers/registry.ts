@@ -553,8 +553,8 @@ export async function getEffectiveModelsResponse(): Promise<{
     accessPath: "codex_chatgpt",
     billingLabel: "ChatGPT subscription",
     capabilityKind: "agent_backend",
-    description: `Access: Codex CLI · ChatGPT subscription. Source: Codex catalog.${
-      m.mayBePlanGated ? " May require Pro/eligible Codex account." : ""
+    description: `Access: Codex CLI / ChatGPT login. Source: Official Codex catalog.${
+      m.mayBePlanGated ? " May require Pro." : ""
     } Does not use OPENAI_API_KEY.`,
     reasoningLevels: [],
     tier: m.tier,

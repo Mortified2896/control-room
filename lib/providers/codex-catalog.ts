@@ -5,6 +5,7 @@ export type CodexCatalogModel = {
   label: string;
   tier: ModelTier;
   mayBePlanGated: boolean;
+  note?: string;
   transport: "codex-cli";
   source: "codex_catalog";
   discoveryType: "static_catalog";
@@ -47,6 +48,7 @@ export const CODEX_CATALOG_MODELS = [
     label: "GPT-5.3 Codex Spark",
     tier: "cheap",
     mayBePlanGated: true,
+    note: "Research preview; may require ChatGPT Pro",
     transport: "codex-cli",
     source: "codex_catalog",
     discoveryType: "static_catalog",
