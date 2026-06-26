@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FC } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type FC } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowUpDown,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Eye,
   EyeOff,
   Filter,
@@ -114,7 +116,7 @@ type MiniMaxDiscoveryDto = {
   isStale: boolean;
 };
 
-type SettingsProviderId = "openai" | "minimax";
+type SettingsProviderId = "openai" | "minimax" | "codex";
 
 type EffectiveRegistryModelDto = {
   providerId: SettingsProviderId;
@@ -513,6 +515,9 @@ export const RouterSettingsPage: FC<{
   const [serverErrors, setServerErrors] = useState<ReadonlyArray<FieldError>>([]);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ kind: "idle" });
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus>({ kind: "idle" });
+  const [collapsedProviderGroups, setCollapsedProviderGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [selectorSaving, setSelectorSaving] = useState<Record<string, boolean>>({});
   const [selectorError, setSelectorError] = useState<string | null>(null);
 
@@ -694,6 +699,43 @@ export const RouterSettingsPage: FC<{
     });
     return sorted;
   }, [registryEntries, selectorPrefs, registryRowState, sortMode, filterMode, searchQuery]);
+
+  const groupedVisibleRegistryEntries = useMemo(() => {
+    const order = ["openai", "codex", "minimax"];
+    const labelFor = (providerId: string) =>
+      providerId === "openai"
+        ? "OpenAI API"
+        : providerId === "codex"
+          ? "Codex subscription"
+          : providerId === "minimax"
+            ? "MiniMax subscription"
+            : providerId;
+    const providerIds = [
+      ...order.filter((id) => visibleRegistryEntries.some((entry) => entry.providerId === id)),
+      ...Array.from(new Set(visibleRegistryEntries.map((entry) => entry.providerId))).filter(
+        (id) => !order.includes(id),
+      ),
+    ];
+    return providerIds.map((providerId) => {
+      const entries = visibleRegistryEntries.filter((entry) => entry.providerId === providerId);
+      return {
+        providerId,
+        label: labelFor(providerId),
+        entries,
+        configured: entries.filter((entry) => entry.configured).length,
+        available: entries.filter((entry) => entry.available).length,
+      };
+    });
+  }, [visibleRegistryEntries]);
+
+  const toggleProviderGroup = useCallback((providerId: string) => {
+    setCollapsedProviderGroups((current) => {
+      const next = new Set(current);
+      if (next.has(providerId)) next.delete(providerId);
+      else next.add(providerId);
+      return next;
+    });
+  }, []);
 
   const update = useCallback((patch: Partial<FormState>) => {
     setForm((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -1381,263 +1423,318 @@ export const RouterSettingsPage: FC<{
                     </td>
                   </tr>
                 )}
-                {visibleRegistryEntries.map((entry) => {
-                  const prefVisible = selectorPrefs[entry.modelId]?.visible;
-                  const defaultVisible = entry.manualSelectorVisible;
-                  const manualVisible = prefVisible !== undefined ? prefVisible : defaultVisible;
-                  // The server-computed `manuallyOverridden` only updates
-                  // when we re-fetch the registry. For instant feedback
-                  // after toggling, derive it from the local selector
-                  // prefs map (which is updated optimistically on click).
-                  const manuallyOverridden = prefVisible !== undefined || entry.manuallyOverridden;
-                  const rowState = registryRowState.get(entry.modelId);
-                  const routerOn = Boolean(rowState?.routerOn);
-                  const anyChecked = Boolean(rowState?.anyChecked);
-                  const allChecked = Boolean(rowState?.allChecked);
-                  const saving = Boolean(selectorSaving[entry.modelId]);
-                  const showInlineWarning =
-                    manualVisible && !entry.configured && !warningDismissedFor[entry.modelId];
-                  const manualToggleDisabled = saving || entry.providerId !== "openai";
-                  const routerLocked =
-                    entry.providerId !== "openai" ||
-                    !entry.configured ||
-                    entry.stale ||
-                    !entry.supportsReasoning;
-                  // Partial router toggle: the user has checked some but
-                  // not all supported levels. Surfaced as a small badge
-                  // next to the switch so the binary Switch state stays
-                  // meaningful.
-                  const isPartial = anyChecked && !allChecked;
+                {groupedVisibleRegistryEntries.map((group) => {
+                  const collapsed = collapsedProviderGroups.has(group.providerId);
                   return (
-                    <tr
-                      key={entry.modelId}
-                      data-testid={`registry-row-${entry.modelId}`}
-                      data-configured={entry.configured ? "true" : "false"}
-                      data-stale={entry.stale ? "true" : "false"}
-                      className={cn("transition-colors align-top", entry.stale && "bg-muted/20")}
-                    >
-                      {/* Model column */}
-                      <td className="px-3 py-2">
-                        <div className="font-medium">
-                          {entry.providerId === "openai"
-                            ? `OpenAI API · ${entry.displayLabel}`
-                            : entry.displayLabel}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground/70">{entry.modelId}</div>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {!entry.configured && !entry.stale && (
-                            <span
-                              data-testid={`registry-badge-unclassified-${entry.modelId}`}
-                              className="inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-700 dark:text-rose-300"
+                    <Fragment key={group.providerId}>
+                      <tr className="bg-muted/30">
+                        <td colSpan={8} className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleProviderGroup(group.providerId)}
+                            className="flex w-full items-center justify-between gap-3 text-left"
+                            aria-expanded={!collapsed}
+                            data-testid={`registry-provider-group-${group.providerId}`}
+                          >
+                            <span className="flex items-center gap-2 font-medium">
+                              {collapsed ? (
+                                <ChevronRight className="size-3.5" />
+                              ) : (
+                                <ChevronDown className="size-3.5" />
+                              )}
+                              {group.label}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground/70">
+                              {group.entries.length} models · {group.available} available ·{" "}
+                              {group.configured} configured
+                            </span>
+                          </button>
+                        </td>
+                      </tr>
+                      {!collapsed &&
+                        group.entries.map((entry) => {
+                          const prefVisible = selectorPrefs[entry.modelId]?.visible;
+                          const defaultVisible = entry.manualSelectorVisible;
+                          const manualVisible =
+                            prefVisible !== undefined ? prefVisible : defaultVisible;
+                          // The server-computed `manuallyOverridden` only updates
+                          // when we re-fetch the registry. For instant feedback
+                          // after toggling, derive it from the local selector
+                          // prefs map (which is updated optimistically on click).
+                          const manuallyOverridden =
+                            prefVisible !== undefined || entry.manuallyOverridden;
+                          const rowState = registryRowState.get(entry.modelId);
+                          const routerOn = Boolean(rowState?.routerOn);
+                          const anyChecked = Boolean(rowState?.anyChecked);
+                          const allChecked = Boolean(rowState?.allChecked);
+                          const saving = Boolean(selectorSaving[entry.modelId]);
+                          const showInlineWarning =
+                            manualVisible &&
+                            !entry.configured &&
+                            !warningDismissedFor[entry.modelId];
+                          const manualToggleDisabled = saving || entry.providerId !== "openai";
+                          const routerLocked =
+                            entry.providerId !== "openai" ||
+                            !entry.configured ||
+                            entry.stale ||
+                            !entry.supportsReasoning;
+                          // Partial router toggle: the user has checked some but
+                          // not all supported levels. Surfaced as a small badge
+                          // next to the switch so the binary Switch state stays
+                          // meaningful.
+                          const isPartial = anyChecked && !allChecked;
+                          return (
+                            <tr
+                              key={entry.modelId}
+                              data-testid={`registry-row-${entry.modelId}`}
+                              data-configured={entry.configured ? "true" : "false"}
+                              data-stale={entry.stale ? "true" : "false"}
+                              className={cn(
+                                "transition-colors align-top",
+                                entry.stale && "bg-muted/20",
+                              )}
                             >
-                              unclassified
-                            </span>
-                          )}
-                          {entry.provenance === "fake" && (
-                            <span
-                              data-testid={`registry-badge-fake-${entry.modelId}`}
-                              className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
-                            >
-                              fake
-                            </span>
-                          )}
-                          {entry.provenance === "env_static" && (
-                            <span
-                              data-testid={`registry-badge-env-static-${entry.modelId}`}
-                              className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
-                            >
-                              env
-                            </span>
-                          )}
-                          {entry.provenance === "stale" && (
-                            <span
-                              data-testid={`registry-badge-stale-${entry.modelId}`}
-                              className="inline-flex items-center rounded-full border border-zinc-500/40 bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
-                            >
-                              stale
-                            </span>
-                          )}
-                          {manuallyOverridden && (
-                            <span
-                              data-testid={`registry-badge-overridden-${entry.modelId}`}
-                              className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
-                            >
-                              override
-                            </span>
-                          )}
-                          {isPartial && (
-                            <span
-                              data-testid={`registry-badge-partial-${entry.modelId}`}
-                              className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
-                            >
-                              partial
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Provider column */}
-                      <td className="px-3 py-2" data-label="Provider">
-                        <div className="flex flex-col gap-1">
-                          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
-                            {entry.providerLabel}
-                          </div>
-                          <StatusPill
-                            ok={entry.available}
-                            okLabel="Available"
-                            badLabel="Unavailable"
-                            testId={`registry-provider-pill-${entry.modelId}`}
-                          />
-                          <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {entry.providerId === "openai"
-                              ? "API billed"
-                              : "MiniMax key · token plan"}
-                          </span>
-                          {entry.available ? (
-                            <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
-                          ) : (
-                            <EyeOff className="size-3 text-zinc-500/60" />
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Control Room column */}
-                      <td className="px-3 py-2" data-label="Control Room">
-                        <div className="flex flex-col gap-1">
-                          <StatusPill
-                            ok={entry.configured}
-                            okLabel="Configured"
-                            badLabel="Not configured"
-                            testId={`registry-controlroom-pill-${entry.modelId}`}
-                          />
-                          {entry.configured ? (
-                            <Sparkles className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
-                          ) : (
-                            <span className="text-[10px] text-muted-foreground/60">
-                              no local metadata
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Manual toggle column */}
-                      <td className="px-3 py-2 text-center" data-label="Manual">
-                        <div className="flex flex-col items-center gap-1">
-                          <Switch
-                            checked={manualVisible}
-                            disabled={manualToggleDisabled}
-                            onCheckedChange={(v) => void onToggleSelectorVisible(entry.modelId, v)}
-                            aria-label={`Show ${entry.displayLabel} in manual selector`}
-                            data-testid={`registry-manual-toggle-${entry.modelId}`}
-                          />
-                          {showInlineWarning && (
-                            <UnconfiguredWarning modelLabel={entry.displayLabel} />
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Router toggle column */}
-                      <td className="px-3 py-2 text-center" data-label="Router">
-                        <TooltipProvider delayDuration={150}>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span
-                                className="inline-flex"
-                                data-testid={`registry-router-locked-${entry.modelId}`}
-                              >
-                                {routerLocked ? (
-                                  <span
-                                    className="inline-flex items-center gap-1 rounded-md border border-zinc-500/40 bg-zinc-500/10 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
-                                    aria-label="Router toggle locked"
-                                  >
-                                    <Lock className="size-3" />
-                                    Disabled
-                                  </span>
-                                ) : (
-                                  <Switch
-                                    checked={routerOn}
-                                    onCheckedChange={(v) => toggleRouterForModel(entry.modelId, v)}
-                                    aria-label={`Allow router to recommend ${entry.displayLabel}`}
-                                    data-testid={`registry-router-toggle-${entry.modelId}`}
-                                  />
-                                )}
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {routerLocked
-                                ? entry.providerId !== "openai"
-                                  ? "Router A/B is currently only supported for OpenAI models."
-                                  : entry.stale
-                                    ? "This model disappeared from the latest OpenAI discovery. Refresh to re-enable."
-                                    : !entry.supportsReasoning
-                                      ? "This model has no supported reasoning levels and cannot be recommended by the router."
-                                      : "This model has not yet been configured in Control Room and cannot be recommended by the router."
-                                : routerOn
-                                  ? "Router may recommend this model. Uncheck to stop the router from using it."
-                                  : "Router will not recommend this model. Toggle on to allow it."}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </td>
-
-                      {/* Reasoning column */}
-                      <td className="px-3 py-2 text-center" data-label="Reasoning">
-                        <div className="flex items-center justify-center gap-2">
-                          {(reasoningLevelsByModel.get(entry.modelId) ?? []).length === 0 && (
-                            <span className="text-[10px] text-muted-foreground/60">
-                              Not supported
-                            </span>
-                          )}
-                          {(reasoningLevelsByModel.get(entry.modelId) ?? []).map((level) => {
-                            const cell = reasoningCellState({
-                              configured: entry.configured && !entry.stale,
-                              routerOn,
-                              level,
-                              allowedComboKeys: form.allowedComboKeys,
-                              modelId: entry.modelId,
-                            });
-                            const cellTestId = `registry-reasoning-${entry.modelId}-${level}`;
-                            return (
-                              <div key={level} className="flex flex-col items-center gap-0.5">
-                                <Checkbox
-                                  checked={cell.checked}
-                                  disabled={cell.disabled}
-                                  onCheckedChange={(value) =>
-                                    toggleReasoningCombo(entry.modelId, level, value === true)
-                                  }
-                                  aria-label={`Allow ${entry.displayLabel} with ${level} reasoning`}
-                                  data-testid={cellTestId}
-                                  className="size-3.5"
-                                />
-                                <span
-                                  className={cn(
-                                    "text-[9px] uppercase tracking-wide",
-                                    cell.disabled
-                                      ? "text-muted-foreground/40"
-                                      : "text-muted-foreground/70",
+                              {/* Model column */}
+                              <td className="px-3 py-2">
+                                <div className="font-medium">
+                                  {entry.providerId === "openai"
+                                    ? `OpenAI API · ${entry.displayLabel}`
+                                    : entry.displayLabel}
+                                </div>
+                                <div className="text-[11px] text-muted-foreground/70">
+                                  {entry.modelId}
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {!entry.configured && !entry.stale && (
+                                    <span
+                                      data-testid={`registry-badge-unclassified-${entry.modelId}`}
+                                      className="inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-rose-700 dark:text-rose-300"
+                                    >
+                                      unclassified
+                                    </span>
                                   )}
-                                >
-                                  {level}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </td>
+                                  {entry.provenance === "fake" && (
+                                    <span
+                                      data-testid={`registry-badge-fake-${entry.modelId}`}
+                                      className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                                    >
+                                      fake
+                                    </span>
+                                  )}
+                                  {entry.provenance === "env_static" && (
+                                    <span
+                                      data-testid={`registry-badge-env-static-${entry.modelId}`}
+                                      className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
+                                    >
+                                      env
+                                    </span>
+                                  )}
+                                  {entry.provenance === "stale" && (
+                                    <span
+                                      data-testid={`registry-badge-stale-${entry.modelId}`}
+                                      className="inline-flex items-center rounded-full border border-zinc-500/40 bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
+                                    >
+                                      stale
+                                    </span>
+                                  )}
+                                  {manuallyOverridden && (
+                                    <span
+                                      data-testid={`registry-badge-overridden-${entry.modelId}`}
+                                      className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
+                                    >
+                                      override
+                                    </span>
+                                  )}
+                                  {isPartial && (
+                                    <span
+                                      data-testid={`registry-badge-partial-${entry.modelId}`}
+                                      className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                                    >
+                                      partial
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
 
-                      {/* Tier column */}
-                      <td className="px-3 py-2" data-label="Tier">
-                        <TierPill tier={entry.tier} modelId={entry.modelId} />
-                      </td>
+                              {/* Provider column */}
+                              <td className="px-3 py-2" data-label="Provider">
+                                <div className="flex flex-col gap-1">
+                                  <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                                    {entry.providerLabel}
+                                  </div>
+                                  <StatusPill
+                                    ok={entry.available}
+                                    okLabel="Available"
+                                    badLabel="Unavailable"
+                                    testId={`registry-provider-pill-${entry.modelId}`}
+                                  />
+                                  <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                    {entry.providerId === "openai"
+                                      ? "API billed"
+                                      : "MiniMax key · token plan"}
+                                  </span>
+                                  {entry.available ? (
+                                    <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
+                                  ) : (
+                                    <EyeOff className="size-3 text-zinc-500/60" />
+                                  )}
+                                </div>
+                              </td>
 
-                      {/* Capabilities column */}
-                      <td className="px-3 py-2" data-label="Capabilities">
-                        <CapabilityList
-                          capabilities={entry.capabilities}
-                          testIdPrefix={`registry-capability-${entry.modelId}`}
-                        />
-                      </td>
-                    </tr>
+                              {/* Control Room column */}
+                              <td className="px-3 py-2" data-label="Control Room">
+                                <div className="flex flex-col gap-1">
+                                  <StatusPill
+                                    ok={entry.configured}
+                                    okLabel="Configured"
+                                    badLabel="Not configured"
+                                    testId={`registry-controlroom-pill-${entry.modelId}`}
+                                  />
+                                  {entry.configured ? (
+                                    <Sparkles className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />
+                                  ) : (
+                                    <span className="text-[10px] text-muted-foreground/60">
+                                      no local metadata
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Manual toggle column */}
+                              <td className="px-3 py-2 text-center" data-label="Manual">
+                                <div className="flex flex-col items-center gap-1">
+                                  <Switch
+                                    checked={manualVisible}
+                                    disabled={manualToggleDisabled}
+                                    onCheckedChange={(v) =>
+                                      void onToggleSelectorVisible(entry.modelId, v)
+                                    }
+                                    aria-label={`Show ${entry.displayLabel} in manual selector`}
+                                    data-testid={`registry-manual-toggle-${entry.modelId}`}
+                                  />
+                                  {showInlineWarning && (
+                                    <UnconfiguredWarning modelLabel={entry.displayLabel} />
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Router toggle column */}
+                              <td className="px-3 py-2 text-center" data-label="Router">
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span
+                                        className="inline-flex"
+                                        data-testid={`registry-router-locked-${entry.modelId}`}
+                                      >
+                                        {routerLocked ? (
+                                          <span
+                                            className="inline-flex items-center gap-1 rounded-md border border-zinc-500/40 bg-zinc-500/10 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
+                                            aria-label="Router toggle locked"
+                                          >
+                                            <Lock className="size-3" />
+                                            Disabled
+                                          </span>
+                                        ) : (
+                                          <Switch
+                                            checked={routerOn}
+                                            onCheckedChange={(v) =>
+                                              toggleRouterForModel(entry.modelId, v)
+                                            }
+                                            aria-label={`Allow router to recommend ${entry.displayLabel}`}
+                                            data-testid={`registry-router-toggle-${entry.modelId}`}
+                                          />
+                                        )}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      {routerLocked
+                                        ? entry.providerId !== "openai"
+                                          ? "Router A/B is currently only supported for OpenAI models."
+                                          : entry.stale
+                                            ? "This model disappeared from the latest OpenAI discovery. Refresh to re-enable."
+                                            : !entry.supportsReasoning
+                                              ? "This model has no supported reasoning levels and cannot be recommended by the router."
+                                              : "This model has not yet been configured in Control Room and cannot be recommended by the router."
+                                        : routerOn
+                                          ? "Router may recommend this model. Uncheck to stop the router from using it."
+                                          : "Router will not recommend this model. Toggle on to allow it."}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </td>
+
+                              {/* Reasoning column */}
+                              <td className="px-3 py-2 text-center" data-label="Reasoning">
+                                <div className="flex items-center justify-center gap-2">
+                                  {(reasoningLevelsByModel.get(entry.modelId) ?? []).length ===
+                                    0 && (
+                                    <span className="text-[10px] text-muted-foreground/60">
+                                      Not supported
+                                    </span>
+                                  )}
+                                  {(reasoningLevelsByModel.get(entry.modelId) ?? []).map(
+                                    (level) => {
+                                      const cell = reasoningCellState({
+                                        configured: entry.configured && !entry.stale,
+                                        routerOn,
+                                        level,
+                                        allowedComboKeys: form.allowedComboKeys,
+                                        modelId: entry.modelId,
+                                      });
+                                      const cellTestId = `registry-reasoning-${entry.modelId}-${level}`;
+                                      return (
+                                        <div
+                                          key={level}
+                                          className="flex flex-col items-center gap-0.5"
+                                        >
+                                          <Checkbox
+                                            checked={cell.checked}
+                                            disabled={cell.disabled}
+                                            onCheckedChange={(value) =>
+                                              toggleReasoningCombo(
+                                                entry.modelId,
+                                                level,
+                                                value === true,
+                                              )
+                                            }
+                                            aria-label={`Allow ${entry.displayLabel} with ${level} reasoning`}
+                                            data-testid={cellTestId}
+                                            className="size-3.5"
+                                          />
+                                          <span
+                                            className={cn(
+                                              "text-[9px] uppercase tracking-wide",
+                                              cell.disabled
+                                                ? "text-muted-foreground/40"
+                                                : "text-muted-foreground/70",
+                                            )}
+                                          >
+                                            {level}
+                                          </span>
+                                        </div>
+                                      );
+                                    },
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Tier column */}
+                              <td className="px-3 py-2" data-label="Tier">
+                                <TierPill tier={entry.tier} modelId={entry.modelId} />
+                              </td>
+
+                              {/* Capabilities column */}
+                              <td className="px-3 py-2" data-label="Capabilities">
+                                <CapabilityList
+                                  capabilities={entry.capabilities}
+                                  testIdPrefix={`registry-capability-${entry.modelId}`}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </Fragment>
                   );
                 })}
               </tbody>
