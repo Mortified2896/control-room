@@ -4,6 +4,7 @@ import { isDbConfigured, tryDb, withClient } from "@/lib/db";
 import { getModelMeta } from "@/lib/providers";
 import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
 import { getMiniMaxConfig } from "./minimax";
+import { isCodexCatalogModelId } from "./codex-catalog";
 import type { ReasoningLevel } from "./types";
 
 export type StableProviderId = "codex_subscription" | "openai_api" | "minimax_api";
@@ -184,33 +185,37 @@ export async function assertModelExecutionAllowed(args: {
       providerId,
       `${provider.display_name} is not allowed for ${args.surface} in Settings.`,
     );
-  if (providerId !== "codex_subscription") {
-    const meta = getModelMeta(args.modelId);
-    if (!meta && providerId === "minimax_api") {
-      const snapshot = await getMiniMaxDiscoverySnapshot();
-      const config = getMiniMaxConfig();
-      const allowedIds = new Set(
-        snapshot.modelIds.length > 0 ? snapshot.modelIds : [config.defaultModel],
-      );
-      if (!allowedIds.has(args.modelId)) {
-        throw new ProviderAccessError(
-          providerId,
-          "Model does not belong to the requested provider.",
-        );
-      }
-      return;
-    }
-    if (!meta || stableProviderId(meta.providerId) !== providerId)
+  if (providerId === "codex_subscription") {
+    const codexId = args.modelId.startsWith("codex:")
+      ? args.modelId.slice("codex:".length)
+      : args.modelId;
+    if (!isCodexCatalogModelId(codexId)) {
       throw new ProviderAccessError(providerId, "Model does not belong to the requested provider.");
-    if (
-      args.reasoningLevel &&
-      meta.reasoningLevels.length > 0 &&
-      !meta.reasoningLevels.includes(args.reasoningLevel)
-    ) {
-      throw new ProviderAccessError(
-        providerId,
-        `Reasoning level ${args.reasoningLevel} is not supported by ${args.modelId}.`,
-      );
     }
+    return;
+  }
+  const meta = getModelMeta(args.modelId);
+  if (!meta && providerId === "minimax_api") {
+    const snapshot = await getMiniMaxDiscoverySnapshot();
+    const config = getMiniMaxConfig();
+    const allowedIds = new Set(
+      snapshot.modelIds.length > 0 ? snapshot.modelIds : [config.defaultModel],
+    );
+    if (!allowedIds.has(args.modelId)) {
+      throw new ProviderAccessError(providerId, "Model does not belong to the requested provider.");
+    }
+    return;
+  }
+  if (!meta || stableProviderId(meta.providerId) !== providerId)
+    throw new ProviderAccessError(providerId, "Model does not belong to the requested provider.");
+  if (
+    args.reasoningLevel &&
+    meta.reasoningLevels.length > 0 &&
+    !meta.reasoningLevels.includes(args.reasoningLevel)
+  ) {
+    throw new ProviderAccessError(
+      providerId,
+      `Reasoning level ${args.reasoningLevel} is not supported by ${args.modelId}.`,
+    );
   }
 }

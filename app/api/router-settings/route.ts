@@ -25,7 +25,7 @@ import {
 } from "@/lib/providers/minimax";
 import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
 import type { ProviderId, ReasoningLevel } from "@/lib/providers/types";
-import { CODEX_MODEL_OPTIONS } from "@/lib/codex/runner";
+import { CODEX_CATALOG_MODELS } from "@/lib/providers/codex-catalog";
 import { getProviderAccessSettings } from "@/lib/providers/access-control";
 import { upsertRouterSettingsRow } from "@/lib/repo/router-settings";
 
@@ -166,9 +166,9 @@ async function serializeRegistryModels(
     // Keep the read above intentional: this row reflects env-file config only.
     ...(!minimaxConfig.apiKeySet ? { available: false, usableForChat: false } : {}),
   }));
-  const codexRows = CODEX_MODEL_OPTIONS.map((m) => ({
+  const codexRows = CODEX_CATALOG_MODELS.map((m) => ({
     providerId: "codex" as const,
-    providerLabel: "Codex subscription",
+    providerLabel: "Codex CLI / ChatGPT login",
     modelId: `codex:${m.id}`,
     displayLabel: `Codex · ${m.label}`,
     configured: true,
@@ -176,7 +176,7 @@ async function serializeRegistryModels(
     stale: false,
     supportsReasoning: false,
     supportedReasoningLevels: [] as ReadonlyArray<ReasoningLevel>,
-    tier: m.id === "gpt-5.5" ? ("expensive" as const) : ("standard" as const),
+    tier: m.tier === "expensive" ? ("expensive" as const) : ("standard" as const),
     usableForChat: true,
     manualSelectorVisible: true,
     manuallyOverridden: false,

@@ -5,6 +5,7 @@ import {
   refreshMiniMaxModels,
   type MiniMaxRefreshOutcome,
 } from "@/lib/providers/minimax-discovery";
+import { refreshCodexModels, type CodexRefreshOutcome } from "@/lib/providers/codex-discovery";
 
 export const dynamic = "force-dynamic";
 
@@ -21,8 +22,13 @@ type RefreshResponseBody = {
     kind: "fresh" | "partial_failed" | "failed";
     modelCount: number;
     minimaxModelCount: number;
+    codexModelCount: number;
     providers: {
       openai: ProviderRefreshSummary;
+      codex: ProviderRefreshSummary & {
+        source?: "codex_catalog";
+        discoveryType?: "static_catalog";
+      };
       minimax: ProviderRefreshSummary;
     };
   };
@@ -60,16 +66,34 @@ function summarizeMiniMax(outcome: MiniMaxRefreshOutcome): ProviderRefreshSummar
   };
 }
 
-function serialize(openai: RefreshOutcome, minimax: MiniMaxRefreshOutcome): RefreshResponseBody {
+function summarizeCodex(outcome: CodexRefreshOutcome): ProviderRefreshSummary & {
+  source: "codex_catalog";
+  discoveryType: "static_catalog";
+} {
+  return {
+    kind: "fresh",
+    modelCount: outcome.modelCount,
+    source: outcome.source,
+    discoveryType: outcome.discoveryType,
+  };
+}
+
+function serialize(
+  openai: RefreshOutcome,
+  codex: CodexRefreshOutcome,
+  minimax: MiniMaxRefreshOutcome,
+): RefreshResponseBody {
   const openaiSummary = summarizeOpenAI(openai);
+  const codexSummary = summarizeCodex(codex);
   const minimaxSummary = summarizeMiniMax(minimax);
   const failures = [openaiSummary, minimaxSummary].filter((p) => p.kind === "failed");
   return {
     outcome: {
       kind: failures.length === 0 ? "fresh" : failures.length === 2 ? "failed" : "partial_failed",
       modelCount: openaiSummary.modelCount,
+      codexModelCount: codexSummary.modelCount,
       minimaxModelCount: minimaxSummary.modelCount,
-      providers: { openai: openaiSummary, minimax: minimaxSummary },
+      providers: { openai: openaiSummary, codex: codexSummary, minimax: minimaxSummary },
     },
   };
 }
@@ -99,11 +123,12 @@ export async function POST() {
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
-  const [openai, minimax] = await Promise.all([
+  const [openai, codex, minimax] = await Promise.all([
     refreshOpenAIModels({ force: true }),
+    refreshCodexModels(),
     refreshMiniMaxModels({ force: true }),
   ]);
-  return NextResponse.json(serialize(openai, minimax), {
+  return NextResponse.json(serialize(openai, codex, minimax), {
     headers: { "Cache-Control": "no-store" },
   });
 }

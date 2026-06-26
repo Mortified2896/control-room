@@ -191,6 +191,7 @@ type RefreshStatus =
       kind: "refreshed";
       at: number;
       modelCount: number;
+      codexModelCount: number;
       minimaxModelCount: number;
       source: "openai" | "fake" | "minimax" | "cache_fresh";
     }
@@ -876,6 +877,7 @@ export const RouterSettingsPage: FC<{
         outcome: {
           kind: "fresh" | "partial_failed" | "failed";
           modelCount: number;
+          codexModelCount: number;
           minimaxModelCount: number;
           providers?: Record<string, { kind: string; reason?: string; usedCache?: boolean }>;
         };
@@ -900,6 +902,7 @@ export const RouterSettingsPage: FC<{
           at: Date.now(),
           modelCount: data.outcome.modelCount,
           source: "openai",
+          codexModelCount: data.outcome.codexModelCount,
           minimaxModelCount: data.outcome.minimaxModelCount,
         });
       }
@@ -1258,8 +1261,8 @@ export const RouterSettingsPage: FC<{
                 data-testid="discovery-refresh-status"
               >
                 Refreshed {formatRelativeAge(Date.now() - refreshStatus.at)} (
-                {refreshStatus.modelCount} OpenAI models, {refreshStatus.minimaxModelCount} MiniMax
-                models).
+                {refreshStatus.modelCount} OpenAI models, {refreshStatus.codexModelCount} Codex
+                models, {refreshStatus.minimaxModelCount} MiniMax models).
               </span>
             )}
             {refreshStatus.kind === "refresh_error" && (
@@ -1526,9 +1529,18 @@ export const RouterSettingsPage: FC<{
                                       data-testid={`registry-badge-env-static-${entry.modelId}`}
                                       className="inline-flex items-center rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300"
                                     >
-                                      env
+                                      {entry.providerId === "codex" ? "Codex catalog" : "env"}
                                     </span>
                                   )}
+                                  {entry.providerId === "codex" &&
+                                    entry.modelId.includes("spark") && (
+                                      <span
+                                        data-testid={`registry-badge-plan-gated-${entry.modelId}`}
+                                        className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                                      >
+                                        May require Pro/eligible Codex account
+                                      </span>
+                                    )}
                                   {entry.provenance === "stale" && (
                                     <span
                                       data-testid={`registry-badge-stale-${entry.modelId}`}
@@ -1571,7 +1583,9 @@ export const RouterSettingsPage: FC<{
                                   <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                                     {entry.providerId === "openai"
                                       ? "API billed"
-                                      : "MiniMax key · token plan"}
+                                      : entry.providerId === "codex"
+                                        ? "Codex CLI · ChatGPT login"
+                                        : "MiniMax key · token plan"}
                                   </span>
                                   {entry.available ? (
                                     <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />

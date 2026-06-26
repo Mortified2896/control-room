@@ -17,6 +17,7 @@ import type { SelectorPreferences } from "@/lib/repo/model-selector-prefs-types"
 import type { ModelOption, ModelTier as LegacyModelTier, ReasoningLevel } from "./types";
 import { DEFAULT_REASONING_LEVEL } from "./openai";
 import { getDiscoveredMiniMaxModels } from "./minimax";
+import { CODEX_CATALOG_MODELS } from "./codex-catalog";
 import { FAKE_OPENAI_MODEL_IDS, isFakeOpenAIModelsEnabled } from "./openai-models-fake";
 import { getProviderAccessSettings } from "./access-control";
 // Defer the server-only repo imports to the async wrappers so unit tests
@@ -543,40 +544,22 @@ export async function getEffectiveModelsResponse(): Promise<{
     return option;
   });
   const codexEnabled = Boolean(codexAccess?.enabled && codexAccess.allow_manual);
-  const codexModels: ModelOption[] = [
-    {
-      providerId: "codex",
-      providerLabel: "Codex",
-      modelId: "codex:gpt-5.4-mini",
-      modelLabel: "Codex · GPT-5.4 Mini · included",
-      enabled: codexEnabled,
-      accessPath: "codex_chatgpt",
-      billingLabel: "ChatGPT subscription",
-      capabilityKind: "agent_backend",
-      description: "Access: Codex CLI · ChatGPT subscription. Does not use OPENAI_API_KEY.",
-      reasoningLevels: [],
-      tier: "cheap",
-      ...(codexEnabled
-        ? {}
-        : { reason: "Codex subscription manual chat is disabled in Settings." }),
-    },
-    {
-      providerId: "codex",
-      providerLabel: "Codex",
-      modelId: "codex:gpt-5.5",
-      modelLabel: "Codex · GPT-5.5 · included",
-      enabled: codexEnabled,
-      accessPath: "codex_chatgpt",
-      billingLabel: "ChatGPT subscription",
-      capabilityKind: "agent_backend",
-      description: "Access: Codex CLI · ChatGPT subscription. Does not use OPENAI_API_KEY.",
-      reasoningLevels: [],
-      tier: "expensive",
-      ...(codexEnabled
-        ? {}
-        : { reason: "Codex subscription manual chat is disabled in Settings." }),
-    },
-  ];
+  const codexModels: ModelOption[] = CODEX_CATALOG_MODELS.map((m) => ({
+    providerId: "codex",
+    providerLabel: "Codex CLI / ChatGPT login",
+    modelId: `codex:${m.id}`,
+    modelLabel: `Codex · ${m.label} · included`,
+    enabled: codexEnabled,
+    accessPath: "codex_chatgpt",
+    billingLabel: "ChatGPT subscription",
+    capabilityKind: "agent_backend",
+    description: `Access: Codex CLI · ChatGPT subscription. Source: Codex catalog.${
+      m.mayBePlanGated ? " May require Pro/eligible Codex account." : ""
+    } Does not use OPENAI_API_KEY.`,
+    reasoningLevels: [],
+    tier: m.tier,
+    ...(codexEnabled ? {} : { reason: "Codex subscription manual chat is disabled in Settings." }),
+  }));
   const minimaxModels = (await getDiscoveredMiniMaxModels()).map((m) => ({
     ...m,
     modelLabel: `${m.modelLabel} · token plan`,

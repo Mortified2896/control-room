@@ -2,6 +2,12 @@ import "server-only";
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
+import {
+  CODEX_CATALOG_MODELS as CODEX_MODEL_OPTIONS,
+  CODEX_DEFAULT_MODEL_ID,
+  isCodexCatalogModelId,
+  type CodexModelId,
+} from "@/lib/providers/codex-catalog";
 
 /**
  * Safe Codex CLI subprocess wrapper.
@@ -231,18 +237,11 @@ export type CodexChatResult =
  * sandbox because this MVP is read-only smoke testing. A future
  * "projects" surface will need a per-project sandbox config.
  */
-export const CODEX_MODEL_OPTIONS = [
-  { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
-  { id: "gpt-5.5", label: "GPT-5.5" },
-] as const;
-
-export type CodexModelId = (typeof CODEX_MODEL_OPTIONS)[number]["id"];
+export { CODEX_DEFAULT_MODEL_ID, CODEX_MODEL_OPTIONS, type CodexModelId };
 
 export function isCodexModelId(value: string): value is CodexModelId {
-  return CODEX_MODEL_OPTIONS.some((m) => m.id === value);
+  return isCodexCatalogModelId(value);
 }
-
-export const CODEX_DEFAULT_MODEL_ID: CodexModelId = "gpt-5.4-mini";
 
 export async function runCodexExec(
   binary: string,
