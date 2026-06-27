@@ -8,10 +8,15 @@
  * `messages.parts` is the AI SDK v6 `UIMessage.parts` shape (unknown JSON).
  */
 
+export type ThreadMode = "chat" | "coding_task";
+export type ThreadHarness = "pi" | "codex" | "opencode";
+
 export type ThreadRow = {
   id: string;
   title: string;
   projectId: string | null;
+  threadMode: ThreadMode;
+  harness: ThreadHarness | null;
   createdAt: string;
   updatedAt: string;
 };

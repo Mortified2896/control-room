@@ -2,7 +2,7 @@ import "server-only";
 
 import { tryDb, withClient, withTransaction } from "@/lib/db";
 import { titleFromUserMessage } from "@/lib/assistant-ui/thread-messages";
-import type { MessageRating, MessageRow, MessageRole, ThreadRow } from "./types";
+import type { MessageRating, MessageRow, MessageRole, ThreadHarness, ThreadMode, ThreadRow } from "./types";
 
 /**
  * Repo functions for persisted chat threads/messages.
@@ -11,12 +11,14 @@ import type { MessageRating, MessageRow, MessageRole, ThreadRow } from "./types"
  * Write paths throw: callers should report/handle persistence failure explicitly.
  */
 
-const THREAD_COLUMNS = "id, title, project_id, created_at, updated_at";
+const THREAD_COLUMNS = "id, title, project_id, COALESCE(thread_mode, 'chat') AS thread_mode, harness, created_at, updated_at";
 
 type RawThread = {
   id: string;
   title: string;
   project_id: string | null;
+  thread_mode: ThreadMode | null;
+  harness: ThreadHarness | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -37,6 +39,8 @@ function toThreadRow(r: RawThread): ThreadRow {
     id: r.id,
     title: r.title,
     projectId: r.project_id,
+    threadMode: r.thread_mode ?? "chat",
+    harness: r.harness,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
   };
@@ -132,13 +136,21 @@ export async function createThread(input: {
   title: string;
   modelId?: string | null;
   projectId?: string | null;
+  threadMode?: ThreadMode | null;
+  harness?: ThreadHarness | null;
 }): Promise<ThreadRow> {
   return withClient(async (c) => {
     const { rows } = await c.query<RawThread>(
-      `INSERT INTO threads (title, model_id, project_id)
-       VALUES ($1, $2, $3)
-       RETURNING id, title, project_id, created_at, updated_at`,
-      [input.title, input.modelId ?? null, input.projectId ?? null],
+      `INSERT INTO threads (title, model_id, project_id, thread_mode, harness)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING ${THREAD_COLUMNS}`,
+      [
+        input.title,
+        input.modelId ?? null,
+        input.projectId ?? null,
+        input.threadMode ?? "chat",
+        input.harness ?? null,
+      ],
     );
     return toThreadRow(rows[0]);
   });
@@ -180,7 +192,7 @@ export async function renameThread(input: {
       `UPDATE threads
        SET title = $2
        WHERE id = $1
-       RETURNING id, title, project_id, created_at, updated_at`,
+       RETURNING ${THREAD_COLUMNS}`,
       [input.threadId, input.title.trim()],
     );
     return rows[0] ? toThreadRow(rows[0]) : null;

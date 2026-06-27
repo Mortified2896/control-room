@@ -20,7 +20,8 @@ import { getFakeOpenAIModelIds, isFakeOpenAIModelsEnabled } from "./openai-model
  *     only ever calls `getDiscoverySnapshot()` (a pure DB read). This
  *     module is invoked by the Settings UI route (`/api/models-discovery/
  *     refresh`) and by the synchronous `ensureDiscoveryFresh()` helper
- *     used at the top of the Settings UI GET — never from `/api/chat`.
+ *     used at the top of the Settings UI and `/api/models` GET handlers —
+ *     never from `/api/chat`.
  *   - If discovery fails, the last successful cache is preserved (the
  *     repo's `writeDiscoveryFailure` keeps `model_ids` untouched and just
  *     records the error).
@@ -158,9 +159,11 @@ export async function refreshOpenAIModels(opts: { force?: boolean } = {}): Promi
  * the caller blocks on this so the response includes the refreshed
  * registry on first load.
  *
- * Critically: this function is NOT called from /api/chat, /api/models,
- * or any per-request code path. The chat path always reads the cached
- * snapshot via `getDiscoverySnapshot()` and tolerates staleness.
+ * Critically: this function is NOT called from /api/chat. The chat path
+ * always reads the cached snapshot via `getDiscoverySnapshot()` and
+ * tolerates staleness. `/api/models` may call this best-effort freshness
+ * helper because that endpoint is the model registry surface and should
+ * accurately expose API models after an empty or stale cache.
  */
 export async function ensureDiscoveryFresh(): Promise<void> {
   const existing = await getDiscoverySnapshot();

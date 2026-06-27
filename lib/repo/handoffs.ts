@@ -133,7 +133,9 @@ Safety:
 - Work only in the selected repo path.
 - Do not touch unrelated repos.
 - Inspect before editing.
-- Do not restart active Control Room/Hermes WebUI/chat services from inside the active session.
+- Do not restart the process that hosts your own active agent session.
+- If you are running inside Control Room itself, do not restart Control Room mid-response.
+- If you are running externally through Pi/OpenCode/Codex, Control Room may be restarted/deployed.
 - Report changed files, validation commands, results, and caveats.`;
 
   return withClient(async (c) => {

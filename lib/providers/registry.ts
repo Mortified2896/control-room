@@ -472,15 +472,16 @@ export async function getEffectiveModelsRegistry(): Promise<EffectiveRegistry> {
  * ever shows models the user has opted into. The `enabled` flag in the
  * response is set independently:
  *
- *   enabled = manualSelectorVisible && openaiKeySet && supportsReasoning
+ *   enabled = manualSelectorVisible && provider access allows manual
+ *             OpenAI API use && openaiKeySet && supportsReasoning
  *
- * — so an opted-in unconfigured model is VISIBLE in the picker but
- * DISABLED until OPENAI_API_KEY is set. The user sees the row and a
- * clear reason; they cannot pick it for a chat until the key is
- * configured. This keeps the UX ("experimentation") honest while not
- * pretending the chat will work without the key.
+ * — so an opted-in unconfigured model, or an available API model while
+ * OpenAI manual access is disabled in Settings, is VISIBLE in the
+ * registry but DISABLED for the chat picker with a clear reason. This
+ * keeps `/api/models` accurate as a provider registry without pretending
+ * the manual chat picker may call models blocked by access settings.
  *
- * Configured + available models with the key set get `enabled: true`.
+ * Configured + available models with the key set and manual access enabled get `enabled: true`.
  * Everything visible without the key gets `enabled: false` with a
  * reason string.
  */
@@ -496,9 +497,7 @@ export async function getEffectiveModelsResponse(): Promise<{
   const openaiAccess = access.find((p) => p.provider_id === "openai_api");
   const minimaxAccess = access.find((p) => p.provider_id === "minimax_api");
   const codexAccess = access.find((p) => p.provider_id === "codex_subscription");
-  const filtered = registry.models.filter(
-    (m) => m.manualSelectorVisible && openaiAccess?.enabled && openaiAccess.allow_manual,
-  );
+  const filtered = registry.models.filter((m) => m.manualSelectorVisible);
   const models: ModelOption[] = filtered.map((m) => {
     const canCallNow =
       openaiAccess?.enabled &&

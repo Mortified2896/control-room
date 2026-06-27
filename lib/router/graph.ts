@@ -4,8 +4,8 @@
  * This is the lightweight router AGENTS.md asks for: a small, deterministic
  * state machine with one LLM call inside it. There are no tool calls, no
  * memory, no agent loop, no vector store — just five small nodes that
- * prepare a prompt, resolve the allowlist, call GPT-5.4 Mini with a Zod
- * structured-output schema, validate the response, and apply the budget
+ * prepare a prompt, resolve the allowlist, call the configured router
+ * recommender model with a Zod structured-output schema, validate the response, and apply the budget
  * guard. By default, invalid or blocked recommendations fail loudly; automatic
  * fallback only happens when the explicit advanced setting enables it.
  *

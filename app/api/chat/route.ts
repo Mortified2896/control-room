@@ -88,6 +88,11 @@ export type RouterAbDataParts = {
     shortReason: string | null;
     taskType: AbTaskType | null;
     confidence: number | null;
+    diagnostics: {
+      routerModelId: string;
+      mainModelId: string;
+      routerAbEnabled: boolean;
+    };
   };
   "router-ab-side-b": {
     sessionId: string;
@@ -273,12 +278,20 @@ export async function POST(req: Request) {
   const recentTurns = buildRouterRecentTurns(messages);
   const recentChars = computeRouterRecentChars(latestText, recentTurns);
 
+  const routerModelIdUsed = settings.routerModelId || getDefaultRouterModelId();
+  console.info("[api/chat] router diagnostics", {
+    routerAbEnabled,
+    settingsAbEnabled: settings.abEnabled,
+    routerModelId: routerModelIdUsed,
+    mainModelId: result.resolved.modelId,
+  });
+
   let routerOutput: RouterGraphOutput | null = null;
   if (routerAbEnabled && settings.abEnabled) {
     try {
       await assertModelExecutionAllowed({
         providerId: "openai",
-        modelId: settings.routerModelId || getDefaultRouterModelId(),
+        modelId: routerModelIdUsed,
         surface: "router",
         reasoningLevel: "low",
       });
@@ -318,7 +331,7 @@ export async function POST(req: Request) {
         sideAReasoningLevel: reasoningLevel,
         userPromptText: latestText,
         recentChars,
-        routerModelId: settings.routerModelId || getDefaultRouterModelId(),
+        routerModelId: routerModelIdUsed,
         sideBModelId: routerOutput?.sideB?.modelId ?? null,
         sideBReasoningLevel: routerOutput?.sideB?.reasoningLevel ?? null,
         taskType: routerOutput?.recommendation?.taskType ?? null,
@@ -394,6 +407,11 @@ export async function POST(req: Request) {
             shortReason: routerOutput?.recommendation?.shortReason ?? null,
             taskType: routerOutput?.recommendation?.taskType ?? null,
             confidence: routerOutput?.recommendation?.confidence ?? null,
+            diagnostics: {
+              routerModelId: routerModelIdUsed,
+              mainModelId: result.resolved.modelId,
+              routerAbEnabled,
+            },
           },
         });
       }

@@ -83,10 +83,35 @@ type ModelsResponse = {
   defaultReasoningLevel: ReasoningLevel;
 };
 
+type ModelRecommendation = {
+  recommendedModelId: string;
+  recommendedProvider: string;
+  recommendedReasoningLevel: ReasoningLevel | null;
+  reasoning: string;
+  alternatives?: Array<{
+    modelId: string;
+    provider: string;
+    reasoningLevel: ReasoningLevel | null;
+    reason: string;
+  }>;
+  diagnostics: {
+    recommenderProvider?: string;
+    recommenderModelId: string;
+    fallback: boolean;
+    fallbackReason: string | null;
+    attemptedCandidateModel?: string | null;
+  };
+};
+
+type ThreadHarness = "pi" | "codex" | "opencode";
+type ThreadMode = "chat" | "coding_task";
+
 type ThreadListItem = {
   id: string;
   title: string;
   projectId?: string | null;
+  threadMode?: ThreadMode;
+  harness?: ThreadHarness | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -185,8 +210,10 @@ const CodexChatPane: FC<{
   notesDisabled: boolean;
   routerAbOn: boolean;
   activeProjectId: string | null;
+  threadMode?: ThreadMode;
+  harness?: ThreadHarness | null;
   onFinish: () => void;
-}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, activeProjectId, onFinish }) => {
+}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, activeProjectId, threadMode, harness, onFinish }) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
     : "gpt-5.4-mini";
@@ -226,6 +253,8 @@ const CodexChatPane: FC<{
       <Thread
         threadId={threadId}
         activeProjectId={activeProjectId}
+        threadMode={threadMode}
+        harness={harness}
         notesDisabled={notesDisabled}
         routerAbOn={routerAbOn}
       />
@@ -242,7 +271,14 @@ const ChatPane: FC<{
   reasoningLevel: ReasoningLevel;
   models: ModelOption[];
   activeProjectId: string | null;
+  threadMode?: ThreadMode;
+  harness?: ThreadHarness | null;
   onFinish: () => void;
+  recommendation?: ModelRecommendation | null;
+  recommendationLoading?: boolean;
+  onRecommend?: (message: string) => void;
+  onUseRecommendation?: () => void;
+  onKeepCurrent?: () => void;
 }> = ({
   modelId,
   threadId,
@@ -252,7 +288,14 @@ const ChatPane: FC<{
   reasoningLevel,
   models,
   activeProjectId,
+  threadMode,
+  harness,
   onFinish,
+  recommendation = null,
+  recommendationLoading = false,
+  onRecommend,
+  onUseRecommendation,
+  onKeepCurrent,
 }) => {
   const selectedModel = models.find((m) => m.modelId === modelId) ?? null;
   if (selectedModel?.providerId === "codex") {
@@ -264,6 +307,8 @@ const ChatPane: FC<{
         notesDisabled={notesDisabled}
         routerAbOn={false}
         activeProjectId={activeProjectId}
+        threadMode={threadMode}
+        harness={harness}
         onFinish={onFinish}
       />
     );
@@ -308,8 +353,15 @@ const ChatPane: FC<{
       <Thread
         threadId={threadId}
         activeProjectId={activeProjectId}
+        threadMode={threadMode}
+        harness={harness}
         notesDisabled={notesDisabled}
         routerAbOn={effectiveRouterAbOn}
+        recommendation={recommendation}
+        recommendationLoading={recommendationLoading}
+        onRecommend={onRecommend}
+        onUseRecommendation={onUseRecommendation}
+        onKeepCurrent={onKeepCurrent}
       />
     </AssistantRuntimeProvider>
   );
@@ -635,6 +687,144 @@ const SidebarPanel: FC<{
   );
 };
 
+const harnessLabel = (harness: ThreadHarness) =>
+  harness === "opencode" ? "OpenCode" : harness === "codex" ? "Codex" : "Pi";
+
+type HarnessRecommendation = {
+  recommendedHarness: ThreadHarness;
+  reasoning: string;
+  alternatives?: Array<{ harness: ThreadHarness; reason: string }>;
+};
+
+const NewChatDialog: FC<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  project: ProjectListItem | null;
+  onCreate: (input: { threadMode: ThreadMode; harness?: ThreadHarness | null; firstMessage?: string }) => void;
+}> = ({ open, onOpenChange, project, onCreate }) => {
+  const [threadMode, setThreadMode] = useState<ThreadMode>("chat");
+  const [instruction, setInstruction] = useState("");
+  const [selectedHarness, setSelectedHarness] = useState<ThreadHarness | null>(null);
+  const [recommendation, setRecommendation] = useState<HarnessRecommendation | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setThreadMode("chat");
+    setInstruction("");
+    setSelectedHarness(null);
+    setRecommendation(null);
+    setError(null);
+  }, [open]);
+
+  const recommend = async () => {
+    if (!project) return;
+    const task = instruction.trim();
+    if (!task) {
+      setError("Paste the first coding task before requesting a recommendation.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/harness/recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, instruction: task }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = (await res.json()) as HarnessRecommendation;
+      setRecommendation(data);
+      setSelectedHarness(data.recommendedHarness);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Recommendation failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const create = () => {
+    if (threadMode === "chat") {
+      onCreate({ threadMode: "chat" });
+      onOpenChange(false);
+      return;
+    }
+    if (!project) return;
+    if (!instruction.trim()) {
+      setError("Coding task requires the first task prompt.");
+      return;
+    }
+    if (!selectedHarness) {
+      setError("Choose a harness before creating the coding task thread.");
+      return;
+    }
+    onCreate({ threadMode: "coding_task", harness: selectedHarness, firstMessage: instruction.trim() });
+    onOpenChange(false);
+  };
+
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40" />
+        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-50 w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-background p-4 shadow-xl">
+          <DialogPrimitive.Title className="text-base font-semibold">New chat</DialogPrimitive.Title>
+          <DialogPrimitive.Description className="mt-1 text-sm text-muted-foreground">
+            {project ? `Create a chat in ${project.name}.` : "Create a general chat."}
+          </DialogPrimitive.Description>
+
+          <div className="mt-4 flex gap-2 text-sm">
+            <Button variant={threadMode === "chat" ? "default" : "outline"} onClick={() => setThreadMode("chat")}>Chat</Button>
+            {project ? (
+              <Button variant={threadMode === "coding_task" ? "default" : "outline"} onClick={() => setThreadMode("coding_task")}>Coding task</Button>
+            ) : null}
+          </div>
+
+          {threadMode === "coding_task" && project ? (
+            <div className="mt-4 space-y-3">
+              <textarea
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                className="min-h-28 w-full rounded-lg border border-border bg-background p-3 text-sm outline-none focus:border-foreground"
+                placeholder="What should this coding chat work on?"
+              />
+              <Button type="button" variant="outline" onClick={recommend} disabled={loading}>
+                {loading ? "Recommending…" : "Recommend harness"}
+              </Button>
+              {recommendation ? (
+                <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
+                  <div className="font-medium">Recommended harness: {harnessLabel(recommendation.recommendedHarness)}</div>
+                  <p className="mt-1 text-muted-foreground">{recommendation.reasoning}</p>
+                  {recommendation.alternatives?.length ? (
+                    <ul className="mt-2 list-disc pl-5 text-xs text-muted-foreground">
+                      {recommendation.alternatives.map((alt) => (
+                        <li key={alt.harness}>{harnessLabel(alt.harness)}: {alt.reason}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-2 text-sm">
+                {(["pi", "codex", "opencode"] as const).map((harness) => (
+                  <Button key={harness} type="button" variant={selectedHarness === harness ? "default" : "outline"} onClick={() => setSelectedHarness(harness)}>
+                    {harnessLabel(harness)}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {error ? <div className="mt-3 text-sm text-destructive">{error}</div> : null}
+          <div className="mt-5 flex justify-end gap-2">
+            <DialogPrimitive.Close asChild><Button type="button" variant="ghost">Cancel</Button></DialogPrimitive.Close>
+            <Button type="button" onClick={create}>Create thread</Button>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+};
+
 export const Assistant = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -650,6 +840,7 @@ export const Assistant = () => {
   const [threadMessages, setThreadMessages] = useState<UIMessage[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [newChatOpen, setNewChatOpen] = useState(false);
   const [deletingThreads, setDeletingThreads] = useState(false);
   const [dbConfigured, setDbConfigured] = useState(true);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -658,6 +849,8 @@ export const Assistant = () => {
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<ReasoningLevel>("low");
   const [routerAbOn, setRouterAbOn] = useState(true);
+  const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCoarsePointer = useMediaQuery("(pointer: coarse)");
   const newChatCounter = useRef(0);
@@ -767,7 +960,14 @@ export const Assistant = () => {
     };
   }, [mounted, activeThreadId]);
 
-  const handleNewThread = useCallback(async () => {
+  const handleCreateThread = useCallback(async (input?: {
+    threadMode?: ThreadMode;
+    harness?: ThreadHarness | null;
+    firstMessage?: string;
+  }) => {
+    const threadMode = input?.threadMode ?? "chat";
+    const harness = input?.harness ?? null;
+    const firstMessage = input?.firstMessage?.trim() ?? "";
     if (dbConfigured) {
       try {
         const res = await fetch("/api/threads", {
@@ -777,6 +977,9 @@ export const Assistant = () => {
             title: "New chat",
             modelId: selectedModelId,
             projectId: activeProjectId,
+            threadMode,
+            harness,
+            firstMessage,
           }),
         });
         if (!res.ok) throw new Error(`status ${res.status}`);
@@ -791,14 +994,22 @@ export const Assistant = () => {
     }
 
     newChatCounter.current += 1;
-    const newThread = {
+    const newThread: ThreadListItem = {
       id: `local-${Date.now()}-${newChatCounter.current}`,
       title: `New chat ${newChatCounter.current}`,
+      projectId: activeProjectId,
+      threadMode,
+      harness,
     };
     setThreads((prev) => [newThread, ...prev]);
     setActiveThreadId(newThread.id);
     setThreadMessages([]);
   }, [dbConfigured, selectedModelId, activeProjectId]);
+
+  const handleNewThread = useCallback(() => {
+    if (activeProjectId) setNewChatOpen(true);
+    else void handleCreateThread({ threadMode: "chat" });
+  }, [activeProjectId, handleCreateThread]);
 
   const handleDeleteAllThreads = useCallback(async () => {
     if (threads.length === 0 || deletingThreads) return;
@@ -862,6 +1073,62 @@ export const Assistant = () => {
     [refreshProjects],
   );
 
+  const handleRecommendModel = useCallback(
+    async (message: string) => {
+      const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      setRecommendationLoading(true);
+      try {
+        const res = await fetch("/api/model/recommend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
+            projectId: activeProjectId,
+            message: trimmed,
+            currentModelId: selectedModelId,
+            currentProvider: selected?.providerId ?? null,
+            currentReasoningLevel: selectedReasoningLevel,
+            mode: "normal_chat",
+          }),
+        });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data: ModelRecommendation = await res.json();
+        setRecommendation(data);
+      } catch {
+        setRecommendation({
+          recommendedModelId: selectedModelId ?? "gpt-5.4-mini",
+          recommendedProvider: selected?.providerId ?? "openai",
+          recommendedReasoningLevel: selectedReasoningLevel,
+          reasoning: "Keeping the current selection because recommendation failed.",
+          diagnostics: {
+            recommenderProvider: "unknown",
+            recommenderModelId: "unknown",
+            fallback: true,
+            fallbackReason: "model_recommendation_failed",
+            attemptedCandidateModel: null,
+          },
+        });
+      } finally {
+        setRecommendationLoading(false);
+      }
+    },
+    [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
+  );
+
+  const handleUseRecommendation = useCallback(() => {
+    if (!recommendation) return;
+    setSelectedModelId(recommendation.recommendedModelId);
+    if (recommendation.recommendedReasoningLevel) {
+      setSelectedReasoningLevel(recommendation.recommendedReasoningLevel);
+    }
+    // TODO: persist accepted recommendation history in run/message metadata.
+    setRecommendation(null);
+  }, [recommendation]);
+
+  const handleKeepCurrent = useCallback(() => setRecommendation(null), []);
+
   // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
   // full registry. The typing guard (isTypingTarget) is enforced here for
   // every shortcut marked requiresIdle in SHORTCUT_ENTRIES, so we never
@@ -917,11 +1184,19 @@ export const Assistant = () => {
 
   if (!mounted) return <div className="h-dvh" />;
 
-  const activeThreadTitle =
-    threads.find((thread) => thread.id === activeThreadId)?.title ?? "New chat";
+  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
+  const activeThreadTitle = activeThread?.title ?? "New chat";
+  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
 
   return (
     <div className="flex h-dvh overflow-hidden">
+      <NewChatDialog
+        open={newChatOpen}
+        onOpenChange={setNewChatOpen}
+        project={activeProject}
+        onCreate={(input) => void handleCreateThread(input)}
+      />
+
       <SidebarPanel
         threads={threads}
         projects={projects}
@@ -987,6 +1262,13 @@ export const Assistant = () => {
               reasoningLevel={selectedReasoningLevel}
               models={models}
               activeProjectId={activeProjectId}
+              threadMode={activeThread?.threadMode ?? "chat"}
+              harness={activeThread?.harness ?? null}
+              recommendation={recommendation}
+              recommendationLoading={recommendationLoading}
+              onRecommend={handleRecommendModel}
+              onUseRecommendation={handleUseRecommendation}
+              onKeepCurrent={handleKeepCurrent}
               onFinish={() => void refreshThreads()}
             />
           )}

@@ -30,6 +30,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
+  SparklesIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
@@ -55,24 +56,47 @@ type NoteResponse = {
   configured?: boolean;
 };
 
-type ComposerRouteMode = "chat" | "coding";
+type ThreadMode = "chat" | "coding_task";
 type HandoffWorker = "pi" | "codex" | "opencode";
 type HandoffTaskType = "implement" | "debug" | "inspect" | "refactor" | "test" | "review";
+type ReasoningLevel = "low" | "medium" | "high";
+
+type ModelRecommendation = {
+  recommendedModelId: string;
+  recommendedProvider: string;
+  recommendedReasoningLevel: ReasoningLevel | null;
+  reasoning: string;
+  diagnostics?: { fallback?: boolean; fallbackReason?: string | null; recommenderModelId?: string };
+};
 
 export const Thread: FC<{
   threadId: string | null;
   activeProjectId?: string | null;
+  threadMode?: ThreadMode;
+  harness?: HandoffWorker | null;
   notesDisabled?: boolean;
   workflowContent?: ReactNode;
   showWelcome?: boolean;
   routerAbOn?: boolean;
+  recommendation?: ModelRecommendation | null;
+  recommendationLoading?: boolean;
+  onRecommend?: (message: string) => void;
+  onUseRecommendation?: () => void;
+  onKeepCurrent?: () => void;
 }> = ({
   threadId,
   activeProjectId = null,
+  threadMode = "chat",
+  harness = null,
   notesDisabled = false,
   workflowContent,
   showWelcome = true,
   routerAbOn = false,
+  recommendation = null,
+  recommendationLoading = false,
+  onRecommend,
+  onUseRecommendation,
+  onKeepCurrent,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -121,7 +145,17 @@ export const Thread: FC<{
             )}
           >
             <ThreadScrollToBottom />
-            <Composer threadId={threadId} activeProjectId={activeProjectId} />
+            <Composer
+              threadId={threadId}
+              activeProjectId={activeProjectId}
+              threadMode={threadMode}
+              harness={harness}
+              recommendation={recommendation}
+              recommendationLoading={recommendationLoading}
+              onRecommend={onRecommend}
+              onUseRecommendation={onUseRecommendation}
+              onKeepCurrent={onKeepCurrent}
+            />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
             </AuiIf>
@@ -195,47 +229,36 @@ const ThreadSuggestionItem: FC = () => {
   );
 };
 
-const Composer: FC<{ threadId: string | null; activeProjectId: string | null }> = ({
+const Composer: FC<{
+  threadId: string | null;
+  activeProjectId: string | null;
+  threadMode: ThreadMode;
+  harness: HandoffWorker | null;
+  recommendation?: ModelRecommendation | null;
+  recommendationLoading?: boolean;
+  onRecommend?: (message: string) => void;
+  onUseRecommendation?: () => void;
+  onKeepCurrent?: () => void;
+}> = ({
   threadId,
   activeProjectId,
+  threadMode,
+  harness,
+  recommendation = null,
+  recommendationLoading = false,
+  onRecommend,
+  onUseRecommendation,
+  onKeepCurrent,
 }) => {
-  const [mode, setMode] = useState<ComposerRouteMode>("chat");
-  const [worker, setWorker] = useState<HandoffWorker>("pi");
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    try {
-      const raw = window.sessionStorage.getItem("control-room-composer-route");
-      if (!raw) return;
-      const saved = JSON.parse(raw) as Partial<{
-        mode: ComposerRouteMode;
-        worker: HandoffWorker;
-      }>;
-      if (saved.mode === "chat" || saved.mode === "coding") setMode(saved.mode);
-      if (saved.worker === "pi" || saved.worker === "codex" || saved.worker === "opencode") {
-        setWorker(saved.worker);
-      }
-    } catch {
-      // Ignore session preference errors.
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      window.sessionStorage.setItem(
-        "control-room-composer-route",
-        JSON.stringify({ mode, worker }),
-      );
-    } catch {
-      // Ignore session preference errors.
-    }
-  }, [mode, worker]);
+  const isCodingTask = threadMode === "coding_task";
+  const worker = isCodingTask ? harness : null;
 
   return (
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       onSubmit={(event) => {
-        if (mode !== "coding") return;
+        if (!isCodingTask) return;
         event.preventDefault();
       }}
     >
@@ -245,60 +268,13 @@ const Composer: FC<{ threadId: string | null; activeProjectId: string | null }> 
           className="bg-background border-border/60 data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50 focus-within:border-border dark:border-muted-foreground/15 dark:bg-muted/30 dark:focus-within:border-muted-foreground/30 flex w-full flex-col gap-2 rounded-3xl border p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] data-[dragging=true]:border-dashed dark:shadow-none"
         >
           <ComposerAttachments />
-          <div className="flex flex-wrap items-center gap-2 px-2 pt-1 text-xs">
-            <span className="font-medium text-muted-foreground">Route</span>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("chat");
-                setError(null);
-              }}
-              className={cn(
-                "rounded-full border px-2.5 py-1 transition-colors",
-                mode === "chat"
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border/70 bg-background text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Chat
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode("coding");
-                setError(null);
-              }}
-              className={cn(
-                "rounded-full border px-2.5 py-1 transition-colors",
-                mode === "coding"
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border/70 bg-background text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Coding task
-            </button>
-            {mode === "coding" ? (
-              <>
-                <span className="ml-1 font-medium text-muted-foreground">Harness</span>
-                {(["pi", "codex", "opencode"] as const).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setWorker(value)}
-                    className={cn(
-                      "rounded-full border px-2.5 py-1 capitalize transition-colors",
-                      worker === value
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border/70 bg-background text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {value === "opencode" ? "OpenCode" : value}
-                  </button>
-                ))}
-
-              </>
-            ) : null}
-          </div>
+          {isCodingTask && worker ? (
+            <div className="flex flex-wrap items-center gap-2 px-2 pt-1 text-xs">
+              <span className="rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-medium text-primary">
+                Coding task · {worker === "opencode" ? "OpenCode" : worker === "codex" ? "Codex" : "Pi"}
+              </span>
+            </div>
+          ) : null}
           <ComposerPrimitive.Input
             placeholder="Message Control Room…  (press C to focus)"
             data-shortcut-target={SHORTCUT_TARGETS.focusComposer}
@@ -308,14 +284,19 @@ const Composer: FC<{ threadId: string | null; activeProjectId: string | null }> 
             aria-label="Message input (press C to focus)"
           />
           <ComposerAction
-            mode={mode}
+            isCodingTask={isCodingTask}
             worker={worker}
             taskType="implement"
             threadId={threadId}
             activeProjectId={activeProjectId}
             onError={setError}
+            recommendation={recommendation}
+            recommendationLoading={recommendationLoading}
+            onRecommend={onRecommend}
+            onUseRecommendation={onUseRecommendation}
+            onKeepCurrent={onKeepCurrent}
           />
-          {mode === "coding" && error ? (
+          {isCodingTask && error ? (
             <div className="px-2 text-xs font-medium text-destructive" role="alert">
               {error}
             </div>
@@ -327,25 +308,39 @@ const Composer: FC<{ threadId: string | null; activeProjectId: string | null }> 
 };
 
 const ComposerAction: FC<{
-  mode: ComposerRouteMode;
-  worker: HandoffWorker;
+  isCodingTask: boolean;
+  worker: HandoffWorker | null;
   taskType: HandoffTaskType;
   threadId: string | null;
   activeProjectId: string | null;
   onError: (message: string | null) => void;
+  recommendation?: ModelRecommendation | null;
+  recommendationLoading?: boolean;
+  onRecommend?: (message: string) => void;
+  onUseRecommendation?: () => void;
+  onKeepCurrent?: () => void;
 }> = ({
-  mode,
+  isCodingTask,
   worker,
   taskType,
   threadId,
   activeProjectId,
   onError,
+  recommendation = null,
+  recommendationLoading = false,
+  onRecommend,
+  onUseRecommendation,
+  onKeepCurrent,
 }) => {
   const aui = useAui();
   const [creatingDraft, setCreatingDraft] = useState(false);
   const composerText = useAuiState((s) => s.composer.text);
 
   const createDraft = async () => {
+    if (!worker) {
+      onError("This coding task thread is missing a harness.");
+      return;
+    }
     if (!activeProjectId) {
       onError("Select a workspace project before sending a coding task.");
       return;
@@ -371,13 +366,31 @@ const ComposerAction: FC<{
   };
 
   return (
-    <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <div className="flex flex-wrap items-center gap-2">
-        <ComposerAddAttachment />
-        <span aria-hidden="true" className="bg-border/60 h-4 w-px" />
-        <KbdHint combo="c" className="aui-composer-focus-shortcut" />
-      </div>
-      <div className="flex items-center gap-1.5">
+    <div className="aui-composer-action-wrapper relative flex flex-col gap-2">
+      {!isCodingTask && recommendation ? (
+        <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+          <div className="font-medium text-foreground">
+            Recommended: {recommendation.recommendedModelId}
+            {recommendation.recommendedReasoningLevel ? ` · ${recommendation.recommendedReasoningLevel}` : ""}
+          </div>
+          <div className="mt-0.5 text-muted-foreground">Reason: {recommendation.reasoning}</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button type="button" size="sm" className="h-7 rounded-full px-3" onClick={onUseRecommendation}>
+              Use recommendation
+            </Button>
+            <Button type="button" variant="outline" size="sm" className="h-7 rounded-full px-3" onClick={onKeepCurrent}>
+              Keep current
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <ComposerAddAttachment />
+          <span aria-hidden="true" className="bg-border/60 h-4 w-px" />
+          <KbdHint combo="c" className="aui-composer-focus-shortcut" />
+        </div>
+        <div className="flex items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>
@@ -410,7 +423,20 @@ const ComposerAction: FC<{
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        {mode === "coding" ? (
+        {!isCodingTask && onRecommend ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 rounded-full px-2.5 text-xs"
+            disabled={recommendationLoading || composerText.trim().length === 0}
+            onClick={() => onRecommend(composerText)}
+          >
+            <SparklesIcon className="mr-1 size-3.5" />
+            {recommendationLoading ? "Recommending…" : "Recommend"}
+          </Button>
+        ) : null}
+        {isCodingTask ? (
           <TooltipIconButton
             tooltip="Create handoff draft"
             side="bottom"
@@ -454,6 +480,7 @@ const ComposerAction: FC<{
             </Button>
           </ComposerPrimitive.Cancel>
         </AuiIf>
+        </div>
       </div>
     </div>
   );

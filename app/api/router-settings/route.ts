@@ -414,9 +414,9 @@ export async function PUT(req: Request) {
     fallbackModelId: b.fallbackModelId ?? current.fallbackModelId,
     fallbackReasoningLevel: b.fallbackReasoningLevel ?? current.fallbackReasoningLevel,
     allowedCombos: b.allowedCombos ?? current.allowedCombos,
+    routerModelId: b.routerModelId ?? current.routerModelId,
     // Non-UI-managed fields round-trip from the existing effective
     // payload so a Save does not silently reset them to defaults.
-    routerModelId: current.routerModelId,
     maxCostPerRecommendationUsd: current.maxCostPerRecommendationUsd,
     maxCostPerAbRunUsd: current.maxCostPerAbRunUsd,
   };

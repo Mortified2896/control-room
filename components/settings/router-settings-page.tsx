@@ -170,6 +170,7 @@ type RouterSettingsDto = {
 
 type FormState = {
   allowedComboKeys: Set<string>;
+  routerModelId: string;
   failureBehavior: RouterFailureBehavior;
   allowExpensiveModels: boolean;
   allowLongPromptWhenExpensive: boolean;
@@ -216,6 +217,7 @@ function initialForm(dto: RouterSettingsDto): FormState {
     allowedComboKeys: new Set(
       dto.effective.allowedCombos.map((c) => comboKey(c.modelId, c.reasoningLevel)),
     ),
+    routerModelId: dto.effective.routerModelId,
     failureBehavior: dto.effective.failureBehavior,
     allowExpensiveModels: dto.effective.allowExpensiveModels,
     allowLongPromptWhenExpensive: dto.effective.allowLongPromptWhenExpensive,
@@ -272,6 +274,7 @@ function formToPayload(
       allowExpensiveModels: true,
       allowLongPromptWhenExpensive: true,
       longPromptThresholdChars: threshold,
+      routerModelId: form.routerModelId,
       failureBehavior: form.failureBehavior,
       allowedCombos,
     },
@@ -280,6 +283,7 @@ function formToPayload(
 }
 
 function hasFormChanged(form: FormState, baseline: FormState): boolean {
+  if (form.routerModelId !== baseline.routerModelId) return true;
   if (form.failureBehavior !== baseline.failureBehavior) return true;
   if (form.longPromptThresholdChars !== baseline.longPromptThresholdChars) return true;
   if (form.allowedComboKeys.size !== baseline.allowedComboKeys.size) return true;
@@ -594,6 +598,13 @@ export const RouterSettingsPage: FC<{
   const discovery = useMemo(() => dto?.effectiveRegistry.discovery, [dto]);
   const minimaxDiscovery = useMemo(() => dto?.effectiveRegistry.minimaxDiscovery, [dto]);
   const counts = useMemo(() => dto?.effectiveRegistry.counts, [dto]);
+  const routerModelOptions = useMemo(
+    () =>
+      (dto?.effectiveRegistry.models ?? [])
+        .filter((entry) => entry.providerId === "openai" && entry.configured)
+        .sort((a, b) => a.modelId.localeCompare(b.modelId)),
+    [dto],
+  );
 
   /**
    * For each registry row, compute the router-toggle state and the
@@ -1792,6 +1803,40 @@ export const RouterSettingsPage: FC<{
             Model-specific knobs (Manual, Router, Reasoning) live in the Model Registry above. This
             section only holds router-wide safety controls.
           </p>
+
+          <div className="mt-4 rounded-md border border-border/60 px-3 py-3">
+            <Label htmlFor="router-model">A/B recommender model</Label>
+            <p className="mt-1 text-xs text-muted-foreground">
+              OpenAI API model used only to choose the A/B route. This is separate from the main
+              answer model selected in chat.
+            </p>
+            <select
+              id="router-model"
+              data-testid="router-settings-router-model"
+              value={form.routerModelId}
+              onChange={(e) => update({ routerModelId: e.target.value })}
+              className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 mt-3 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:ring-[3px]"
+              aria-invalid={errorsByField.has("routerModelId")}
+            >
+              {routerModelOptions.some((entry) => entry.modelId === form.routerModelId) ? null : (
+                <option value={form.routerModelId}>{form.routerModelId} (current)</option>
+              )}
+              {routerModelOptions.map((entry) => (
+                <option key={entry.modelId} value={entry.modelId}>
+                  {entry.displayLabel} ({entry.modelId})
+                </option>
+              ))}
+            </select>
+            {errorsByField.has("routerModelId") && (
+              <p
+                role="alert"
+                className="mt-2 text-xs text-destructive"
+                data-testid="router-settings-error-router-model"
+              >
+                {errorsByField.get("routerModelId")?.[0]?.message}
+              </p>
+            )}
+          </div>
 
           <div className="mt-4 rounded-md border border-border/60 px-3 py-3">
             <Label htmlFor="failure-behavior">Failure behavior</Label>

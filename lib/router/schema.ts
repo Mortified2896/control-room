@@ -512,6 +512,26 @@ export function parseRouterSettingsForSave(
     }
   }
 
+  if (registry) {
+    const routerEntry = registry.models.find((m) => m.modelId === routerModelId);
+    if (!routerEntry) {
+      errors.push({
+        field: "routerModelId",
+        message: `Unknown router model id: ${routerModelId}.`,
+      });
+    } else if (routerEntry.providerId !== "openai") {
+      errors.push({
+        field: "routerModelId",
+        message: "Router model must be an OpenAI API model, not a Codex or MiniMax model.",
+      });
+    } else if (!routerEntry.configured) {
+      errors.push({
+        field: "routerModelId",
+        message: `${routerModelId} is not configured for OpenAI API use.`,
+      });
+    }
+  }
+
   // Stage 2: legacy fallback must be in the allowlist only when automatic
   // fallback is explicitly enabled. The default fail_loud/suggest paths do
   // not silently run another combo and should not force a fallback choice.

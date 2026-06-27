@@ -1,4 +1,5 @@
 import { getEffectiveModelsResponse } from "@/lib/providers/registry";
+import { ensureDiscoveryFresh } from "@/lib/providers/openai-discovery";
 import { ensureMiniMaxDiscoveryFresh } from "@/lib/providers/minimax-discovery";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ export const dynamic = "force-dynamic";
  * works offline. This preserves the pre-discovery API contract exactly.
  */
 export async function GET() {
-  await ensureMiniMaxDiscoveryFresh();
+  await Promise.all([ensureDiscoveryFresh(), ensureMiniMaxDiscoveryFresh()]);
   const payload = await getEffectiveModelsResponse();
   return Response.json(payload, {
     headers: { "Cache-Control": "no-store" },
