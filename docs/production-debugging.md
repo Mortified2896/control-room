@@ -36,6 +36,34 @@ Recent `/api/projects` incident:
 - Build succeeded, but production runtime was stale.
 - One restart attempt also missed `/etc/hermes/control_room_postgres.env`.
 
+## Live `.next` mutation hazard
+
+The production app serves its built routes, manifests, and client assets from
+`.next`. Running `npm run build` rewrites `.next` in place.
+
+If an old `next start` process continues serving while `.next` is replaced, the
+live website may break even though production was not explicitly restarted. The
+old runtime can serve mismatched assets, routes, and manifests from the newly
+mutated build directory.
+
+Therefore, build + restart + smoke check must be treated as one deploy operation
+for API, UI, and server changes. Do not run `npm run build` in the live serving
+directory and then leave the old `next start` process running.
+
+If an agent cannot restart because it is inside the active Control Room session,
+it should not run the production build in the live serving directory unless an
+external restart is immediately planned.
+
+If the site breaks after a build, first run `scripts/restart-prod.sh` from an
+external session, then run `scripts/smoke-prod.sh`.
+
+Hard rule: For API/UI/server changes in the live repo, agents must not run
+`npm run build` and then leave production running on the old process. Either:
+
+1. build only in a non-serving copy/worktree, or
+2. build and immediately restart production from an external shell/session,
+   followed by smoke checks and rendered UI verification if applicable.
+
 ## Golden rule
 
 After schema/API/server changes:

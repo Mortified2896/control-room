@@ -554,7 +554,7 @@ const SidebarPanel: FC<{
   projects: ProjectListItem[];
   activeProjectId: string | null;
   onSelectProject: (id: string | null) => void;
-  onOpenProject: (localPath: string) => void;
+  onOpenProject: (localPath: string) => Promise<boolean>;
   activeThreadId: string;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
@@ -836,13 +836,14 @@ export const Assistant = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ localPath }),
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const data: { project: ProjectListItem } = await res.json();
       setProjects((prev) => [data.project, ...prev.filter((p) => p.id !== data.project.id)]);
       setActiveProjectId(data.project.id);
       setActiveThreadId(null);
       setThreadMessages([]);
       void refreshProjects();
+      return true;
     },
     [refreshProjects],
   );

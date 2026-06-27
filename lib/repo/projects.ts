@@ -1,7 +1,7 @@
 import "server-only";
 
-import { basename } from "node:path";
-import { access, realpath, stat } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import { access, readdir, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -38,6 +38,15 @@ function toProjectRow(r: RawProject): ProjectRow {
 export type ProjectPathValidation =
   | { ok: true; realPath: string }
   | { ok: false; reason: "missing" | "not_directory" | "outside_workspace" | "not_git_repo" };
+
+export type BrowsedProjectFolder = {
+  name: string;
+  localPath: string;
+  isGitRepo: boolean;
+  isAlreadyProject: boolean;
+  gitRemoteUrl: string | null;
+  gitBranch: string | null;
+};
 
 export async function validateProjectPath(localPath: string): Promise<ProjectPathValidation> {
   const trimmed = localPath.trim();
@@ -77,6 +86,22 @@ export async function validateProjectPath(localPath: string): Promise<ProjectPat
   return { ok: true, realPath: pathReal };
 }
 
+async function isGitRepo(cwd: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", cwd, "rev-parse", "--is-inside-work-tree"],
+      {
+        timeout: 2000,
+        maxBuffer: 1024 * 16,
+      },
+    );
+    return stdout.trim() === "true";
+  } catch {
+    return false;
+  }
+}
+
 async function gitValue(cwd: string, args: string[]): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
@@ -88,6 +113,46 @@ async function gitValue(cwd: string, args: string[]): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+export async function browseProjectFolders(path = PROJECTS_ROOT): Promise<BrowsedProjectFolder[]> {
+  const rootReal = await realpath(PROJECTS_ROOT);
+  let browseReal: string;
+  try {
+    browseReal = await realpath(resolve(path));
+  } catch {
+    browseReal = rootReal;
+  }
+
+  const rootWithSlash = rootReal.endsWith("/") ? rootReal : `${rootReal}/`;
+  if (browseReal !== rootReal && !browseReal.startsWith(rootWithSlash)) {
+    throw Object.assign(new Error("outside_workspace"), { code: "outside_workspace" });
+  }
+
+  const projects = await listProjects();
+  const openedPaths = new Set(projects.map((project) => project.localPath));
+  const entries = await readdir(browseReal, { withFileTypes: true });
+  const folders = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) => {
+        const localPath = `${browseReal}/${entry.name}`;
+        const gitRepo = await isGitRepo(localPath);
+        return {
+          name: entry.name,
+          localPath,
+          isGitRepo: gitRepo,
+          isAlreadyProject: openedPaths.has(localPath),
+          gitRemoteUrl: gitRepo ? await gitValue(localPath, ["remote", "get-url", "origin"]) : null,
+          gitBranch: gitRepo ? await gitValue(localPath, ["branch", "--show-current"]) : null,
+        } satisfies BrowsedProjectFolder;
+      }),
+  );
+
+  return folders.sort((a, b) => {
+    if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 export async function listProjects(): Promise<ProjectRow[]> {

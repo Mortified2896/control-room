@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { isDbConfigured } from "../db.ts";
-import { openProject, validateProjectPath } from "./projects.ts";
+import { browseProjectFolders, openProject, validateProjectPath } from "./projects.ts";
 
 const CONTROL_ROOM_PATH = "/home/hermes/workspace/repos/control-room";
 
@@ -29,6 +29,19 @@ test("validateProjectPath rejects files", async () => {
   } finally {
     await rm(file, { force: true });
   }
+});
+
+test("browseProjectFolders returns immediate repo metadata under the workspace", async () => {
+  const folders = await browseProjectFolders();
+  const controlRoom = folders.find((folder) => folder.localPath === CONTROL_ROOM_PATH);
+  assert.ok(controlRoom);
+  assert.equal(controlRoom.name, "control-room");
+  assert.equal(controlRoom.isGitRepo, true);
+  assert.equal(typeof controlRoom.isAlreadyProject, "boolean");
+});
+
+test("browseProjectFolders does not browse outside the workspace", async () => {
+  await assert.rejects(() => browseProjectFolders(tmpdir()), /outside_workspace/);
 });
 
 test("openProject upserts by local_path", { skip: !isDbConfigured() }, async () => {

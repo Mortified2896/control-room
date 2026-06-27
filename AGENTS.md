@@ -102,6 +102,16 @@ the correct env, and verify the rendered browser UI after refresh/cache-bust. If
 the screenshot still shows the old UI, assume stale runtime or stale browser
 bundle before debugging React code.
 
+Live build safety:
+Do not run `npm run build` in the live production repo and then leave the old
+`next start` process running. The build rewrites `.next` and can break the
+currently served app. For API/UI/server changes, build + restart + smoke check
+are one deploy operation and must be followed by `scripts/smoke-prod.sh`; UI
+changes also require rendered browser verification. If an agent cannot restart
+because it is inside the active Control Room session, it must not run the
+production build in the live serving directory unless an external restart is
+immediately planned.
+
 Use `scripts/smoke-prod.sh` for live JSON API verification. Production restarts
 must follow `docs/production-debugging.md` and should use `scripts/restart-prod.sh`
 only from an external SSH/session.
