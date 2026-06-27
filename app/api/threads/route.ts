@@ -13,14 +13,17 @@ export const dynamic = "force-dynamic";
  * do not 5xx on a missing DB: the in-memory fallback is the source of truth
  * for the UI in Milestone 1.
  */
-export async function GET() {
+export async function GET(req: Request) {
   if (!isDbConfigured()) {
     return NextResponse.json(
       { threads: [], configured: false },
       { headers: { "Cache-Control": "no-store" } },
     );
   }
-  const threads = await listThreads();
+  const { searchParams } = new URL(req.url);
+  const projectIdParam = searchParams.get("projectId");
+  const projectId = projectIdParam === "null" ? null : projectIdParam;
+  const threads = await listThreads(projectId);
   return NextResponse.json(
     { threads, configured: true },
     { headers: { "Cache-Control": "no-store" } },
@@ -74,6 +77,14 @@ export async function POST(req: Request) {
     );
   }
 
+  const projectIdRaw = b.projectId;
+  const projectId =
+    projectIdRaw == null
+      ? null
+      : typeof projectIdRaw === "string" && projectIdRaw.trim().length > 0
+        ? projectIdRaw
+        : null;
+
   const modelIdRaw = b.modelId;
   const modelId =
     modelIdRaw == null
@@ -83,7 +94,7 @@ export async function POST(req: Request) {
         : null;
 
   try {
-    const thread = await createThread({ title: titleRaw.trim(), modelId });
+    const thread = await createThread({ title: titleRaw.trim(), modelId, projectId });
     return NextResponse.json({ thread }, { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     // eslint-disable-next-line no-console

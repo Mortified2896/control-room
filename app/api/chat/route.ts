@@ -13,7 +13,8 @@ import {
 import { fakeAssistantText, isFakeLlmEnabled } from "@/lib/router/fake-llm";
 import { isDbConfigured } from "@/lib/db";
 import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thread-messages";
-import { createMessage } from "@/lib/repo/threads";
+import { createMessage, getThread } from "@/lib/repo/threads";
+import { getProject } from "@/lib/repo/projects";
 import { resolveModel, getDefaultRouterModelId } from "@/lib/providers";
 import { getEffectiveModelsResponse } from "@/lib/providers/registry";
 import { assertModelExecutionAllowed, ProviderAccessError } from "@/lib/providers/access-control";
@@ -224,6 +225,24 @@ export async function POST(req: Request) {
   const modelMessages = await convertToModelMessages(messages);
   const threadId = validThreadId(rawThreadId);
 
+  let projectSystem: string | undefined;
+  if (threadId && isDbConfigured()) {
+    const thread = await getThread(threadId);
+    if (thread?.projectId) {
+      const project = await getProject(thread.projectId);
+      if (project) {
+        projectSystem = [
+          "Selected project metadata (do not read files or modify this repository unless a future tool explicitly provides that capability):",
+          `- Project name: ${project.name}`,
+          `- Local path: ${project.localPath}`,
+          `- Git remote URL: ${project.gitRemoteUrl ?? "unavailable"}`,
+          `- Current branch: ${project.gitBranch ?? "unavailable"}`,
+        ].join("\n");
+      }
+    }
+  }
+  const effectiveSystem = [system, projectSystem].filter(Boolean).join("\n\n") || undefined;
+
   // Persist the user message synchronously so we have a stable
   // `user_message_id` to attach to the A/B session row. If the DB is
   // unconfigured or write fails, we fall through with no id (the A/B
@@ -337,7 +356,7 @@ export async function POST(req: Request) {
     : streamText({
         model: sideAModel,
         messages: modelMessages,
-        system,
+        system: effectiveSystem,
         tools: {
           ...frontendTools(tools ?? {}),
         },
@@ -408,7 +427,7 @@ export async function POST(req: Request) {
             const sideBResult = await generateText({
               model: openai(sideBPicked.modelId),
               messages: modelMessages,
-              system,
+              system: effectiveSystem,
               providerOptions: {
                 openai: { reasoningEffort: sideBPicked.reasoningLevel },
               },

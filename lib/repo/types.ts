@@ -11,8 +11,20 @@
 export type ThreadRow = {
   id: string;
   title: string;
+  projectId: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProjectRow = {
+  id: string;
+  name: string;
+  localPath: string;
+  gitRemoteUrl: string | null;
+  gitBranch: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastOpenedAt: string | null;
 };
 
 export type MessageRole = "user" | "assistant" | "system";

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { KbdHint } from "@/components/kbd-hint";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Plus, Search, X } from "lucide-react";
+import { FolderGit2, MessageSquare, Plus, Search, X } from "lucide-react";
 import Link from "next/link";
 import { useState, type FC, type FormEvent } from "react";
 
@@ -15,8 +15,18 @@ type Thread = {
   title: string;
 };
 
+type Project = {
+  id: string;
+  name: string;
+  localPath: string;
+};
+
 type SidebarProps = {
   threads: Thread[];
+  projects: Project[];
+  activeProjectId: string | null;
+  onSelectProject: (id: string | null) => void;
+  onOpenProject: (localPath: string) => void;
   activeThreadId: string;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
@@ -25,12 +35,17 @@ type SidebarProps = {
 
 export const Sidebar: FC<SidebarProps> = ({
   threads,
+  projects,
+  activeProjectId,
+  onSelectProject,
+  onOpenProject,
   activeThreadId,
   onSelectThread,
   onNewThread,
   onClose,
 }) => {
   const [query, setQuery] = useState("");
+  const [folderPath, setFolderPath] = useState("");
 
   const filtered = query.trim()
     ? threads.filter((t) => t.title.toLowerCase().includes(query.trim().toLowerCase()))
@@ -56,6 +71,65 @@ export const Sidebar: FC<SidebarProps> = ({
             <X className="size-4" />
           </Button>
         )}
+      </div>
+
+      {/* Project picker */}
+      <div className="border-b border-border/40 px-3 py-3">
+        <h2 className="mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/50">
+          Project context
+        </h2>
+        <div className="space-y-1">
+          <button
+            type="button"
+            onClick={() => onSelectProject(null)}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
+              activeProjectId == null
+                ? "bg-primary/10 font-medium text-foreground ring-1 ring-primary/20"
+                : "text-muted-foreground/80 hover:bg-accent/40 hover:text-foreground",
+            )}
+          >
+            <MessageSquare className="size-3.5" /> General chat
+          </button>
+          {projects.map((project) => (
+            <button
+              key={project.id}
+              type="button"
+              title={project.localPath}
+              onClick={() => onSelectProject(project.id)}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors",
+                activeProjectId === project.id
+                  ? "bg-primary/10 font-medium text-foreground ring-1 ring-primary/20"
+                  : "text-muted-foreground/80 hover:bg-accent/40 hover:text-foreground",
+              )}
+            >
+              <FolderGit2 className="size-3.5 shrink-0" />
+              <span className="truncate">{project.name}</span>
+            </button>
+          ))}
+        </div>
+        <form
+          className="mt-2 flex gap-1"
+          onSubmit={(e: FormEvent) => {
+            e.preventDefault();
+            if (!folderPath.trim()) return;
+            onOpenProject(folderPath.trim());
+            setFolderPath("");
+          }}
+        >
+          <input
+            type="text"
+            value={folderPath}
+            onChange={(e) => setFolderPath(e.target.value)}
+            placeholder="/home/hermes/workspace/repos/..."
+            aria-label="Open project folder"
+            className="min-w-0 flex-1 rounded-md border border-border/50 bg-muted/30 px-2 py-1 text-[11px] text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
+          />
+          <Button type="submit" variant="outline" size="sm" className="px-2 text-[11px]">
+            Open
+          </Button>
+        </form>
       </div>
 
       {/* New chat */}

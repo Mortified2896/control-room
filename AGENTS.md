@@ -88,6 +88,22 @@ When in doubt, the answer is _ask first_, not _add it and see_.
   the repo. Real credentials live in `/etc/hermes/control_room_postgres.env`
   (or equivalent).
 
+## Production safety
+
+After API route, migration, env, or server-side changes, agents must follow
+`docs/production-debugging.md` before reporting the live website as fixed. A
+successful build is not enough. The deployed `next start` runtime must be
+restarted with `/etc/hermes/control_room_postgres.env` loaded and JSON API
+smoke checks must pass.
+
+Use `scripts/smoke-prod.sh` for live JSON API verification. Production restarts
+must follow `docs/production-debugging.md` and should use `scripts/restart-prod.sh`
+only from an external SSH/session.
+
+Do not restart the active Control Room WebUI process from inside the running
+Control Room chat/session if doing so would kill the current response. Use an
+external SSH/session command, or stop and give the user the command to run.
+
 ---
 
 ## Pointers

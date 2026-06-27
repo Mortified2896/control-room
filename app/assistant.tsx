@@ -86,8 +86,17 @@ type ModelsResponse = {
 type ThreadListItem = {
   id: string;
   title: string;
+  projectId?: string | null;
   createdAt?: string;
   updatedAt?: string;
+};
+
+type ProjectListItem = {
+  id: string;
+  name: string;
+  localPath: string;
+  gitRemoteUrl: string | null;
+  gitBranch: string | null;
 };
 
 type MessageRow = {
@@ -109,6 +118,11 @@ type ThreadsResponse = {
 type MessagesResponse = {
   thread: ThreadListItem | null;
   messages: MessageRow[];
+  configured: boolean;
+};
+
+type ProjectsResponse = {
+  projects: ProjectListItem[];
   configured: boolean;
 };
 
@@ -537,17 +551,25 @@ const MobileHeader: FC<{
 
 const SidebarPanel: FC<{
   threads: { id: string; title: string }[];
+  projects: ProjectListItem[];
+  activeProjectId: string | null;
+  onSelectProject: (id: string | null) => void;
+  onOpenProject: (localPath: string) => void;
   activeThreadId: string;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}> = ({ threads, activeThreadId, onSelectThread, onNewThread, open, onOpenChange }) => {
+}> = ({ threads, projects, activeProjectId, onSelectProject, onOpenProject, activeThreadId, onSelectThread, onNewThread, open, onOpenChange }) => {
   return (
     <>
       <div className="hidden h-full shrink-0 md:block">
         <Sidebar
           threads={threads}
+          projects={projects}
+          activeProjectId={activeProjectId}
+          onSelectProject={onSelectProject}
+          onOpenProject={onOpenProject}
           activeThreadId={activeThreadId}
           onSelectThread={onSelectThread}
           onNewThread={onNewThread}
@@ -564,6 +586,10 @@ const SidebarPanel: FC<{
             </DialogPrimitive.Description>
             <Sidebar
               threads={threads}
+              projects={projects}
+              activeProjectId={activeProjectId}
+              onSelectProject={onSelectProject}
+              onOpenProject={onOpenProject}
               activeThreadId={activeThreadId}
               onSelectThread={onSelectThread}
               onNewThread={onNewThread}
@@ -583,6 +609,8 @@ export const Assistant = () => {
   }, []);
 
   const [threads, setThreads] = useState<ThreadListItem[]>(INITIAL_THREADS);
+  const [projects, setProjects] = useState<ProjectListItem[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(
     INITIAL_THREADS[0]?.id ?? null,
   );
@@ -602,7 +630,8 @@ export const Assistant = () => {
 
   const refreshThreads = useCallback(async () => {
     try {
-      const res = await fetch("/api/threads", { cache: "no-store" });
+      const url = `/api/threads?projectId=${activeProjectId ?? "null"}`;
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(`status ${res.status}`);
       const data: ThreadsResponse = await res.json();
       setDbConfigured(data.configured);
@@ -619,12 +648,28 @@ export const Assistant = () => {
     } finally {
       setThreadsLoading(false);
     }
-  }, []);
+  }, [activeProjectId]);
 
   useEffect(() => {
     if (!mounted) return;
     void refreshThreads();
   }, [mounted, refreshThreads]);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const res = await fetch("/api/projects", { cache: "no-store" });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data: ProjectsResponse = await res.json();
+      if (data.configured) setProjects(data.projects);
+    } catch {
+      setProjects([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    void refreshProjects();
+  }, [mounted, refreshProjects]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -694,7 +739,7 @@ export const Assistant = () => {
         const res = await fetch("/api/threads", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: "New chat", modelId: selectedModelId }),
+          body: JSON.stringify({ title: "New chat", modelId: selectedModelId, projectId: activeProjectId }),
         });
         if (!res.ok) throw new Error(`status ${res.status}`);
         const data: { thread: ThreadListItem } = await res.json();
@@ -715,12 +760,33 @@ export const Assistant = () => {
     setThreads((prev) => [newThread, ...prev]);
     setActiveThreadId(newThread.id);
     setThreadMessages([]);
-  }, [dbConfigured, selectedModelId]);
+  }, [dbConfigured, selectedModelId, activeProjectId]);
 
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
     setSidebarOpen(false);
   }, []);
+
+  const handleSelectProject = useCallback((id: string | null) => {
+    setActiveProjectId(id);
+    setActiveThreadId(null);
+    setThreadMessages([]);
+  }, []);
+
+  const handleOpenProject = useCallback(async (localPath: string) => {
+    const res = await fetch("/api/projects/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ localPath }),
+    });
+    if (!res.ok) return;
+    const data: { project: ProjectListItem } = await res.json();
+    setProjects((prev) => [data.project, ...prev.filter((p) => p.id !== data.project.id)]);
+    setActiveProjectId(data.project.id);
+    setActiveThreadId(null);
+    setThreadMessages([]);
+    void refreshProjects();
+  }, [refreshProjects]);
 
   // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
   // full registry. The typing guard (isTypingTarget) is enforced here for
@@ -784,6 +850,10 @@ export const Assistant = () => {
     <div className="flex h-dvh overflow-hidden">
       <SidebarPanel
         threads={threads}
+        projects={projects}
+        activeProjectId={activeProjectId}
+        onSelectProject={handleSelectProject}
+        onOpenProject={handleOpenProject}
         activeThreadId={activeThreadId ?? ""}
         onSelectThread={handleSelectThread}
         onNewThread={handleNewThread}
