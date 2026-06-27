@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isDbConfigured } from "@/lib/db";
-import { createThread, listThreads } from "@/lib/repo/threads";
+import { createThread, deleteThreads, listThreads } from "@/lib/repo/threads";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +28,41 @@ export async function GET(req: Request) {
     { threads, configured: true },
     { headers: { "Cache-Control": "no-store" } },
   );
+}
+
+/**
+ * DELETE /api/threads?projectId=<id|null>
+ *
+ * Deletes the currently scoped thread list. `projectId=null` deletes general
+ * chats; a concrete project id deletes chats for that project. Messages and
+ * feedback are removed by ON DELETE CASCADE.
+ */
+export async function DELETE(req: Request) {
+  if (!isDbConfigured()) {
+    return NextResponse.json(
+      { error: "db_not_configured" },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  const { searchParams } = new URL(req.url);
+  const projectIdParam = searchParams.get("projectId");
+  const projectId = projectIdParam === "null" ? null : projectIdParam;
+
+  try {
+    const deleted = await deleteThreads(projectId);
+    return NextResponse.json(
+      { deleted, configured: true },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[api/threads DELETE] db error:", err instanceof Error ? err.message : err);
+    return NextResponse.json(
+      { error: "db_error", reason: "could not delete threads" },
+      { status: 500, headers: { "Cache-Control": "no-store" } },
+    );
+  }
 }
 
 /**

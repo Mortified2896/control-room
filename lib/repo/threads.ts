@@ -157,6 +157,20 @@ export async function threadExists(threadId: string): Promise<boolean> {
   });
 }
 
+export async function deleteThreads(projectId?: string | null): Promise<number> {
+  return withClient(async (c) => {
+    const { rowCount } = await c.query(
+      projectId === null
+        ? "DELETE FROM threads WHERE project_id IS NULL"
+        : projectId
+          ? "DELETE FROM threads WHERE project_id = $1"
+          : "DELETE FROM threads",
+      projectId ? [projectId] : [],
+    );
+    return rowCount ?? 0;
+  });
+}
+
 export async function renameThread(input: {
   threadId: string;
   title: string;

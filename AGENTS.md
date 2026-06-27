@@ -96,6 +96,12 @@ successful build is not enough. The deployed `next start` runtime must be
 restarted with `/etc/hermes/control_room_postgres.env` loaded and JSON API
 smoke checks must pass.
 
+Client UI safety: after React/component/sidebar/layout/CSS changes, a successful
+build is not enough. Agents must rebuild, ensure production was restarted with
+the correct env, and verify the rendered browser UI after refresh/cache-bust. If
+the screenshot still shows the old UI, assume stale runtime or stale browser
+bundle before debugging React code.
+
 Use `scripts/smoke-prod.sh` for live JSON API verification. Production restarts
 must follow `docs/production-debugging.md` and should use `scripts/restart-prod.sh`
 only from an external SSH/session.
@@ -103,6 +109,114 @@ only from an external SSH/session.
 Do not restart the active Control Room WebUI process from inside the running
 Control Room chat/session if doing so would kill the current response. Use an
 external SSH/session command, or stop and give the user the command to run.
+
+## Required change report format
+
+For every code/docs/config change, final reports must include:
+
+- Changed:
+  - concise list of files or areas changed
+
+- Validation:
+  - exact commands/checks run
+  - include pass/fail status
+
+- Production restart:
+  - `yes` or `no`
+  - reason
+  - if yes, say whether it used `scripts/restart-prod.sh`
+  - if no, say why restart was not needed or not performed
+
+- API smoke:
+  - `pass`, `fail`, or `not needed`
+  - if applicable, include the exact endpoint checks
+  - for API/server/schema/env changes, `scripts/smoke-prod.sh` or equivalent JSON endpoint checks are required after restart
+
+- Rendered UI check:
+  - `pass`, `fail`, or `not needed`
+  - for React/component/sidebar/layout/CSS/client changes, rendered browser verification is required after rebuild/restart/refresh/cache-bust
+  - include what UI element/location was verified
+  - if not performed, explicitly say so and do not claim the live UI is fixed
+
+- Caveats:
+  - known warnings, unrelated build warnings, skipped checks, or risks
+
+Hard rule: A final report must not say or imply “live fixed”, “deployed”,
+“visible”, or “working in production” unless the relevant production restart,
+API smoke, and/or rendered UI checks were actually completed.
+
+Examples:
+
+Docs-only change:
+
+```md
+Changed:
+- `docs/production-debugging.md`
+- `AGENTS.md`
+
+Validation:
+- `npm run typecheck` ✅
+
+Production restart:
+- no — docs-only change; not needed
+
+API smoke:
+- not needed — no API/server/schema/env changes
+
+Rendered UI check:
+- not needed — no client UI change
+
+Caveats:
+- none
+```
+
+Client UI change not restarted yet:
+
+```md
+Changed:
+- `components/assistant-ui/sidebar.tsx`
+
+Validation:
+- `npm run typecheck` ✅
+- `npm run build` ✅
+
+Production restart:
+- no — not performed from active Control Room session; user must run `scripts/restart-prod.sh` externally
+
+API smoke:
+- not needed — no API/server/schema/env changes
+
+Rendered UI check:
+- fail/not performed — production was not restarted and browser was not refreshed/cache-busted; do not claim live UI is fixed
+
+Caveats:
+- live browser may still show the old client bundle until rebuild/restart/refresh is completed
+```
+
+API/server change after restart:
+
+```md
+Changed:
+- `app/api/threads/route.ts`
+- `lib/repo/threads.ts`
+
+Validation:
+- `npm run typecheck` ✅
+- `npm test` ✅
+- `npm run build` ✅
+
+Production restart:
+- yes — used `scripts/restart-prod.sh` from an external shell
+
+API smoke:
+- pass — `scripts/smoke-prod.sh` checked `/api/projects` and `/api/threads?projectId=null`
+
+Rendered UI check:
+- not needed — no client UI change
+
+Caveats:
+- none
+```
 
 ---
 

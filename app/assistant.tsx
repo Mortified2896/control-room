@@ -558,9 +558,24 @@ const SidebarPanel: FC<{
   activeThreadId: string;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
+  onDeleteAllThreads: () => void;
+  deleteAllDisabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}> = ({ threads, projects, activeProjectId, onSelectProject, onOpenProject, activeThreadId, onSelectThread, onNewThread, open, onOpenChange }) => {
+}> = ({
+  threads,
+  projects,
+  activeProjectId,
+  onSelectProject,
+  onOpenProject,
+  activeThreadId,
+  onSelectThread,
+  onNewThread,
+  onDeleteAllThreads,
+  deleteAllDisabled,
+  open,
+  onOpenChange,
+}) => {
   return (
     <>
       <div className="hidden h-full shrink-0 md:block">
@@ -573,6 +588,8 @@ const SidebarPanel: FC<{
           activeThreadId={activeThreadId}
           onSelectThread={onSelectThread}
           onNewThread={onNewThread}
+          onDeleteAllThreads={onDeleteAllThreads}
+          deleteAllDisabled={deleteAllDisabled}
         />
       </div>
 
@@ -593,6 +610,8 @@ const SidebarPanel: FC<{
               activeThreadId={activeThreadId}
               onSelectThread={onSelectThread}
               onNewThread={onNewThread}
+              onDeleteAllThreads={onDeleteAllThreads}
+              deleteAllDisabled={deleteAllDisabled}
               onClose={() => onOpenChange(false)}
             />
           </DialogPrimitive.Content>
@@ -617,6 +636,7 @@ export const Assistant = () => {
   const [threadMessages, setThreadMessages] = useState<UIMessage[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [deletingThreads, setDeletingThreads] = useState(false);
   const [dbConfigured, setDbConfigured] = useState(true);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -739,7 +759,11 @@ export const Assistant = () => {
         const res = await fetch("/api/threads", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: "New chat", modelId: selectedModelId, projectId: activeProjectId }),
+          body: JSON.stringify({
+            title: "New chat",
+            modelId: selectedModelId,
+            projectId: activeProjectId,
+          }),
         });
         if (!res.ok) throw new Error(`status ${res.status}`);
         const data: { thread: ThreadListItem } = await res.json();
@@ -762,6 +786,38 @@ export const Assistant = () => {
     setThreadMessages([]);
   }, [dbConfigured, selectedModelId, activeProjectId]);
 
+  const handleDeleteAllThreads = useCallback(async () => {
+    if (threads.length === 0 || deletingThreads) return;
+    const scope = activeProjectId ? "this project" : "General chat";
+    const confirmed = window.confirm(
+      `Delete all ${threads.length} chat${threads.length === 1 ? "" : "s"} in ${scope}? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    if (!dbConfigured) {
+      setThreads([]);
+      setActiveThreadId(null);
+      setThreadMessages([]);
+      return;
+    }
+
+    setDeletingThreads(true);
+    try {
+      const res = await fetch(`/api/threads?projectId=${activeProjectId ?? "null"}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      setThreads([]);
+      setActiveThreadId(null);
+      setThreadMessages([]);
+      void refreshThreads();
+    } catch {
+      await refreshThreads();
+    } finally {
+      setDeletingThreads(false);
+    }
+  }, [activeProjectId, dbConfigured, deletingThreads, refreshThreads, threads.length]);
+
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
     setSidebarOpen(false);
@@ -773,20 +829,23 @@ export const Assistant = () => {
     setThreadMessages([]);
   }, []);
 
-  const handleOpenProject = useCallback(async (localPath: string) => {
-    const res = await fetch("/api/projects/open", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ localPath }),
-    });
-    if (!res.ok) return;
-    const data: { project: ProjectListItem } = await res.json();
-    setProjects((prev) => [data.project, ...prev.filter((p) => p.id !== data.project.id)]);
-    setActiveProjectId(data.project.id);
-    setActiveThreadId(null);
-    setThreadMessages([]);
-    void refreshProjects();
-  }, [refreshProjects]);
+  const handleOpenProject = useCallback(
+    async (localPath: string) => {
+      const res = await fetch("/api/projects/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ localPath }),
+      });
+      if (!res.ok) return;
+      const data: { project: ProjectListItem } = await res.json();
+      setProjects((prev) => [data.project, ...prev.filter((p) => p.id !== data.project.id)]);
+      setActiveProjectId(data.project.id);
+      setActiveThreadId(null);
+      setThreadMessages([]);
+      void refreshProjects();
+    },
+    [refreshProjects],
+  );
 
   // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
   // full registry. The typing guard (isTypingTarget) is enforced here for
@@ -857,6 +916,8 @@ export const Assistant = () => {
         activeThreadId={activeThreadId ?? ""}
         onSelectThread={handleSelectThread}
         onNewThread={handleNewThread}
+        onDeleteAllThreads={handleDeleteAllThreads}
+        deleteAllDisabled={threadsLoading || deletingThreads}
         open={sidebarOpen}
         onOpenChange={setSidebarOpen}
       />

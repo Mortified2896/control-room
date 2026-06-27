@@ -6,8 +6,14 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   if (!isDbConfigured()) {
-    return NextResponse.json({ projects: [], configured: false }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      { projects: [], configured: false },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
   const projects = await listProjects();
-  return NextResponse.json({ projects, configured: true }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json(
+    { projects, configured: true },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }

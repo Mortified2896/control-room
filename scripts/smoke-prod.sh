@@ -61,4 +61,8 @@ pass "homepage responds"
 check_json_api "/api/projects" "/api/projects"
 check_json_api "/api/threads?projectId=null" "/api/threads?projectId=null"
 
+echo
+echo "[smoke-prod] UI reminder: API smoke checks alone do not prove the client bundle updated."
+echo "[smoke-prod] For UI changes, hard-refresh/cache-bust the browser and verify the rendered UI."
+
 pass "production smoke checks completed"

@@ -61,10 +61,14 @@ export async function validateProjectPath(localPath: string): Promise<ProjectPat
   }
 
   try {
-    const { stdout } = await execFileAsync("git", ["-C", pathReal, "rev-parse", "--is-inside-work-tree"], {
-      timeout: 2000,
-      maxBuffer: 1024 * 16,
-    });
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", pathReal, "rev-parse", "--is-inside-work-tree"],
+      {
+        timeout: 2000,
+        maxBuffer: 1024 * 16,
+      },
+    );
     if (stdout.trim() !== "true") return { ok: false, reason: "not_git_repo" };
   } catch {
     return { ok: false, reason: "not_git_repo" };

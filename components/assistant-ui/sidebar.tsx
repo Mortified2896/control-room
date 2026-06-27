@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { KbdHint } from "@/components/kbd-hint";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { cn } from "@/lib/utils";
-import { FolderGit2, MessageSquare, Plus, Search, X } from "lucide-react";
+import { FolderGit2, MessageSquare, Plus, Search, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useState, type FC, type FormEvent } from "react";
 
@@ -30,6 +30,8 @@ type SidebarProps = {
   activeThreadId: string;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
+  onDeleteAllThreads: () => void;
+  deleteAllDisabled?: boolean;
   onClose?: () => void;
 };
 
@@ -42,6 +44,8 @@ export const Sidebar: FC<SidebarProps> = ({
   activeThreadId,
   onSelectThread,
   onNewThread,
+  onDeleteAllThreads,
+  deleteAllDisabled = false,
   onClose,
 }) => {
   const [query, setQuery] = useState("");
@@ -132,8 +136,8 @@ export const Sidebar: FC<SidebarProps> = ({
         </form>
       </div>
 
-      {/* New chat */}
-      <div className="px-3 pt-3">
+      {/* Chat actions */}
+      <div className="space-y-2 px-3 pt-3">
         <Button
           variant="outline"
           data-shortcut-target={SHORTCUT_TARGETS.newChat}
@@ -149,6 +153,19 @@ export const Sidebar: FC<SidebarProps> = ({
             combo="n"
             className="aui-sidebar-new-chat-shortcut absolute right-2 top-1/2 -translate-y-1/2 bg-background/60"
           />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={deleteAllDisabled || threads.length === 0}
+          className="w-full justify-center gap-1.5 rounded-lg py-2 text-xs font-medium text-destructive/80 hover:bg-destructive/10 hover:text-destructive disabled:text-muted-foreground/40"
+          onClick={() => {
+            onDeleteAllThreads();
+            onClose?.();
+          }}
+        >
+          <Trash2 className="size-3.5" />
+          Delete all chats
         </Button>
       </div>
 

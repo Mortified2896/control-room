@@ -96,6 +96,54 @@ Port check:
 ss -ltnp | grep ':18100'
 ```
 
+## Stale browser/client bundle checklist
+
+Use this checklist after any change involving:
+
+- React components
+- sidebar/header/layout UI
+- buttons or menus
+- client hooks/state
+- CSS/Tailwind/classes
+- anything under `components/**`
+- anything that should visibly appear in the browser
+
+Mental model:
+
+- `npm run build` creates new client/server output.
+- The running production process must be restarted to serve the new build.
+- The browser may still hold an old JS bundle until refresh.
+- A screenshot showing old UI after a claimed UI change is not a frontend mystery; first assume stale runtime or stale browser bundle.
+- Do not debug React logic until build/restart/refresh/render verification has been completed.
+
+Required sequence after UI changes:
+
+```bash
+cd /home/hermes/workspace/repos/control-room
+npm run typecheck
+npm test
+npm run build
+# From external shell/session only:
+scripts/restart-prod.sh
+```
+
+Then verify in browser:
+
+- Hard refresh the page.
+- If still stale, open with a cache-busting query param, for example:
+  `https://hermes-agent.taile0361b.ts.net:9443/?v=<timestamp>`
+- Check that the expected UI element is visibly rendered.
+
+Example — “Delete all chats” button:
+
+- Expected location: directly under “New Chat” and above “Search chats…”
+- If it is missing, do not claim success.
+- First verify that production was rebuilt and restarted.
+- Then hard-refresh/cache-bust the browser.
+- Then inspect the rendered DOM or use a browser screenshot.
+
+Rule: A successful UI change requires rendered UI verification, not only build/typecheck/test success.
+
 ## Smoke checks after restart
 
 The safe repeatable smoke check is:
