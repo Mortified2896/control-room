@@ -3,6 +3,29 @@ import { GET as getRouterSettings, PUT as putRouterSettings } from "@/app/api/ro
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Thin wrapper over the canonical `/api/router-settings` endpoint that
+ * exposes just the normal-chat router model id (and provider) on its
+ * own. Two routes exist on purpose:
+ *
+ *   - `GET /api/router-settings`            → the full Settings UI DTO
+ *     (effective settings + defaults + the unified registry, etc.)
+ *     consumed by `components/settings/router-settings-page.tsx`.
+ *   - `GET /api/router/settings`            → this endpoint, returns
+ *     `{ normalChatRouterProvider, normalChatRouterModelId, defaults }`.
+ *     Used by lightweight clients (e.g. the chat composer that wants
+ *     to render the active normal-chat router model next to the model
+ *     picker) that do not need the full DTO.
+ *
+ * The Settings UI does not call this endpoint; consolidation would
+ * require teaching the lightweight clients to parse the larger DTO
+ * for one field. Keeping the wrapper means the underlying validation
+ * pipeline (`parseRouterSettingsForSave` in `lib/router/schema.ts`)
+ * stays the single source of truth for "what model ids may the router
+ * call" — see that file for the OpenAI-only / static-alias policy that
+ * fixes the persisted-settings validation warning.
+ */
+
 export async function GET(req: Request) {
   const res = await getRouterSettings();
   if (!res.ok) return res;

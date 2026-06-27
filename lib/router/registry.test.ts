@@ -149,27 +149,74 @@ test("validateRouterPoolAgainstRegistry rejects an unknown (discovered-only) mod
   }
 });
 
-test("validateRouterPoolAgainstRegistry rejects a known model that is not available in the current discovery", () => {
+test("validateRouterPoolAgainstRegistry accepts a configured OpenAI model that is not currently available from discovery", () => {
+  // Mirrors the production scenario where a model is in the local
+  // static alias map (configured=true) but is not currently in the
+  // discovery snapshot (e.g. fresh key without access, or a stale
+  // cache). The chat path and the recommender both still call this
+  // model via `resolveModel`, so the validator must accept it.
   const result = validateRouterPoolAgainstRegistry({
     rawCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([entry({ modelId: "gpt-5.4-mini", available: false })]),
   });
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.ok(findError(result.errors, "allowedCombos", "not currently available"));
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.combos, [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }]);
   }
 });
 
-test("validateRouterPoolAgainstRegistry rejects a stale model id", () => {
+test("validateRouterPoolAgainstRegistry accepts a stale OpenAI model id when it is configured", () => {
+  // A stale entry (was in previous discovery, not in current) is still
+  // a real OpenAI API model as far as `resolveModel` is concerned —
+  // it is in the static alias map and `OPENAI_API_KEY` is the only
+  // runtime gate. The router pool must not over-reject on stale flags.
   const result = validateRouterPoolAgainstRegistry({
     rawCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([STALE_MINI]),
   });
+  assert.equal(result.ok, true);
+});
+
+test("validateRouterPoolAgainstRegistry rejects a codex-prefixed model id (non-OpenAI provider)", () => {
+  const codexEntry = entry({
+    modelId: "codex:gpt-5.5",
+    displayLabel: "Codex · GPT-5.5",
+    tier: "expensive",
+    supportedReasoningLevels: [],
+    supportsReasoning: false,
+  });
+  // The test helper hardcodes `providerId: "openai"`; cast so we can
+  // exercise the non-OpenAI rejection branch of the validator.
+  (codexEntry as unknown as { providerId: "codex" }).providerId = "codex";
+  const result = validateRouterPoolAgainstRegistry({
+    rawCombos: [{ modelId: "codex:gpt-5.5", reasoningLevel: "low" }],
+    fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
+    registry: registry([KNOWN_MINI, codexEntry]),
+  });
   assert.equal(result.ok, false);
   if (!result.ok) {
-    assert.ok(findError(result.errors, "allowedCombos", "not currently available"));
+    assert.ok(findError(result.errors, "allowedCombos", "OpenAI-only"));
+  }
+});
+
+test("validateRouterPoolAgainstRegistry rejects a MiniMax model id (non-OpenAI provider)", () => {
+  const minimaxEntry = entry({
+    modelId: "MiniMax-M3",
+    displayLabel: "MiniMax-M3",
+    supportedReasoningLevels: [],
+    supportsReasoning: false,
+  });
+  (minimaxEntry as unknown as { providerId: "minimax" }).providerId = "minimax";
+  const result = validateRouterPoolAgainstRegistry({
+    rawCombos: [{ modelId: "MiniMax-M3", reasoningLevel: "low" }],
+    fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
+    registry: registry([KNOWN_MINI, minimaxEntry]),
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(findError(result.errors, "allowedCombos", "OpenAI-only"));
   }
 });
 

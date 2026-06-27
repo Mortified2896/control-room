@@ -117,6 +117,37 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Detect model ids that belong to a non-OpenAI provider surface and
+ * therefore cannot enter the OpenAI-only normal-chat router allowlist.
+ *
+ *   `codex:*`            → Codex CLI / ChatGPT login (codex provider)
+ *   `minimax:*`          → MiniMax API key (minimax provider)
+ *   `MiniMax-*`          → bare MiniMax model ids (default + discovered)
+ *
+ * Used as the first gate in `parseRouterSettingsForSave` so the user
+ * gets a clear "OpenAI-only" error message even when the strict
+ * registry (OpenAI entries only) would otherwise surface the id as
+ * "Unknown model id".
+ */
+function isNonOpenAiProviderId(modelId: string): boolean {
+  if (modelId.startsWith("codex:")) return true;
+  if (modelId.startsWith("minimax:")) return true;
+  if (modelId.startsWith("MiniMax-")) return true;
+  return false;
+}
+
+/**
+ * Return a short, human-readable label for the non-OpenAI provider a
+ * rejected model id belongs to. Falls back to `"non-OpenAI"` for
+ * unknown id shapes so the error message is still actionable.
+ */
+function nonOpenAiProviderLabel(modelId: string): string {
+  if (modelId.startsWith("codex:")) return "codex";
+  if (modelId.startsWith("minimax:") || modelId.startsWith("MiniMax-")) return "minimax";
+  return "non-OpenAI";
+}
+
+/**
  * Strict validation for the Settings UI save path.
  *
  * Cross-field invariants:
@@ -269,12 +300,26 @@ export function parseRouterSettings(input: unknown): RouterSettings {
  * When an `EffectiveRegistry` is supplied (the production path),
  * allowlist validation also enforces:
  *   - the model id is known to the local registry,
- *   - the model is currently available (not stale),
+ *   - the model belongs to the OpenAI provider (Codex / MiniMax are
+ *     rejected — this is the OpenAI-only normal-chat router),
+ *   - the model is configured in the local static alias map, and
  *   - the reasoning level is in the model's supported set.
  *
+ * The `available` / `stale` flags on the registry reflect OpenAI's
+ * live `/v1/models` discovery snapshot. We intentionally do NOT use
+ * them as a save-time gate, because the chat path (`/api/chat`) and
+ * the model recommender (`/api/model/recommend`) both go through
+ * `resolveModel` (see `lib/providers/index.ts`), which checks the
+ * static alias map plus `OPENAI_API_KEY` — never the discovery
+ * snapshot. Aligning the validator with that same source of truth
+ * prevents a stale or partial discovery snapshot from silently
+ * rejecting a persisted, working configuration. Runtime call failures
+ * (model removed by OpenAI between snapshots, etc.) are surfaced by
+ * the AI SDK at chat time and by the existing router diagnostics.
+ *
  * When no registry is supplied (the env-only / test path), the legacy
- * `listRouterAllowedPool(true)` set is used. This preserves the existing
- * `lib/router/settings.test.ts` assertions.
+ * `listRouterAllowedPool(true)` set is used. This preserves the
+ * existing `lib/router/settings.test.ts` assertions.
  */
 export function parseRouterSettingsForSave(
   input: unknown,
@@ -460,7 +505,28 @@ export function parseRouterSettingsForSave(
         seen.add(key);
         if (registryById) {
           // Production path: enforce registry-aware invariants so unknown
-          // discovered models cannot silently enter the router pool.
+          // models and non-OpenAI providers cannot silently enter the
+          // router pool. We use the registry entry's `providerId` and
+          // `configured` flag (both sourced from the local static alias
+          // map at `lib/providers/openai-static.ts`) instead of the live
+          // discovery snapshot — see the file-level docstring above for
+          // why this matches the chat path's `resolveModel` semantics.
+          //
+          // Non-OpenAI provider detection runs first so the user gets a
+          // clear "OpenAI-only" error message for `codex:*` and
+          // `MiniMax-*` ids, even when the strict registry (OpenAI
+          // entries only at the validator boundary) would otherwise
+          // surface them as "Unknown model id". Defense-in-depth: if the
+          // registry is ever widened to include other providers, the
+          // `entry.providerId !== "openai"` branch below will also fire.
+          if (isNonOpenAiProviderId(modelId)) {
+            hasInvalid = true;
+            errors.push({
+              field: "allowedCombos",
+              message: `${modelId} belongs to ${nonOpenAiProviderLabel(modelId)}; the normal-chat router allowlist is OpenAI-only.`,
+            });
+            continue;
+          }
           const entry = registryById.get(modelId);
           if (!entry) {
             hasInvalid = true;
@@ -470,19 +536,22 @@ export function parseRouterSettingsForSave(
             });
             continue;
           }
+          if (entry.providerId !== "openai") {
+            // Defense-in-depth: if the registry is widened in the
+            // future to include non-OpenAI entries, still reject them
+            // here so the OpenAI-only invariant is preserved end-to-end.
+            hasInvalid = true;
+            errors.push({
+              field: "allowedCombos",
+              message: `${modelId} belongs to ${entry.providerId}; the normal-chat router allowlist is OpenAI-only.`,
+            });
+            continue;
+          }
           if (!entry.configured) {
             hasInvalid = true;
             errors.push({
               field: "allowedCombos",
               message: `${modelId} is not in the local model registry and cannot enter the router pool. Add it to the manual selector with explicit metadata first.`,
-            });
-            continue;
-          }
-          if (!entry.available || entry.stale) {
-            hasInvalid = true;
-            errors.push({
-              field: "allowedCombos",
-              message: `${modelId} is not currently available from OpenAI. Refresh the model catalog or remove it from the allowlist.`,
             });
             continue;
           }
@@ -513,22 +582,33 @@ export function parseRouterSettingsForSave(
   }
 
   if (registry) {
-    const routerEntry = registry.models.find((m) => m.modelId === routerModelId);
-    if (!routerEntry) {
+    // Reject non-OpenAI provider ids first so the user gets a clear
+    // "OpenAI-only" error message for `codex:*` / `MiniMax-*` instead
+    // of a confusing "Unknown router model id" — the strict registry
+    // (OpenAI entries only) would otherwise surface these as unknown.
+    if (isNonOpenAiProviderId(routerModelId)) {
       errors.push({
         field: "routerModelId",
-        message: `Unknown router model id: ${routerModelId}.`,
+        message: `Router model must be an OpenAI API model, not a ${nonOpenAiProviderLabel(routerModelId)} model.`,
       });
-    } else if (routerEntry.providerId !== "openai") {
-      errors.push({
-        field: "routerModelId",
-        message: "Router model must be an OpenAI API model, not a Codex or MiniMax model.",
-      });
-    } else if (!routerEntry.configured) {
-      errors.push({
-        field: "routerModelId",
-        message: `${routerModelId} is not configured for OpenAI API use.`,
-      });
+    } else {
+      const routerEntry = registry.models.find((m) => m.modelId === routerModelId);
+      if (!routerEntry) {
+        errors.push({
+          field: "routerModelId",
+          message: `Unknown router model id: ${routerModelId}.`,
+        });
+      } else if (routerEntry.providerId !== "openai") {
+        errors.push({
+          field: "routerModelId",
+          message: "Router model must be an OpenAI API model, not a Codex or MiniMax model.",
+        });
+      } else if (!routerEntry.configured) {
+        errors.push({
+          field: "routerModelId",
+          message: `${routerModelId} is not configured for OpenAI API use.`,
+        });
+      }
     }
   }
 

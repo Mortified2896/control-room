@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { EffectiveRegistry } from "@/lib/providers/registry";
+
 import {
   __resetRouterSettingsCacheForTests,
   DEFAULT_ROUTER_SETTINGS,
@@ -232,7 +234,14 @@ test("parseRouterSettingsForSave with registry: rejects an unknown model id with
   }
 });
 
-test("parseRouterSettingsForSave with registry: rejects an unavailable (not-in-discovery) model", () => {
+test("parseRouterSettingsForSave with registry: accepts a configured OpenAI model that is not currently in the discovery snapshot", () => {
+  // Mirrors the production scenario: `gpt-5.4-mini` is in the local
+  // static alias map (configured=true) but OpenAI's live discovery
+  // snapshot does not currently return it (e.g. the key lacks access
+  // or the snapshot is stale). `/api/model/recommend` and `/api/chat`
+  // both still use this model via `resolveModel`, so the router
+  // settings validator must not reject it. Only `configured` and the
+  // OpenAI provider are required when a registry is supplied.
   const result = parseRouterSettingsForSave(
     {
       allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
@@ -290,12 +299,202 @@ test("parseRouterSettingsForSave with registry: rejects an unavailable (not-in-d
       fakeMode: false,
     },
   );
+  assert.equal(result.ok, true);
+});
+
+test("parseRouterSettingsForSave with registry: rejects a Codex (codex:) model id", () => {
+  // The router pool is OpenAI-only by design. Codex models belong to
+  // the `codex` provider, not `openai`, and must not leak into the
+  // normal-chat router allowlist even when the model id is a known
+  // Codex catalog entry.
+  // The cast widens the test fixtures' providerId beyond the strict
+  // "openai" literal in EffectiveRegistry — this matches what
+  // `serializeRegistryModels` already does in the production route.
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "codex:gpt-5.5", reasoningLevel: "low" }],
+      fallbackModelId: "gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          displayLabel: "GPT-5.4 Mini",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "local_meta",
+        },
+        {
+          providerId: "codex",
+          modelId: "codex:gpt-5.5",
+          displayLabel: "Codex · GPT-5.5",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: false,
+          supportedReasoningLevels: [],
+          tier: "expensive",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: false,
+          capabilities: {
+            reasoning: false,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "env_static",
+        },
+      ],
+      defaults: { manualModelId: "gpt-5.4-mini", reasoningLevel: "low" },
+      discovery: {
+        modelIds: ["gpt-5.4-mini"],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 1,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 1,
+        discoveredConfigured: 1,
+        discoveredUnclassified: 0,
+        configuredAvailable: 1,
+        stale: 0,
+        manualSelectorVisible: 2,
+        routerEligible: 1,
+      },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.ok(
       result.errors.some(
-        (e) => e.field === "allowedCombos" && /not currently available/.test(e.message),
+        (e) =>
+          e.field === "allowedCombos" &&
+          /belongs to codex.*OpenAI-only/.test(e.message),
       ),
+      `expected an OpenAI-only rejection for codex id, got: ${JSON.stringify(result.errors)}`,
+    );
+  }
+});
+
+test("parseRouterSettingsForSave with registry: rejects a MiniMax model id", () => {
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "MiniMax-M3", reasoningLevel: "low" }],
+      fallbackModelId: "gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          displayLabel: "GPT-5.4 Mini",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "local_meta",
+        },
+        {
+          providerId: "minimax",
+          modelId: "MiniMax-M3",
+          displayLabel: "MiniMax-M3",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: false,
+          supportedReasoningLevels: [],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: false,
+          capabilities: {
+            reasoning: false,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "env_static",
+        },
+      ],
+      defaults: { manualModelId: "gpt-5.4-mini", reasoningLevel: "low" },
+      discovery: {
+        modelIds: ["gpt-5.4-mini"],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 1,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 1,
+        discoveredConfigured: 1,
+        discoveredUnclassified: 0,
+        configuredAvailable: 1,
+        stale: 0,
+        manualSelectorVisible: 2,
+        routerEligible: 1,
+      },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(
+      result.errors.some(
+        (e) =>
+          e.field === "allowedCombos" &&
+          /belongs to minimax.*OpenAI-only/.test(e.message),
+      ),
+      `expected an OpenAI-only rejection for MiniMax id, got: ${JSON.stringify(result.errors)}`,
     );
   }
 });

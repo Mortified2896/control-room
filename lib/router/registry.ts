@@ -16,15 +16,25 @@ import { listRouterAllowedPool } from "@/lib/providers";
  *   3. No duplicate (modelId, reasoningLevel) pairs.
  *   4. The model id must be in the registry (it must exist somewhere —
  *      known or discovered).
- *   5. The model must be `known=true`. Unknown discovered models cannot
- *      enter the router pool under any UI path (brief, hard rule).
- *   6. The model must be `available=true` and not stale.
+ *   5. The model must belong to the `openai` provider. Codex (`codex:*`)
+ *      and MiniMax (`MiniMax-M*`) entries are explicitly rejected — the
+ *      router pool is OpenAI-only.
+ *   6. The model must be `configured=true` (i.e. present in the local
+ *      static alias map at `lib/providers/openai-static.ts`). Unknown
+ *      discovered models cannot enter the router pool under any UI
+ *      path (brief, hard rule).
  *   7. The reasoning level must be in the model's
  *      `supportedReasoningLevels`.
  *   8. The fallback combo must be one of the validated entries. We
  *      always check (even when `validated` is empty) so the user gets a
  *      clear "fallback not in pool" error even when every combo was
  *      rejected for other reasons.
+ *
+ * The `available` / `stale` flags are intentionally NOT used as a gate.
+ * They reflect OpenAI's live `/v1/models` discovery snapshot, which can
+ * be empty or stale even when the model is callable. The chat path and
+ * the model recommender both check the static alias map instead — see
+ * `parseRouterSettingsForSave` for the rationale.
  *
  * When no registry is provided, `validateRouterPoolLegacy` is the
  * fallback so existing tests that don't construct an `EffectiveRegistry`
@@ -117,17 +127,19 @@ export function validateRouterPoolAgainstRegistry(input: {
       });
       continue;
     }
+    if (entry.providerId !== "openai") {
+      // Router pool is OpenAI-only by design. Codex and MiniMax have
+      // their own non-router surfaces; do not let them leak in.
+      errors.push({
+        field: "allowedCombos",
+        message: `${modelId} belongs to ${entry.providerId}; the normal-chat router allowlist is OpenAI-only.`,
+      });
+      continue;
+    }
     if (!entry.configured) {
       errors.push({
         field: "allowedCombos",
         message: `${modelId} is not in the local model registry and cannot enter the router pool. Add it to the manual selector with explicit metadata first.`,
-      });
-      continue;
-    }
-    if (!entry.available || entry.stale) {
-      errors.push({
-        field: "allowedCombos",
-        message: `${modelId} is not currently available from OpenAI. Refresh the model catalog or remove it from the allowlist.`,
       });
       continue;
     }
