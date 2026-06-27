@@ -23,6 +23,7 @@ import {
   MessagePrimitive,
   SuggestionPrimitive,
   ThreadPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
 import {
@@ -54,14 +55,20 @@ type NoteResponse = {
   configured?: boolean;
 };
 
+type ComposerRouteMode = "chat" | "coding";
+type HandoffWorker = "pi" | "codex" | "opencode";
+type HandoffTaskType = "implement" | "debug" | "inspect" | "refactor" | "test" | "review";
+
 export const Thread: FC<{
   threadId: string | null;
+  activeProjectId?: string | null;
   notesDisabled?: boolean;
   workflowContent?: ReactNode;
   showWelcome?: boolean;
   routerAbOn?: boolean;
 }> = ({
   threadId,
+  activeProjectId = null,
   notesDisabled = false,
   workflowContent,
   showWelcome = true,
@@ -114,7 +121,7 @@ export const Thread: FC<{
             )}
           >
             <ThreadScrollToBottom />
-            <Composer />
+            <Composer threadId={threadId} activeProjectId={activeProjectId} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
             </AuiIf>
@@ -188,15 +195,110 @@ const ThreadSuggestionItem: FC = () => {
   );
 };
 
-const Composer: FC = () => {
+const Composer: FC<{ threadId: string | null; activeProjectId: string | null }> = ({
+  threadId,
+  activeProjectId,
+}) => {
+  const [mode, setMode] = useState<ComposerRouteMode>("chat");
+  const [worker, setWorker] = useState<HandoffWorker>("pi");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem("control-room-composer-route");
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Partial<{
+        mode: ComposerRouteMode;
+        worker: HandoffWorker;
+      }>;
+      if (saved.mode === "chat" || saved.mode === "coding") setMode(saved.mode);
+      if (saved.worker === "pi" || saved.worker === "codex" || saved.worker === "opencode") {
+        setWorker(saved.worker);
+      }
+    } catch {
+      // Ignore session preference errors.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        "control-room-composer-route",
+        JSON.stringify({ mode, worker }),
+      );
+    } catch {
+      // Ignore session preference errors.
+    }
+  }, [mode, worker]);
+
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+    <ComposerPrimitive.Root
+      className="aui-composer-root relative flex w-full flex-col"
+      onSubmit={(event) => {
+        if (mode !== "coding") return;
+        event.preventDefault();
+      }}
+    >
       <ComposerPrimitive.AttachmentDropzone asChild>
         <div
           data-slot="aui_composer-shell"
           className="bg-background border-border/60 data-[dragging=true]:border-ring data-[dragging=true]:bg-accent/50 focus-within:border-border dark:border-muted-foreground/15 dark:bg-muted/30 dark:focus-within:border-muted-foreground/30 flex w-full flex-col gap-2 rounded-3xl border p-(--composer-padding) shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] transition-[border-color,box-shadow] focus-within:shadow-[0_6px_24px_-8px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.05)] data-[dragging=true]:border-dashed dark:shadow-none"
         >
           <ComposerAttachments />
+          <div className="flex flex-wrap items-center gap-2 px-2 pt-1 text-xs">
+            <span className="font-medium text-muted-foreground">Route</span>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("chat");
+                setError(null);
+              }}
+              className={cn(
+                "rounded-full border px-2.5 py-1 transition-colors",
+                mode === "chat"
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border/70 bg-background text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Chat
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMode("coding");
+                setError(null);
+              }}
+              className={cn(
+                "rounded-full border px-2.5 py-1 transition-colors",
+                mode === "coding"
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border/70 bg-background text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Coding task
+            </button>
+            {mode === "coding" ? (
+              <>
+                <span className="ml-1 font-medium text-muted-foreground">Harness</span>
+                {(["pi", "codex", "opencode"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setWorker(value)}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 capitalize transition-colors",
+                      worker === value
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border/70 bg-background text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {value === "opencode" ? "OpenCode" : value}
+                  </button>
+                ))}
+
+              </>
+            ) : null}
+          </div>
           <ComposerPrimitive.Input
             placeholder="Message Control Room…  (press C to focus)"
             data-shortcut-target={SHORTCUT_TARGETS.focusComposer}
@@ -205,17 +307,72 @@ const Composer: FC = () => {
             autoFocus
             aria-label="Message input (press C to focus)"
           />
-          <ComposerAction />
+          <ComposerAction
+            mode={mode}
+            worker={worker}
+            taskType="implement"
+            threadId={threadId}
+            activeProjectId={activeProjectId}
+            onError={setError}
+          />
+          {mode === "coding" && error ? (
+            <div className="px-2 text-xs font-medium text-destructive" role="alert">
+              {error}
+            </div>
+          ) : null}
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC<{
+  mode: ComposerRouteMode;
+  worker: HandoffWorker;
+  taskType: HandoffTaskType;
+  threadId: string | null;
+  activeProjectId: string | null;
+  onError: (message: string | null) => void;
+}> = ({
+  mode,
+  worker,
+  taskType,
+  threadId,
+  activeProjectId,
+  onError,
+}) => {
+  const aui = useAui();
+  const [creatingDraft, setCreatingDraft] = useState(false);
+  const composerText = useAuiState((s) => s.composer.text);
+
+  const createDraft = async () => {
+    if (!activeProjectId) {
+      onError("Select a workspace project before sending a coding task.");
+      return;
+    }
+    const instruction = composerText.trim();
+    if (!instruction) return;
+    setCreatingDraft(true);
+    onError(null);
+    try {
+      const res = await fetch("/api/handoffs/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId, threadId, worker, taskType, instruction }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      aui.composer().setText("");
+      onError(`Handoff draft created for ${worker}. Execution is not enabled yet.`);
+    } catch (err) {
+      onError(err instanceof Error ? `Failed to create handoff draft: ${err.message}` : "Failed to create handoff draft.");
+    } finally {
+      setCreatingDraft(false);
+    }
+  };
+
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <ComposerAddAttachment />
         <span aria-hidden="true" className="bg-border/60 h-4 w-px" />
         <KbdHint combo="c" className="aui-composer-focus-shortcut" />
@@ -253,21 +410,37 @@ const ComposerAction: FC = () => {
             </ComposerPrimitive.StopDictation>
           </AuiIf>
         </AuiIf>
-        <AuiIf condition={(s) => !s.thread.isRunning}>
-          <ComposerPrimitive.Send asChild>
-            <TooltipIconButton
-              tooltip="Send message"
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-send size-7 rounded-full"
-              aria-label="Send message"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </AuiIf>
+        {mode === "coding" ? (
+          <TooltipIconButton
+            tooltip="Create handoff draft"
+            side="bottom"
+            type="button"
+            variant="default"
+            size="icon"
+            className="aui-composer-send size-7 rounded-full"
+            aria-label="Create handoff draft"
+            disabled={creatingDraft}
+            onClick={createDraft}
+          >
+            <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+          </TooltipIconButton>
+        ) : (
+          <AuiIf condition={(s) => !s.thread.isRunning}>
+            <ComposerPrimitive.Send asChild>
+              <TooltipIconButton
+                tooltip="Send message"
+                side="bottom"
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-send size-7 rounded-full"
+                aria-label="Send message"
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+              </TooltipIconButton>
+            </ComposerPrimitive.Send>
+          </AuiIf>
+        )}
         <AuiIf condition={(s) => s.thread.isRunning}>
           <ComposerPrimitive.Cancel asChild>
             <Button

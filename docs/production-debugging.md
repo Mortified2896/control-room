@@ -50,9 +50,15 @@ Therefore, build + restart + smoke check must be treated as one deploy operation
 for API, UI, and server changes. Do not run `npm run build` in the live serving
 directory and then leave the old `next start` process running.
 
-If an agent cannot restart because it is inside the active Control Room session,
-it should not run the production build in the live serving directory unless an
-external restart is immediately planned.
+If an agent is running inside a Control Room-hosted chat/session, it must not
+restart the Control Room process that is hosting its own active response. In
+that case, it should not run the production build in the live serving directory
+unless an external restart is immediately planned.
+
+If the agent is running externally — for example from Pi terminal, Pi Telegram,
+OpenCode terminal, Codex terminal/app, SSH, tmux, or systemd — it may restart
+Control Room. The browser tab may disconnect or need a refresh, but the external
+worker/session should continue.
 
 If the site breaks after a build, first run `scripts/restart-prod.sh` from an
 external session, then run `scripts/smoke-prod.sh`.
@@ -61,24 +67,27 @@ Hard rule: For API/UI/server changes in the live repo, agents must not run
 `npm run build` and then leave production running on the old process. Either:
 
 1. build only in a non-serving copy/worktree, or
-2. build and immediately restart production from an external shell/session,
-   followed by smoke checks and rendered UI verification if applicable.
+2. build and immediately restart production from a session that is not hosted by
+   the Control Room process being restarted, followed by smoke checks and
+   rendered UI verification if applicable.
 
 ## Golden rule
 
 After schema/API/server changes:
 
-1. migrate if needed
-2. build
-3. restart the deployed production process with the correct env
-4. smoke test JSON APIs
-5. only then report success
+1. run `npm run db:migrate` if needed
+2. run `npm run typecheck`
+3. run `npm test`
+4. run `npm run build`
+5. restart the deployed production process with the correct env using `scripts/restart-prod.sh`
+6. smoke test JSON APIs with `scripts/smoke-prod.sh`
+7. only then report success
 
 A successful build is not enough.
 
 ## Safe restart command
 
-Preferred helper, run from an external SSH/tmux/system session:
+Preferred helper, run from a session that is not hosted by the Control Room process being restarted (for example Pi terminal, Pi Telegram, OpenCode terminal, Codex terminal/app, SSH, tmux, or systemd):
 
 ```bash
 cd /home/hermes/workspace/repos/control-room
@@ -101,8 +110,9 @@ Important:
 
 - Do not start production without sourcing `/etc/hermes/control_room_postgres.env`.
 - Do not assume `npm run build` restarted the live app.
-- Do not restart from inside an active Control Room WebUI/chat stream if that would kill the running response.
-- If operating inside the active app session, stop and give the user the external SSH/systemctl/tmux command instead.
+- Do not restart Control Room from inside a Control Room-hosted WebUI/chat stream if that would kill the running response.
+- External Pi/OpenCode/Codex/SSH/tmux/systemd sessions may restart Control Room; the browser tab may disconnect or need refresh, but the external worker should continue.
+- If operating inside the active Control Room-hosted app session, stop and give the user an external Pi/OpenCode/Codex/SSH/systemctl/tmux command instead.
 
 ## Process checks
 
@@ -151,7 +161,7 @@ cd /home/hermes/workspace/repos/control-room
 npm run typecheck
 npm test
 npm run build
-# From external shell/session only:
+# From a session not hosted by the Control Room process being restarted:
 scripts/restart-prod.sh
 ```
 
@@ -221,13 +231,15 @@ Then:
 
 ```bash
 cd /home/hermes/workspace/repos/control-room
+# if the change includes migrations:
+npm run db:migrate
 npm run typecheck
 npm test
 npm run build
 set -a
 . /etc/hermes/control_room_postgres.env
 set +a
-# from an external SSH/tmux/system session, not an active Control Room chat stream:
+# from Pi/OpenCode/Codex/SSH/tmux/systemd, not a Control Room-hosted chat stream:
 scripts/restart-prod.sh
 scripts/smoke-prod.sh
 ```
@@ -247,7 +259,7 @@ If a migration is part of the change, run it before build/restart using the same
 The repo now includes:
 
 - `scripts/smoke-prod.sh` — safe to run after changes; it does not restart anything.
-- `scripts/restart-prod.sh` — restarts the current production process on port `18100`, then runs smoke checks. Run it from an external SSH/tmux/system session, not from inside an active Control Room chat stream.
+- `scripts/restart-prod.sh` — restarts the current production process on port `18100`, then runs smoke checks. Run it from a session that is not hosted by the Control Room process being restarted (Pi/OpenCode/Codex/SSH/tmux/systemd is OK), not from inside a Control Room-hosted active chat stream.
 
 Later improvements should include a proper process manager/systemd unit if not already used.
 

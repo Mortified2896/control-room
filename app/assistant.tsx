@@ -184,8 +184,9 @@ const CodexChatPane: FC<{
   initialMessages: UIMessage[];
   notesDisabled: boolean;
   routerAbOn: boolean;
+  activeProjectId: string | null;
   onFinish: () => void;
-}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, onFinish }) => {
+}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, activeProjectId, onFinish }) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
     : "gpt-5.4-mini";
@@ -222,7 +223,12 @@ const CodexChatPane: FC<{
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread threadId={threadId} notesDisabled={notesDisabled} routerAbOn={routerAbOn} />
+      <Thread
+        threadId={threadId}
+        activeProjectId={activeProjectId}
+        notesDisabled={notesDisabled}
+        routerAbOn={routerAbOn}
+      />
     </AssistantRuntimeProvider>
   );
 };
@@ -235,6 +241,7 @@ const ChatPane: FC<{
   routerAbOn: boolean;
   reasoningLevel: ReasoningLevel;
   models: ModelOption[];
+  activeProjectId: string | null;
   onFinish: () => void;
 }> = ({
   modelId,
@@ -244,6 +251,7 @@ const ChatPane: FC<{
   routerAbOn,
   reasoningLevel,
   models,
+  activeProjectId,
   onFinish,
 }) => {
   const selectedModel = models.find((m) => m.modelId === modelId) ?? null;
@@ -255,6 +263,7 @@ const ChatPane: FC<{
         initialMessages={initialMessages}
         notesDisabled={notesDisabled}
         routerAbOn={false}
+        activeProjectId={activeProjectId}
         onFinish={onFinish}
       />
     );
@@ -296,7 +305,12 @@ const ChatPane: FC<{
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread threadId={threadId} notesDisabled={notesDisabled} routerAbOn={effectiveRouterAbOn} />
+      <Thread
+        threadId={threadId}
+        activeProjectId={activeProjectId}
+        notesDisabled={notesDisabled}
+        routerAbOn={effectiveRouterAbOn}
+      />
     </AssistantRuntimeProvider>
   );
 };
@@ -972,6 +986,7 @@ export const Assistant = () => {
               routerAbOn={routerAbOn}
               reasoningLevel={selectedReasoningLevel}
               models={models}
+              activeProjectId={activeProjectId}
               onFinish={() => void refreshThreads()}
             />
           )}
