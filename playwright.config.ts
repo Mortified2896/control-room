@@ -36,7 +36,7 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      "PORT=3100 HOSTNAME=127.0.0.1 CONTROL_ROOM_FAKE_LLM=1 CONTROL_ROOM_FAKE_OPENAI_MODELS=1 npm run start -- -p 3100 -H 127.0.0.1",
+      'bash -lc "set -a; . /etc/hermes/control_room_postgres.env; set +a; PORT=3100 HOSTNAME=127.0.0.1 CONTROL_ROOM_FAKE_LLM=1 CONTROL_ROOM_FAKE_OPENAI_MODELS=1 npm run start -- -p 3100 -H 127.0.0.1"',
     url: "http://127.0.0.1:3100",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
