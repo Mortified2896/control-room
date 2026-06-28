@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronRight, Lock } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Lock } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { RouterSettingsPage } from "@/components/settings/router-settings-page";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
 type ProviderAccess = {
@@ -98,9 +101,19 @@ export function SettingsIndexPage() {
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col gap-5 px-4 py-6 sm:px-8">
-      <header className="space-y-1 border-b border-border/60 pb-4">
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">Provider access and model routing</p>
+      <header className="flex items-start justify-between gap-4 border-b border-border/60 pb-4">
+        <div className="flex items-start gap-2">
+          <Button asChild variant="ghost" size="icon-sm" aria-label="Back to chat" className="mt-0.5">
+            <Link href="/">
+              <ArrowLeft className="size-4" />
+            </Link>
+          </Button>
+          <div className="space-y-1">
+            <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
+            <p className="text-sm text-muted-foreground">Provider access and model routing</p>
+          </div>
+        </div>
+        <ThemeToggle className="mt-1" />
       </header>
 
       <section className="rounded-lg border bg-card">
