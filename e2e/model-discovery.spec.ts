@@ -97,7 +97,7 @@ test.describe("Model discovery + unified Model Registry", () => {
     // The fake badge still applies in fake mode
     await expect(page.getByTestId("registry-badge-fake-gpt-fake-unknown-xyz")).toBeVisible();
     // OpenAI + Control Room columns are separated per row
-    await expect(page.getByTestId("registry-openai-pill-gpt-5.4-mini")).toBeVisible();
+    await expect(page.getByTestId("registry-provider-pill-gpt-5.4-mini")).toBeVisible();
     await expect(page.getByTestId("registry-controlroom-pill-gpt-5.4-mini")).toBeVisible();
     // Capability placeholders are rendered (disabled)
     await expect(page.getByTestId("registry-capability-gpt-5.4-mini-reasoning")).toBeVisible();
@@ -343,7 +343,7 @@ test.describe("Model discovery + unified Model Registry", () => {
       /Not configured/,
     );
     // The OpenAI column should show "Available"
-    await expect(page.getByTestId("registry-openai-pill-gpt-fake-unknown-xyz")).toContainText(
+    await expect(page.getByTestId("registry-provider-pill-gpt-fake-unknown-xyz")).toContainText(
       /Available/,
     );
     // The Router toggle is locked with the tooltip from the brief.
