@@ -24,7 +24,7 @@ import type { ReasoningCapability } from "@/lib/providers/capability";
 import {
   describeReasoningCapability,
   getEffectiveReasoningLevels,
-  getThinkingModeOptionValues,
+  getProviderNativeOptionChoices,
   UNKNOWN_REASONING_CAPABILITY,
 } from "@/lib/providers/capability";
 
@@ -214,58 +214,6 @@ function buildDefaultEngineOptions(
 }
 
 /**
- * Choose the available reasoning/thinking options for a given engine
- * capability. We surface:
- *
- *   - For `effort_levels` (OpenAI/Codex): the provider-native option
- *     values (e.g. `["none", "low", "medium", "high", "xhigh"]`).
- *     When the option set is unknown / no-metadata, the picker shows a
- *     single "Unknown / provider default" entry.
- *
- *   - For `thinking_budget` (MiniMax M3): the well-known thinking
- *     modes (`["provider_default", "adaptive", "enabled", "disabled"]`).
- *     No fake "low" — matches the brief's explicit rule.
- *
- *   - For `none` / `unknown`: a single "Unsupported by engine" entry
- *     with no value (we never render fake options).
- */
-function optionsForCapability(capability: ReasoningCapability): ReadonlyArray<{
-  value: string;
-  label: string;
-}> {
-  if (capability.kind === "effort_levels") {
-    if (capability.control === "supported" || capability.control === "model_dependent") {
-      return capability.options.map((opt) => ({
-        value: opt.value,
-        label: opt.label ?? opt.value,
-      }));
-    }
-    // `unknown` effort-level capability: be honest.
-    return [{ value: "", label: "Unknown / provider default" }];
-  }
-  if (capability.kind === "thinking_budget") {
-    const modes = getThinkingModeOptionValues(capability);
-    if (modes.length > 0) {
-      return modes.map((v) => ({ value: v, label: v }));
-    }
-    if (capability.control === "supported" || capability.control === "model_dependent") {
-      // supported but no modes advertised — fall back to common
-      // provider-native mode names.
-      return [
-        { value: "provider_default", label: "provider_default" },
-        { value: "adaptive", label: "adaptive" },
-        { value: "enabled", label: "enabled" },
-        { value: "disabled", label: "disabled" },
-      ];
-    }
-    return [{ value: "", label: "Unknown / provider default" }];
-  }
-  // `none` / `unknown`: engine cannot accept reasoning controls; render
-  // a disabled option.
-  return [{ value: "", label: "Unsupported by engine" }];
-}
-
-/**
  * Derive the pill we render next to the engine model picker. This is
  * the user-facing summary of "is this engine actually able to run?".
  */
@@ -370,7 +318,7 @@ export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
   const reasoningChoices = useMemo(
     () =>
       selectedOption
-        ? optionsForCapability(selectedOption.capability)
+        ? getProviderNativeOptionChoices(selectedOption.capability)
         : [{ value: "", label: "Pick an engine model" }],
     [selectedOption],
   );
@@ -402,7 +350,7 @@ export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
   const fallbackReasoningChoices = useMemo(
     () =>
       fallbackSelectedOption
-        ? optionsForCapability(fallbackSelectedOption.capability)
+        ? getProviderNativeOptionChoices(fallbackSelectedOption.capability)
         : [{ value: "", label: "Pick a fallback model" }],
     [fallbackSelectedOption],
   );

@@ -106,6 +106,9 @@ export const Thread: FC<{
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  manualModelSummary?: string;
+  recommenderEngineSummary?: string;
+  fallbackEngineSummary?: string;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: () => void;
   onKeepCurrent?: () => void;
@@ -122,6 +125,9 @@ export const Thread: FC<{
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  manualModelSummary,
+  recommenderEngineSummary,
+  fallbackEngineSummary,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
@@ -182,6 +188,9 @@ export const Thread: FC<{
               onToggleRecommender={onToggleRecommender}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
+              manualModelSummary={manualModelSummary}
+              recommenderEngineSummary={recommenderEngineSummary}
+              fallbackEngineSummary={fallbackEngineSummary}
               onRecommend={onRecommend}
               onUseRecommendation={onUseRecommendation}
               onKeepCurrent={onKeepCurrent}
@@ -268,6 +277,9 @@ const Composer: FC<{
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  manualModelSummary?: string;
+  recommenderEngineSummary?: string;
+  fallbackEngineSummary?: string;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: () => void;
   onKeepCurrent?: () => void;
@@ -280,6 +292,9 @@ const Composer: FC<{
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  manualModelSummary,
+  recommenderEngineSummary,
+  fallbackEngineSummary,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
@@ -343,6 +358,9 @@ const Composer: FC<{
             onToggleRecommender={onToggleRecommender}
             recommendation={recommendation}
             recommendationLoading={recommendationLoading}
+            manualModelSummary={manualModelSummary}
+            recommenderEngineSummary={recommenderEngineSummary}
+            fallbackEngineSummary={fallbackEngineSummary}
             onUseRecommendation={onUseRecommendation}
             onKeepCurrent={onKeepCurrent}
           />
@@ -368,6 +386,9 @@ const ComposerAction: FC<{
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  manualModelSummary?: string;
+  recommenderEngineSummary?: string;
+  fallbackEngineSummary?: string;
   onUseRecommendation?: () => void;
   onKeepCurrent?: () => void;
 }> = ({
@@ -381,6 +402,9 @@ const ComposerAction: FC<{
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  manualModelSummary,
+  recommenderEngineSummary,
+  fallbackEngineSummary,
   onUseRecommendation,
   onKeepCurrent,
 }) => {
@@ -473,14 +497,36 @@ const ComposerAction: FC<{
         >
           {recommendation ? (
             <>
-              <div className="font-medium text-foreground">
-                {recommendation.loudFailure ? "Recommendation blocked" : "Recommended:"}{" "}
-                {recommendation.recommendedModelId}
-                {recommendation.recommendedReasoningLevel
-                  ? ` · ${recommendation.recommendedReasoningLevel}`
-                  : ""}
-              </div>
-              <div className="mt-0.5 text-muted-foreground">Reason: {recommendation.reasoning}</div>
+              {recommendation.loudFailure ? (
+                <div>
+                  <div className="font-medium text-foreground">Recommendation blocked</div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    The recommender engine could not run: {recommenderEngineSummary ?? "unknown"}
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    Current manual model remains:{" "}
+                    {manualModelSummary ?? recommendation.recommendedModelId}
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    Configured fallback engine: {fallbackEngineSummary ?? "No fallback configured"}
+                  </div>
+                  <div className="mt-1 text-muted-foreground">
+                    Reason: {recommendation.reasoning}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="font-medium text-foreground">
+                    Recommended: {recommendation.recommendedModelId}
+                    {recommendation.recommendedReasoningLevel
+                      ? ` · ${recommendation.recommendedReasoningLevel}`
+                      : ""}
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    Reason: {recommendation.reasoning}
+                  </div>
+                </>
+              )}
               {recommendation.loudFailure &&
               recommendation.proposedSubscriptionFallbacks?.length ? (
                 <div className="mt-1 text-muted-foreground">

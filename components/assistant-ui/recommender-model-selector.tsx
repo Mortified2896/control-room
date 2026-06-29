@@ -6,6 +6,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 
 import { useMediaQuery } from "@/components/layout/use-media-query";
 import { cn } from "@/lib/utils";
+import type { ReasoningCapability } from "@/lib/providers/capability";
 
 /**
  * One selectable recommender-model entry. This is the same shape
@@ -19,6 +20,7 @@ export type RecommenderModelOption = {
   displayLabel: string;
   providerLabel: string;
   providerId: string;
+  reasoningCapability: ReasoningCapability;
 };
 
 type Props = {

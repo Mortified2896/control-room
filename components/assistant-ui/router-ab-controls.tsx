@@ -14,6 +14,7 @@ import {
   RecommenderModelSelector,
   type RecommenderModelOption,
 } from "@/components/assistant-ui/recommender-model-selector";
+import { getProviderNativeOptionChoices } from "@/lib/providers/capability";
 
 /**
  * Reasoning-level picker.
@@ -543,6 +544,10 @@ export const RecommenderControl: FC<{
   /** Provider-native reasoning-effort value (e.g. "low", "xhigh"). */
   reasoningLevel?: string;
   onReasoningChange?: (level: string) => void;
+  fallbackModelId?: string | null;
+  fallbackReasoningLevel?: string | null;
+  onFallbackModelChange?: (modelId: string | null) => void;
+  onFallbackReasoningChange?: (level: string | null) => void;
 }> = ({
   enabled,
   onToggle,
@@ -555,47 +560,92 @@ export const RecommenderControl: FC<{
   modelSaving = false,
   reasoningLevel = "low",
   onReasoningChange,
+  fallbackModelId = null,
+  fallbackReasoningLevel = null,
+  onFallbackModelChange,
+  onFallbackReasoningChange,
 }) => {
+  const selectedEngine = modelOptions.find((o) => o.modelId === modelId) ?? null;
+  const selectedFallback = modelOptions.find((o) => o.modelId === fallbackModelId) ?? null;
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5" data-testid="recommender-control">
+    <div className="flex flex-wrap items-center gap-2" data-testid="recommender-control">
       <RecommenderToggle
         on={enabled}
         onToggle={onToggle}
         disabled={toggleDisabled}
         disabledReason={toggleDisabledReason}
       />
-      <RecommenderModelSelector
-        compact
-        options={modelOptions}
-        value={modelId ?? ""}
-        onChange={onModelChange}
-        disabled={modelLoading || modelSaving}
-        testId="chat-recommender-model"
-        id="chat-recommender-model"
-      />
-      {onReasoningChange ? (
-        <select
-          data-testid="chat-recommender-reasoning"
-          value={reasoningLevel}
-          onChange={(e) => onReasoningChange(e.target.value as string)}
-          disabled={modelLoading || modelSaving}
-          aria-label="Recommender reasoning level"
-          title="Reasoning effort used when calling the recommender model itself. Provider-native value — forwarded verbatim to the recommender provider."
-          className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-7 rounded-md border px-2 text-xs shadow-xs outline-none focus-visible:ring-[3px]"
+      <>
+        <div
+          className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-muted/10 px-2 py-1"
+          data-testid="chat-recommender-engine-controls"
         >
-          {/* Provider-native values. The recommender model validates
-              this against its `reasoningCapability.options`; a value
-              not advertised by the recommender model is rejected at
-              runtime and the recommender falls back to its provider
-              default. */}
-          <option value="none">none</option>
-          <option value="minimal">minimal</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-        </select>
-      ) : null}
+          <div className="mr-1 text-[10px] leading-tight text-muted-foreground">
+            <div className="font-semibold text-foreground">Recommender engine</div>
+            <div>This model recommends which model to use. It is not the chat model itself.</div>
+          </div>
+          <RecommenderModelSelector
+            compact
+            options={modelOptions}
+            value={modelId ?? ""}
+            onChange={onModelChange}
+            disabled={modelLoading || modelSaving}
+            testId="chat-recommender-model"
+            id="chat-recommender-model"
+          />
+          {onReasoningChange ? (
+            <ProviderNativeSelect
+              testId="chat-recommender-reasoning"
+              ariaLabel="Recommender engine reasoning / thinking"
+              value={reasoningLevel}
+              selectedOption={selectedEngine}
+              disabled={modelLoading || modelSaving}
+              onChange={(next) => onReasoningChange(next ?? "")}
+            />
+          ) : null}
+        </div>
+
+        {onFallbackModelChange ? (
+          <div
+            className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-muted/10 px-2 py-1"
+            data-testid="chat-recommender-fallback-controls"
+          >
+            <div className="mr-1 text-[10px] leading-tight text-muted-foreground">
+              <div className="font-semibold text-foreground">Fallback engine</div>
+              <div>
+                Used only if the recommender engine fails. This is an explicitly configured
+                fallback.
+              </div>
+            </div>
+            <select
+              data-testid="chat-recommender-fallback-model"
+              value={fallbackModelId ?? ""}
+              onChange={(e) => onFallbackModelChange(e.target.value === "" ? null : e.target.value)}
+              disabled={modelLoading || modelSaving}
+              aria-label="Fallback recommender engine model"
+              className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-7 rounded-md border px-2 text-xs shadow-xs outline-none focus-visible:ring-[3px]"
+            >
+              <option value="">No fallback</option>
+              {modelOptions.map((option) => (
+                <option key={option.modelId} value={option.modelId}>
+                  {option.displayLabel} · {option.providerLabel}
+                </option>
+              ))}
+            </select>
+            {onFallbackReasoningChange ? (
+              <ProviderNativeSelect
+                testId="chat-recommender-fallback-reasoning"
+                ariaLabel="Fallback recommender engine reasoning / thinking"
+                value={fallbackReasoningLevel ?? ""}
+                selectedOption={selectedFallback}
+                disabled={modelLoading || modelSaving || !fallbackModelId}
+                onChange={(next) => onFallbackReasoningChange(next)}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </>
       {modelSaving ? (
         <span
           className="text-[10px] text-muted-foreground"
@@ -606,6 +656,36 @@ export const RecommenderControl: FC<{
         </span>
       ) : null}
     </div>
+  );
+};
+
+const ProviderNativeSelect: FC<{
+  testId: string;
+  ariaLabel: string;
+  value: string;
+  selectedOption: RecommenderModelOption | null;
+  disabled: boolean;
+  onChange: (value: string | null) => void;
+}> = ({ testId, ariaLabel, value, selectedOption, disabled, onChange }) => {
+  const choices = selectedOption
+    ? getProviderNativeOptionChoices(selectedOption.reasoningCapability)
+    : [{ value: "", label: "Pick a model" }];
+  return (
+    <select
+      data-testid={testId}
+      value={value}
+      onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
+      disabled={disabled || choices.length === 0}
+      aria-label={ariaLabel}
+      title="Provider-native value — forwarded verbatim to the recommender provider."
+      className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-7 rounded-md border px-2 text-xs shadow-xs outline-none focus-visible:ring-[3px] disabled:opacity-60"
+    >
+      {choices.map((choice, idx) => (
+        <option key={`${choice.value}-${idx}`} value={choice.value}>
+          {choice.label}
+        </option>
+      ))}
+    </select>
   );
 };
 

@@ -35,6 +35,7 @@ type RecommenderModelOptionDto = {
   displayLabel: string;
   providerLabel: string;
   providerId: "openai" | "codex" | "minimax" | string;
+  reasoningCapability: import("@/lib/providers/capability").ReasoningCapability;
 };
 
 export async function GET(_req: Request) {
@@ -52,6 +53,7 @@ export async function GET(_req: Request) {
     modelId: string;
     displayLabel: string;
     configured?: boolean;
+    reasoningCapability: import("@/lib/providers/capability").ReasoningCapability;
   }>;
   const openaiOptions: RecommenderModelOptionDto[] = registryModels
     .filter((m) => m.providerId === "openai" && (m.configured ?? false))
@@ -60,6 +62,7 @@ export async function GET(_req: Request) {
       displayLabel: m.displayLabel,
       providerLabel: m.providerLabel,
       providerId: m.providerId,
+      reasoningCapability: m.reasoningCapability,
     }));
   const codexOptions: RecommenderModelOptionDto[] = (data.effectiveRegistry?.models ?? [])
     .filter((m: { providerId: string }) => m.providerId === "codex")
@@ -69,11 +72,13 @@ export async function GET(_req: Request) {
         displayLabel: string;
         providerLabel: string;
         providerId: string;
+        reasoningCapability: import("@/lib/providers/capability").ReasoningCapability;
       }) => ({
         modelId: m.modelId,
         displayLabel: m.displayLabel,
         providerLabel: m.providerLabel,
         providerId: m.providerId,
+        reasoningCapability: m.reasoningCapability,
       }),
     );
   const minimaxOptions: RecommenderModelOptionDto[] = registryModels
@@ -83,6 +88,7 @@ export async function GET(_req: Request) {
       displayLabel: m.displayLabel,
       providerLabel: m.providerLabel,
       providerId: m.providerId,
+      reasoningCapability: m.reasoningCapability,
     }));
 
   const recommenderModelOptions: RecommenderModelOptionDto[] = [
@@ -101,6 +107,14 @@ export async function GET(_req: Request) {
         data.effective?.normalChatRecommenderReasoningLevel ??
         data.defaults?.normalChatRecommenderReasoningLevel ??
         "low",
+      normalChatRecommenderFallbackModelId:
+        data.effective?.normalChatRecommenderFallbackModelId ??
+        data.defaults?.normalChatRecommenderFallbackModelId ??
+        null,
+      normalChatRecommenderFallbackReasoningLevel:
+        data.effective?.normalChatRecommenderFallbackReasoningLevel ??
+        data.defaults?.normalChatRecommenderFallbackReasoningLevel ??
+        null,
       recommenderModelOptions,
       defaults: {
         normalChatRouterProvider: "openai",
@@ -108,6 +122,10 @@ export async function GET(_req: Request) {
         normalChatRecommenderModelId: data.defaults?.normalChatRecommenderModelId,
         normalChatRecommenderReasoningLevel:
           data.defaults?.normalChatRecommenderReasoningLevel ?? "low",
+        normalChatRecommenderFallbackModelId:
+          data.defaults?.normalChatRecommenderFallbackModelId ?? null,
+        normalChatRecommenderFallbackReasoningLevel:
+          data.defaults?.normalChatRecommenderFallbackReasoningLevel ?? null,
       },
     },
     { headers: { "Cache-Control": "no-store" } },
@@ -141,6 +159,41 @@ export async function PATCH(req: Request) {
     recommenderReasoningLevel.trim().length > 0
   ) {
     updates.normalChatRecommenderReasoningLevel = recommenderReasoningLevel.trim();
+  }
+  if ("normalChatRecommenderFallbackModelId" in body) {
+    const fallbackModelId = body.normalChatRecommenderFallbackModelId;
+    if (fallbackModelId === null) {
+      updates.normalChatRecommenderFallbackModelId = null;
+    } else if (typeof fallbackModelId === "string" && fallbackModelId.trim().length > 0) {
+      updates.normalChatRecommenderFallbackModelId = fallbackModelId.trim();
+    } else {
+      return NextResponse.json(
+        {
+          error: "invalid_body",
+          reason: "normalChatRecommenderFallbackModelId must be null or a non-empty string",
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+  }
+  if ("normalChatRecommenderFallbackReasoningLevel" in body) {
+    const fallbackReasoningLevel = body.normalChatRecommenderFallbackReasoningLevel;
+    if (fallbackReasoningLevel === null) {
+      updates.normalChatRecommenderFallbackReasoningLevel = null;
+    } else if (
+      typeof fallbackReasoningLevel === "string" &&
+      fallbackReasoningLevel.trim().length > 0
+    ) {
+      updates.normalChatRecommenderFallbackReasoningLevel = fallbackReasoningLevel.trim();
+    } else {
+      return NextResponse.json(
+        {
+          error: "invalid_body",
+          reason: "normalChatRecommenderFallbackReasoningLevel must be null or a non-empty string",
+        },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      );
+    }
   }
   if ("normalChatRecommenderAllowedModels" in body) {
     const allowlist = body.normalChatRecommenderAllowedModels;
@@ -178,7 +231,7 @@ export async function PATCH(req: Request) {
       {
         error: "invalid_body",
         reason:
-          "at least one of normalChatRouterModelId, normalChatRecommenderModelId, normalChatRecommenderReasoningLevel, or normalChatRecommenderAllowedModels must be provided",
+          "at least one of normalChatRouterModelId, normalChatRecommenderModelId, normalChatRecommenderReasoningLevel, normalChatRecommenderFallbackModelId, normalChatRecommenderFallbackReasoningLevel, or normalChatRecommenderAllowedModels must be provided",
       },
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );

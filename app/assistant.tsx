@@ -17,7 +17,10 @@ import {
   RecommenderControl,
 } from "@/components/assistant-ui/router-ab-controls";
 import type { RecommenderModelOption } from "@/components/assistant-ui/recommender-model-selector";
-import type { ReasoningCapability } from "@/lib/providers/capability";
+import {
+  getProviderNativeOptionChoices,
+  type ReasoningCapability,
+} from "@/lib/providers/capability";
 import type { ThinkingMode } from "@/lib/providers/runtime";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { KbdHint } from "@/components/kbd-hint";
@@ -156,12 +159,16 @@ type RouterSettingsLiteResponse = {
   normalChatRouterModelId: string | null;
   normalChatRecommenderModelId: string | null;
   normalChatRecommenderReasoningLevel: string;
+  normalChatRecommenderFallbackModelId: string | null;
+  normalChatRecommenderFallbackReasoningLevel: string | null;
   recommenderModelOptions: ReadonlyArray<RecommenderModelOption>;
   defaults: {
     normalChatRouterProvider: string;
     normalChatRouterModelId: string | null;
     normalChatRecommenderModelId: string | null;
     normalChatRecommenderReasoningLevel: string;
+    normalChatRecommenderFallbackModelId: string | null;
+    normalChatRecommenderFallbackReasoningLevel: string | null;
   };
 };
 
@@ -353,6 +360,9 @@ const ChatPane: FC<{
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  manualModelSummary?: string;
+  recommenderEngineSummary?: string;
+  fallbackEngineSummary?: string;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: () => void;
   onKeepCurrent?: () => void;
@@ -374,6 +384,9 @@ const ChatPane: FC<{
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  manualModelSummary,
+  recommenderEngineSummary,
+  fallbackEngineSummary,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
@@ -450,6 +463,9 @@ const ChatPane: FC<{
         onToggleRecommender={onToggleRecommender}
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
+        manualModelSummary={manualModelSummary}
+        recommenderEngineSummary={recommenderEngineSummary}
+        fallbackEngineSummary={fallbackEngineSummary}
         onRecommend={onRecommend}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
@@ -641,6 +657,10 @@ const RouterControlsBar: FC<{
   onRecommenderModelChange?: (modelId: string) => void;
   recommenderReasoningLevel?: string;
   onRecommenderReasoningChange?: (level: string) => void;
+  recommenderFallbackModelId?: string | null;
+  recommenderFallbackReasoningLevel?: string | null;
+  onRecommenderFallbackModelChange?: (modelId: string | null) => void;
+  onRecommenderFallbackReasoningChange?: (level: string | null) => void;
 }> = ({
   models,
   selectedModelId,
@@ -659,6 +679,10 @@ const RouterControlsBar: FC<{
   onRecommenderModelChange,
   recommenderReasoningLevel = "low" as string,
   onRecommenderReasoningChange,
+  recommenderFallbackModelId = null,
+  recommenderFallbackReasoningLevel = null,
+  onRecommenderFallbackModelChange,
+  onRecommenderFallbackReasoningChange,
 }) => {
   const selectedModel = useMemo(
     () => models.find((m) => m.modelId === selectedModelId) ?? null,
@@ -684,13 +708,22 @@ const RouterControlsBar: FC<{
   }, [supportsRouterAb, routerAbOn, onRouterAbChange]);
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-background px-3 py-2 sm:px-4">
-      <ReasoningControls
-        capability={capability}
-        reasoningLevel={reasoningLevel}
-        onReasoningChange={onReasoningChange}
-        thinkingMode={thinkingMode}
-        onThinkingModeChange={onThinkingModeChange}
-      />
+      <div
+        className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-muted/10 px-2 py-1"
+        data-testid="manual-chat-model-controls"
+      >
+        <div className="mr-1 text-[10px] leading-tight text-muted-foreground">
+          <div className="font-semibold text-foreground">Manual chat model</div>
+          <div>Used when Recommend is off or when you choose Keep current.</div>
+        </div>
+        <ReasoningControls
+          capability={capability}
+          reasoningLevel={reasoningLevel}
+          onReasoningChange={onReasoningChange}
+          thinkingMode={thinkingMode}
+          onThinkingModeChange={onThinkingModeChange}
+        />
+      </div>
       {supportsRouterAb ? (
         <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
       ) : (
@@ -710,6 +743,10 @@ const RouterControlsBar: FC<{
             modelSaving={recommenderModelSaving}
             reasoningLevel={recommenderReasoningLevel}
             onReasoningChange={onRecommenderReasoningChange}
+            fallbackModelId={recommenderFallbackModelId}
+            fallbackReasoningLevel={recommenderFallbackReasoningLevel}
+            onFallbackModelChange={onRecommenderFallbackModelChange}
+            onFallbackReasoningChange={onRecommenderFallbackReasoningChange}
           />
         ) : (
           <RecommenderToggle on={recommenderEnabled} onToggle={onToggleRecommender} />
@@ -1027,6 +1064,10 @@ export const Assistant = () => {
   const [recommenderModelSaving, setRecommenderModelSaving] = useState(false);
   const [recommenderModelError, setRecommenderModelError] = useState<string | null>(null);
   const [recommenderReasoningLevel, setRecommenderReasoningLevel] = useState<string>("low");
+  const [recommenderFallbackModelId, setRecommenderFallbackModelId] = useState<string | null>(null);
+  const [recommenderFallbackReasoningLevel, setRecommenderFallbackReasoningLevel] = useState<
+    string | null
+  >(null);
   // Recommend-model toggle. When ON, every Send goes through a
   // recommendation round-trip first. When OFF, the chat composer
   // sends with the manually selected model immediately. Persisted
@@ -1148,6 +1189,10 @@ export const Assistant = () => {
         if (data.normalChatRecommenderReasoningLevel) {
           setRecommenderReasoningLevel(data.normalChatRecommenderReasoningLevel);
         }
+        setRecommenderFallbackModelId(data.normalChatRecommenderFallbackModelId ?? null);
+        setRecommenderFallbackReasoningLevel(
+          data.normalChatRecommenderFallbackReasoningLevel ?? null,
+        );
         setRecommenderModelError(null);
       } catch (err) {
         if (cancelled) return;
@@ -1167,14 +1212,24 @@ export const Assistant = () => {
     async (nextId: string) => {
       if (!nextId) return;
       const previousId = recommenderModelId;
+      const previousLevel = recommenderReasoningLevel;
+      const selected = recommenderModelOptions.find((m) => m.modelId === nextId);
+      const nextLevel = selected
+        ? (getProviderNativeOptionChoices(selected.reasoningCapability).find((o) => o.value)
+            ?.value ?? recommenderReasoningLevel)
+        : recommenderReasoningLevel;
       setRecommenderModelId(nextId);
+      setRecommenderReasoningLevel(nextLevel);
       setRecommenderModelSaving(true);
       setRecommenderModelError(null);
       try {
         const res = await fetch("/api/router/settings", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ normalChatRecommenderModelId: nextId }),
+          body: JSON.stringify({
+            normalChatRecommenderModelId: nextId,
+            normalChatRecommenderReasoningLevel: nextLevel,
+          }),
         });
         if (!res.ok) {
           const reason = await res
@@ -1186,6 +1241,7 @@ export const Assistant = () => {
       } catch (err) {
         // Roll back so the picker reflects what the server actually saved.
         setRecommenderModelId(previousId);
+        setRecommenderReasoningLevel(previousLevel);
         setRecommenderModelError(
           err instanceof Error ? err.message : "Failed to save recommender model",
         );
@@ -1193,12 +1249,12 @@ export const Assistant = () => {
         setRecommenderModelSaving(false);
       }
     },
-    [recommenderModelId],
+    [recommenderModelId, recommenderModelOptions, recommenderReasoningLevel],
   );
 
   const handleRecommenderReasoningChange = useCallback(
-    async (nextLevel: ReasoningLevel) => {
-      if (nextLevel === recommenderReasoningLevel) return;
+    async (nextLevel: string) => {
+      if (nextLevel === recommenderReasoningLevel || nextLevel.trim().length === 0) return;
       const previousLevel = recommenderReasoningLevel;
       setRecommenderReasoningLevel(nextLevel);
       setRecommenderModelSaving(true);
@@ -1226,6 +1282,83 @@ export const Assistant = () => {
       }
     },
     [recommenderReasoningLevel],
+  );
+
+  const handleRecommenderFallbackModelChange = useCallback(
+    async (nextId: string | null) => {
+      if (nextId === recommenderFallbackModelId) return;
+      const previousId = recommenderFallbackModelId;
+      const previousLevel = recommenderFallbackReasoningLevel;
+      const selected = nextId ? recommenderModelOptions.find((m) => m.modelId === nextId) : null;
+      const nextLevel = nextId
+        ? selected
+          ? (getProviderNativeOptionChoices(selected.reasoningCapability).find((o) => o.value)
+              ?.value ?? previousLevel)
+          : previousLevel
+        : null;
+      setRecommenderFallbackModelId(nextId);
+      setRecommenderFallbackReasoningLevel(nextLevel);
+      setRecommenderModelSaving(true);
+      setRecommenderModelError(null);
+      try {
+        const res = await fetch("/api/router/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            normalChatRecommenderFallbackModelId: nextId,
+            normalChatRecommenderFallbackReasoningLevel: nextLevel,
+          }),
+        });
+        if (!res.ok) {
+          const reason = await res
+            .json()
+            .catch(() => ({ reason: `status ${res.status}` }))
+            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
+          throw new Error(reason);
+        }
+      } catch (err) {
+        setRecommenderFallbackModelId(previousId);
+        setRecommenderFallbackReasoningLevel(previousLevel);
+        setRecommenderModelError(
+          err instanceof Error ? err.message : "Failed to save recommender fallback model",
+        );
+      } finally {
+        setRecommenderModelSaving(false);
+      }
+    },
+    [recommenderFallbackModelId, recommenderFallbackReasoningLevel, recommenderModelOptions],
+  );
+
+  const handleRecommenderFallbackReasoningChange = useCallback(
+    async (nextLevel: string | null) => {
+      if (nextLevel === recommenderFallbackReasoningLevel) return;
+      const previousLevel = recommenderFallbackReasoningLevel;
+      setRecommenderFallbackReasoningLevel(nextLevel);
+      setRecommenderModelSaving(true);
+      setRecommenderModelError(null);
+      try {
+        const res = await fetch("/api/router/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ normalChatRecommenderFallbackReasoningLevel: nextLevel }),
+        });
+        if (!res.ok) {
+          const reason = await res
+            .json()
+            .catch(() => ({ reason: `status ${res.status}` }))
+            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
+          throw new Error(reason);
+        }
+      } catch (err) {
+        setRecommenderFallbackReasoningLevel(previousLevel);
+        setRecommenderModelError(
+          err instanceof Error ? err.message : "Failed to save recommender fallback reasoning",
+        );
+      } finally {
+        setRecommenderModelSaving(false);
+      }
+    },
+    [recommenderFallbackReasoningLevel],
   );
 
   useEffect(() => {
@@ -1519,6 +1652,26 @@ export const Assistant = () => {
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeThreadTitle = activeThread?.title ?? "New chat";
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
+  const manualModelSummary = (() => {
+    const selected = models.find((m) => m.modelId === selectedModelId);
+    const label = selected?.modelLabel ?? selectedModelId ?? "No manual model selected";
+    const option =
+      selected?.reasoningCapability.kind === "thinking_budget"
+        ? selectedThinkingMode
+        : selectedReasoningLevel;
+    return `${label} · ${option}`;
+  })();
+  const recommenderEngineSummary = (() => {
+    const selected = recommenderModelOptions.find((m) => m.modelId === recommenderModelId);
+    const label = selected?.displayLabel ?? recommenderModelId ?? "No recommender engine selected";
+    return `${label} · ${recommenderReasoningLevel}`;
+  })();
+  const fallbackEngineSummary = (() => {
+    if (!recommenderFallbackModelId) return "No fallback configured";
+    const selected = recommenderModelOptions.find((m) => m.modelId === recommenderFallbackModelId);
+    const label = selected?.displayLabel ?? recommenderFallbackModelId;
+    return `${label} · ${recommenderFallbackReasoningLevel ?? "provider_default"}`;
+  })();
 
   return (
     <div className="flex h-dvh overflow-hidden">
@@ -1578,6 +1731,10 @@ export const Assistant = () => {
           onRecommenderModelChange={handleRecommenderModelChange}
           recommenderReasoningLevel={recommenderReasoningLevel}
           onRecommenderReasoningChange={handleRecommenderReasoningChange}
+          recommenderFallbackModelId={recommenderFallbackModelId}
+          recommenderFallbackReasoningLevel={recommenderFallbackReasoningLevel}
+          onRecommenderFallbackModelChange={handleRecommenderFallbackModelChange}
+          onRecommenderFallbackReasoningChange={handleRecommenderFallbackReasoningChange}
         />
 
         {!dbConfigured && (
@@ -1627,6 +1784,9 @@ export const Assistant = () => {
               onToggleRecommender={toggleRecommender}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
+              manualModelSummary={manualModelSummary}
+              recommenderEngineSummary={recommenderEngineSummary}
+              fallbackEngineSummary={fallbackEngineSummary}
               onRecommend={handleRecommendModel}
               onUseRecommendation={handleUseRecommendation}
               onKeepCurrent={handleKeepCurrent}

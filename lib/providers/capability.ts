@@ -284,6 +284,55 @@ export function getThinkingModeOptionValues(
   return capability.modes.map((o) => o.value);
 }
 
+export type ProviderNativeOptionChoice = {
+  value: string;
+  label: string;
+  description?: string;
+};
+
+/**
+ * Single source of truth for provider-native reasoning / thinking
+ * selector options across Settings, Chat UI, and API prompt-building
+ * surfaces. Never returns fake OpenAI-style `low` for MiniMax or
+ * unknown models.
+ */
+export function getProviderNativeOptionChoices(
+  capability: ReasoningCapability,
+): ReadonlyArray<ProviderNativeOptionChoice> {
+  if (capability.kind === "effort_levels") {
+    if (capability.control === "supported" || capability.control === "model_dependent") {
+      return capability.options.map((opt) => ({
+        value: opt.value,
+        label: opt.label ?? opt.value,
+        ...(opt.description ? { description: opt.description } : {}),
+      }));
+    }
+    return [{ value: "", label: "Unknown / provider default" }];
+  }
+
+  if (capability.kind === "thinking_budget") {
+    const advertised = capability.modes ?? [];
+    if (capability.control !== "unknown" && advertised.length > 0) {
+      return advertised.map((mode) => ({
+        value: mode.value,
+        label: mode.label ?? mode.value,
+        ...(mode.description ? { description: mode.description } : {}),
+      }));
+    }
+    if (capability.control === "supported" || capability.control === "model_dependent") {
+      return [
+        { value: "provider_default", label: "provider_default" },
+        { value: "adaptive", label: "adaptive" },
+        { value: "enabled", label: "enabled" },
+        { value: "disabled", label: "disabled" },
+      ];
+    }
+    return [{ value: "provider_default", label: "Unknown / provider default" }];
+  }
+
+  return [{ value: "", label: "Unsupported by engine" }];
+}
+
 /**
  * Resolve the safe default option for a capability. Used by the
  * chat composer when initializing the pick, and by the runtime as

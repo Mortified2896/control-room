@@ -49,6 +49,8 @@ async function cleanup(apiURL: string) {
           { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
           { modelId: "gpt-5.4-mini", reasoningLevel: "medium" },
         ],
+        normalChatRecommenderModelId: "codex:gpt-5.4-mini",
+        normalChatRecommenderReasoningLevel: "low",
         normalChatRecommenderAllowedModels: null,
         normalChatRecommenderFallbackModelId: null,
         normalChatRecommenderFallbackReasoningLevel: null,
@@ -205,6 +207,8 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
     // defaults.
     await request.put(`${apiBase}/api/router-settings`, {
       data: {
+        normalChatRecommenderModelId: "codex:gpt-5.4-mini",
+        normalChatRecommenderReasoningLevel: "low",
         normalChatRecommenderFallbackModelId: "codex:gpt-5.5",
         normalChatRecommenderFallbackReasoningLevel: "low",
         normalChatRecommenderAllowedModels: null,
@@ -255,6 +259,8 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
     // lib/router/fallback-chain.test.ts.
     await request.put(`${apiBase}/api/router-settings`, {
       data: {
+        normalChatRecommenderModelId: "codex:gpt-5.4-mini",
+        normalChatRecommenderReasoningLevel: "low",
         normalChatRecommenderFallbackModelId: "codex:gpt-5.5",
         normalChatRecommenderFallbackReasoningLevel: "low",
         normalChatRecommenderAllowedModels: null,
@@ -282,5 +288,57 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
       modelId: string;
     }>;
     expect(chain.some((c) => c.modelId === "codex:gpt-5.5")).toBe(true);
+  });
+
+  test("Chat UI exposes primary + fallback recommender engine controls", async ({ page }) => {
+    await gotoSettings(page);
+    await page.goto("/");
+    await expect(page.getByTestId("recommender-control")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("chat-recommender-engine-controls")).toBeVisible();
+    await expect(page.getByTestId("chat-recommender-model")).toBeVisible();
+    await expect(page.getByTestId("chat-recommender-reasoning")).toBeVisible();
+    await expect(page.getByTestId("chat-recommender-fallback-controls")).toBeVisible();
+    await expect(page.getByTestId("chat-recommender-fallback-model")).toBeVisible();
+    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toBeVisible();
+    await expect(
+      page.getByTestId("chat-recommender-fallback-model").locator('option[value=""]'),
+    ).toHaveText(/no fallback/i);
+  });
+
+  test("Changing fallback engine in Chat UI persists to Settings Tab B", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("recommender-control")).toBeVisible({ timeout: 15_000 });
+
+    await page.getByTestId("chat-recommender-fallback-model").selectOption("MiniMax-M3");
+    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toHaveValue(
+      "provider_default",
+    );
+    await page.waitForTimeout(800);
+
+    const body = await fetch(`${apiBase}/api/router-settings`).then((r) => r.json());
+    expect(body.effective.normalChatRecommenderFallbackModelId).toBe("MiniMax-M3");
+    expect(body.effective.normalChatRecommenderFallbackReasoningLevel).toBe("provider_default");
+
+    await gotoSettings(page);
+    await expect(
+      page.getByTestId("router-settings-normal-chat-recommender-fallback-model"),
+    ).toHaveValue("MiniMax-M3");
+    await expect(
+      page.getByTestId("router-settings-normal-chat-recommender-fallback-reasoning"),
+    ).toHaveValue("provider_default");
+  });
+
+  test("Changing Settings Tab B reflects in Chat UI after reload", async ({ page }) => {
+    await gotoSettings(page);
+    await page
+      .getByTestId("router-settings-normal-chat-recommender-fallback-model")
+      .selectOption("codex:gpt-5.5");
+    await page.getByTestId("router-settings-save").click();
+    await expect(page.getByTestId("router-settings-save-status")).toBeVisible({ timeout: 5_000 });
+
+    await page.goto("/");
+    await expect(page.getByTestId("chat-recommender-fallback-model")).toHaveValue("codex:gpt-5.5", {
+      timeout: 15_000,
+    });
   });
 });
