@@ -532,6 +532,20 @@ export async function PUT(req: Request) {
       b.normalChatRecommenderModelId ?? current.normalChatRecommenderModelId,
     normalChatRecommenderReasoningLevel:
       b.normalChatRecommenderReasoningLevel ?? current.normalChatRecommenderReasoningLevel,
+    // Recommender fallback model + reasoning: nullable. `null` is a
+    // legitimate value (= "no user-configured fallback") and must
+    // round-trip as `null`. When the UI omits the field entirely, we
+    // keep the persisted value (the legacy `?? current.X` pattern
+    // would silently flip a stored `null` back to the previous
+    // non-null value).
+    normalChatRecommenderFallbackModelId:
+      b.normalChatRecommenderFallbackModelId === undefined
+        ? current.normalChatRecommenderFallbackModelId
+        : b.normalChatRecommenderFallbackModelId,
+    normalChatRecommenderFallbackReasoningLevel:
+      b.normalChatRecommenderFallbackReasoningLevel === undefined
+        ? current.normalChatRecommenderFallbackReasoningLevel
+        : b.normalChatRecommenderFallbackReasoningLevel,
     // Recommender allowlist: `null` means "no restriction" and must
     // round-trip as `null`. `[]` means "block all". When the UI omits
     // the field, keep the existing value.

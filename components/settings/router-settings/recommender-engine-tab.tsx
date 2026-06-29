@@ -1,7 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FC } from "react";
-import { AlertTriangle, CheckCircle2, FlaskConical, Loader2, Plug, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Code2,
+  FlaskConical,
+  Loader2,
+  Plug,
+  XCircle,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,8 +33,9 @@ import {
  *
  *   "What model recommends?"
  *
- * A compact settings card (NOT a table). Two meaningful fields and a
- * loud failure policy:
+ * A compact settings card (NOT a table). The engine-side controls plus
+ * a read-only prompt preview so the user always sees what the
+ * recommender is actually being told:
  *
  *   - Engine model              → model id of the recommender
  *   - Engine reasoning/thinking → provider-native option for the
@@ -32,6 +43,19 @@ import {
  *                                 OpenAI/Codex effort-level models,
  *                                 adaptive/enabled/disabled on MiniMax
  *                                 thinking-budget models)
+ *   - Fallback engine model     → optional single-model fallback
+ *                                 (the recommender tries it right
+ *                                 after the primary engine fails and
+ *                                 BEFORE the deterministic Codex →
+ *                                 MiniMax → OpenAI API defaults)
+ *   - Fallback reasoning        → reasoning level used when the
+ *                                 fallback model is the active
+ *                                 recommender
+ *   - Prompt preview            → the system + user prompts the API
+ *                                 route actually sends to the
+ *                                 recommender (read-only, live, so
+ *                                 the user never has to guess what
+ *                                 "prompt" the engine is using)
  *   - Status                    → runtime reachability + billing
  *                                 kind (subscription-backed vs
  *                                 API-billed)
@@ -41,8 +65,10 @@ import {
  *                                 failure; never silent fallback).
  *
  * Backend fields:
- *   - `normalChatRecommenderModelId`        (engine model)
- *   - `normalChatRecommenderReasoningLevel` (engine reasoning/thinking)
+ *   - `normalChatRecommenderModelId`             (engine model)
+ *   - `normalChatRecommenderReasoningLevel`      (engine reasoning/thinking)
+ *   - `normalChatRecommenderFallbackModelId`     (optional fallback model)
+ *   - `normalChatRecommenderFallbackReasoningLevel` (fallback reasoning)
  *
  * Settings owned here are deliberately kept separate from the candidate
  * pool (Tab C). The engine and the candidates are not the same
@@ -61,6 +87,10 @@ import {
  *     — the brief: "Treat Codex as configured / catalogued but
  *     temporarily unavailable for runtime." No silent swap to MiniMax
  *     or OpenAI.
+ *   - The user-configured fallback is optional and respects the same
+ *     OpenAI API opt-in as the primary engine. When unset, the
+ *     deterministic Codex → MiniMax → OpenAI API defaults remain
+ *     unchanged.
  */
 
 type EngineOption = {
@@ -114,6 +144,29 @@ type RecommenderEngineTabProps = {
   onEngineModelChange: (modelId: string) => void;
   /** Persist the engine reasoning/thinking option. */
   onEngineReasoningChange: (option: string) => void;
+  /**
+   * Optional user-configured fallback model. `null` = no fallback
+   * (the deterministic Codex → MiniMax → OpenAI API chain is used).
+   * Non-null = the chain tries this model right after the configured
+   * primary fails.
+   */
+  fallbackModelId: string | null;
+  /** Reasoning level for the fallback model. `null` when no fallback. */
+  fallbackReasoningOption: string | null;
+  /** Persist the fallback model id. `null` means clear the fallback. */
+  onFallbackModelChange: (modelId: string | null) => void;
+  /** Persist the fallback reasoning option. `null` means clear it. */
+  onFallbackReasoningChange: (option: string | null) => void;
+  /**
+   * Read-only prompt preview for the engine. Built by the API route
+   * using the live registry so the user sees exactly the prompt body
+   * the recommender is sent. `null` when the API has not loaded yet.
+   */
+  promptPreview: {
+    system: string;
+    /** Pretty-printed JSON of the user prompt body. */
+    userJsonExample: string;
+  } | null;
   /**
    * Fire a smoke test against the configured engine. Returns the
    * status object for rendering. Caller owns the network path; we just
@@ -282,6 +335,11 @@ export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
   candidatePoolSize,
   onEngineModelChange,
   onEngineReasoningChange,
+  fallbackModelId,
+  fallbackReasoningOption,
+  onFallbackModelChange,
+  onFallbackReasoningChange,
+  promptPreview,
   onTestEngine,
   saveError = null,
   testId = "router-settings-section-recommender-engine",
@@ -317,6 +375,38 @@ export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
     [selectedOption],
   );
 
+  /**
+   * Fallback option: resolves the persisted fallback model id to the
+   * matching `EngineOption` (or synthesizes a minimal option for
+   * stale / unknown rows, matching the primary picker pattern). The
+   * fallback picker always includes an explicit "No fallback"
+   * option so the user can clear it without deleting the row.
+   */
+  const fallbackOptions = useMemo<ReadonlyArray<EngineOption>>(
+    () => buildDefaultEngineOptions(registry, allowOpenAiApiRouter),
+    [registry, allowOpenAiApiRouter],
+  );
+  const fallbackSelectedOption = useMemo<EngineOption | null>(() => {
+    if (!fallbackModelId) return null;
+    const direct = fallbackOptions.find((o) => o.modelId === fallbackModelId);
+    if (direct) return direct;
+    return {
+      modelId: fallbackModelId,
+      displayLabel: `${fallbackModelId} (current — provider disabled or unknown)`,
+      providerLabel: "Unknown",
+      providerId: "openai" as const,
+      billingSource: "api_billing" as const,
+      capability: UNKNOWN_REASONING_CAPABILITY,
+    };
+  }, [fallbackOptions, fallbackModelId]);
+  const fallbackReasoningChoices = useMemo(
+    () =>
+      fallbackSelectedOption
+        ? optionsForCapability(fallbackSelectedOption.capability)
+        : [{ value: "", label: "Pick a fallback model" }],
+    [fallbackSelectedOption],
+  );
+
   const [testState, setTestState] = useState<EngineStatus | null>(null);
   const [testing, setTesting] = useState(false);
 
@@ -344,7 +434,7 @@ export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
    */
   useEffect(() => {
     setTestState(null);
-  }, [engineModelId, engineReasoningOption]);
+  }, [engineModelId, engineReasoningOption, fallbackModelId, fallbackReasoningOption]);
 
   const runTest = useCallback(async () => {
     setTesting(true);
@@ -539,6 +629,100 @@ export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
         </div>
       </div>
 
+      {/* Fallback engine model + reasoning. Single user-configurable
+          model tried right after the primary engine fails. Optional
+          ("No fallback" = use the deterministic Codex → MiniMax →
+          OpenAI API chain unchanged). */}
+      <div
+        className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
+        data-testid="recommender-engine-fallback"
+      >
+        {/* Fallback engine model picker */}
+        <div className="rounded-md border border-border/60 px-3 py-3">
+          <Label htmlFor="recommender-engine-fallback-model">Fallback engine model</Label>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Optional. Tried right after the primary engine fails and before the deterministic Codex
+            → MiniMax → OpenAI API defaults. Leave on “No fallback” to keep the default
+            subscription-first chain.
+          </p>
+          <select
+            id="recommender-engine-fallback-model"
+            data-testid="router-settings-normal-chat-recommender-fallback-model"
+            value={fallbackModelId ?? ""}
+            onChange={(e) => onFallbackModelChange(e.target.value === "" ? null : e.target.value)}
+            className="border-input bg-background mt-2 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none"
+          >
+            <option value="">No fallback (use deterministic defaults)</option>
+            {fallbackModelId && !fallbackOptions.some((o) => o.modelId === fallbackModelId) && (
+              <option value={fallbackModelId}>
+                {fallbackModelId} (current — provider disabled or unknown)
+              </option>
+            )}
+            {fallbackOptions.map((o) => (
+              <option key={o.modelId} value={o.modelId}>
+                {o.displayLabel} · {billingShortLabel(o.billingSource)}
+              </option>
+            ))}
+          </select>
+          {fallbackSelectedOption ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <BillingTag
+                billingSource={fallbackSelectedOption.billingSource}
+                testId="recommender-engine-fallback-billing"
+              />
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                {fallbackSelectedOption.providerId}
+              </span>
+            </div>
+          ) : (
+            <p className="mt-2 text-[10px] text-muted-foreground/70">
+              No fallback configured — chain is: engine → Codex default → MiniMax → OpenAI API (if
+              opted in).
+            </p>
+          )}
+        </div>
+
+        {/* Fallback reasoning / thinking option picker */}
+        <div className="rounded-md border border-border/60 px-3 py-3">
+          <Label htmlFor="recommender-engine-fallback-thinking">
+            Fallback reasoning / thinking
+          </Label>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Provider-native value sent verbatim to the fallback model when it is the active
+            recommender. Mirrors the primary picker; disabled until you pick a fallback model.
+          </p>
+          <select
+            id="recommender-engine-fallback-thinking"
+            data-testid="router-settings-normal-chat-recommender-fallback-reasoning"
+            value={fallbackReasoningOption ?? ""}
+            onChange={(e) =>
+              onFallbackReasoningChange(e.target.value === "" ? null : e.target.value)
+            }
+            disabled={!fallbackSelectedOption || fallbackReasoningChoices.length === 0}
+            className="border-input bg-background mt-2 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none disabled:opacity-60"
+          >
+            {fallbackReasoningChoices.map((choice, idx) => (
+              <option key={`${choice.value}-${idx}`} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+          {fallbackSelectedOption ? (
+            <p
+              className="mt-2 text-[10px] text-muted-foreground/70"
+              data-testid="recommender-engine-fallback-capability-summary"
+            >
+              Capability: {describeReasoningCapability(fallbackSelectedOption.capability)}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Read-only prompt preview. Built by the API route using the
+          live registry so the user sees exactly the prompt body the
+          recommender is sent. */}
+      <PromptPreview preview={promptPreview} />
+
       {saveError && (
         <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
@@ -558,5 +742,129 @@ export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
 function billingShortLabel(billing: "subscription" | "api_billing"): string {
   return billing === "subscription" ? "Subscription-backed" : "API-billed";
 }
+
+/**
+ * Read-only prompt preview rendered in the Recommender engine tab.
+ * The same builder (`buildNormalChatRecommenderPrompt`) is used by
+ * `/api/model/recommend` and `/api/router-settings` so the preview
+ * never drifts from what the recommender actually sees. The preview
+ * uses representative example values for the dynamic per-message
+ * fields (the live prompt is per-send and per-thread).
+ */
+const PromptPreview: FC<{
+  preview: {
+    system: string;
+    userJsonExample: string;
+  } | null;
+}> = ({ preview }) => {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<"system" | "user" | null>(null);
+
+  /**
+   * Re-render `userJsonExample` through `JSON.parse` + `JSON.stringify`
+   * so we always show pretty-printed JSON even when the API returns a
+   * minified one-liner. Cheap; runs only when the preview changes.
+   */
+  const prettyUser = useMemo(() => {
+    if (!preview) return "";
+    try {
+      return JSON.stringify(JSON.parse(preview.userJsonExample), null, 2);
+    } catch {
+      return preview.userJsonExample;
+    }
+  }, [preview]);
+
+  const onCopy = useCallback(async (which: "system" | "user", text: string) => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      }
+    } catch {
+      // Best effort — clipboard write can be denied in some browsers;
+      // the user can still select the text manually.
+    }
+    setCopied(which);
+    setTimeout(() => setCopied((cur) => (cur === which ? null : cur)), 1500);
+  }, []);
+
+  return (
+    <div
+      className="mt-4 rounded-md border border-border/60"
+      data-testid="recommender-engine-prompt-preview"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((cur) => !cur)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+      >
+        <span className="flex items-center gap-2 text-xs font-semibold">
+          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          <Code2 className="size-3.5 text-muted-foreground/70" aria-hidden />
+          Prompt the recommender engine is using
+        </span>
+        <span className="text-[10px] text-muted-foreground/70">
+          {open ? "Hide" : "Show"} · read-only
+        </span>
+      </button>
+      {open ? (
+        <div className="border-t border-border/60 p-3">
+          {!preview ? (
+            <p className="text-[11px] text-muted-foreground/70">Loading prompt preview…</p>
+          ) : (
+            <div className="grid gap-3">
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                    System prompt
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void onCopy("system", preview.system)}
+                    className="rounded border border-border/60 bg-background px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-muted/40"
+                    data-testid="recommender-engine-prompt-copy-system"
+                  >
+                    {copied === "system" ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <pre
+                  className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-muted/20 p-2 font-mono text-[11px] leading-snug"
+                  data-testid="recommender-engine-prompt-system"
+                >
+                  {preview.system}
+                </pre>
+              </div>
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+                    User prompt (JSON, example values)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void onCopy("user", prettyUser)}
+                    className="rounded border border-border/60 bg-background px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-muted/40"
+                    data-testid="recommender-engine-prompt-copy-user"
+                  >
+                    {copied === "user" ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <pre
+                  className="mt-1 max-h-72 overflow-auto whitespace-pre rounded border border-border/60 bg-muted/20 p-2 font-mono text-[11px] leading-snug"
+                  data-testid="recommender-engine-prompt-user"
+                >
+                  {prettyUser}
+                </pre>
+                <p className="mt-1 text-[10px] text-muted-foreground/70">
+                  Built with the live registry (representative message + current chat model). The
+                  live prompt is dynamic per send.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+};
 
 void Input;

@@ -42,8 +42,15 @@
  *     exclude models from `/api/models` and the chat composer dropdown.
  *
  *   Tab B · Recommender engine
- *     `normalChatRecommenderModelId`        — engine model id
- *     `normalChatRecommenderReasoningLevel` — engine reasoning/thinking
+ *     `normalChatRecommenderModelId`             — engine model id
+ *     `normalChatRecommenderReasoningLevel`      — engine reasoning/thinking
+ *     `normalChatRecommenderFallbackModelId`     — optional single
+ *       user-configurable engine fallback model (`null` = no
+ *       user-configured fallback; the chain still walks the
+ *       deterministic Codex → MiniMax → OpenAI API defaults).
+ *     `normalChatRecommenderFallbackReasoningLevel`
+ *       — reasoning/thinking level to use when the engine fallback
+ *         model is the active recommender.
  *     These together answer "What model recommends?". The engine model
  *     is distinct from the candidates it may recommend: the engine reads
  *     the user prompt and picks a chat model from the Tab C candidate
@@ -140,10 +147,41 @@ export type RouterSettings = {
    *
    * Default: `"codex:gpt-5.4-mini"` (Codex subscription). The same
    * cost-safety fallback chain (`buildRouterFallbackChain`) walks
-   * configured → Codex → MiniMax → OpenAI API (only when
-   * `allowOpenAiApiRouter === true`) when the configured model fails.
+   * configured → optional user-configured fallback → Codex → MiniMax
+   * → OpenAI API (only when `allowOpenAiApiRouter === true`) when the
+   * configured model fails.
    */
   normalChatRecommenderModelId: string;
+  /**
+   * Optional single-model fallback for the normal-chat recommender
+   * engine. When set, it is tried right after the configured primary
+   * fails AND BEFORE the deterministic Codex → MiniMax → OpenAI API
+   * defaults. `null` (default) = no user-configured fallback; the
+   * chain still works with the deterministic defaults.
+   *
+   * Cost-safety:
+   *   - Subscription providers (Codex, MiniMax) are always accepted.
+   *   - OpenAI API models require `allowOpenAiApiRouter === true`.
+   *   - May equal `normalChatRecommenderModelId` (the chain dedupes).
+   *
+   * Surfaced in the Settings UI under the engine model picker. The
+   * `RecommenderControl` in the chat composer does NOT mirror it
+   * inline — the recommendation-fallback knob is a deliberate
+   * admin-time choice, not a per-send one.
+   */
+  normalChatRecommenderFallbackModelId: string | null;
+  /**
+   * Reasoning level passed to the recommender FALLBACK model itself
+   * when it is the active recommender (i.e. when
+   * `normalChatRecommenderFallbackModelId` is the model that ended
+   * up running). Mirrors `normalChatRecommenderReasoningLevel` but
+   * for the fallback. Must be null when
+   * `normalChatRecommenderFallbackModelId` is null. The runtime
+   * adapter validates the value against the fallback model's
+   * `reasoningCapability.options` at call time, just like the
+   * primary level.
+   */
+  normalChatRecommenderFallbackReasoningLevel: string | null;
   /**
    * Reasoning level passed to the recommender model itself (not to the
    * chat model the recommender suggests). Only honored when the
@@ -237,12 +275,16 @@ export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
   maxCostPerRecommendationUsd: 0.03,
   maxCostPerAbRunUsd: 0.3,
   // Codex first (subscription). The runtime recommender walks:
-  // configured → Codex → MiniMax → OpenAI API (only if
-  // `allowOpenAiApiRouter === true`).
+  // configured → optional user-configured fallback → Codex → MiniMax
+  // → OpenAI API (only if `allowOpenAiApiRouter === true`).
   routerModelId: "codex:gpt-5.4-mini",
   // Same subscription-first default for the normal-chat recommender so a
   // fresh deploy never silently burns paid OpenAI API budget.
   normalChatRecommenderModelId: "codex:gpt-5.4-mini",
+  // No user-configured fallback by default — the chain still walks the
+  // deterministic Codex → MiniMax → OpenAI API defaults.
+  normalChatRecommenderFallbackModelId: null,
+  normalChatRecommenderFallbackReasoningLevel: null,
   // Cheap-by-default reasoning for the recommender itself.
   normalChatRecommenderReasoningLevel: DEFAULT_REASONING_LEVEL,
   failureBehavior: "fail_loud",
@@ -401,6 +443,30 @@ export function parseRouterSettings(input: unknown): RouterSettings {
       );
     }
     out.normalChatRecommenderReasoningLevel = input.normalChatRecommenderReasoningLevel;
+  }
+  if (input.normalChatRecommenderFallbackModelId !== undefined) {
+    if (input.normalChatRecommenderFallbackModelId === null) {
+      out.normalChatRecommenderFallbackModelId = null;
+    } else if (
+      typeof input.normalChatRecommenderFallbackModelId !== "string" ||
+      input.normalChatRecommenderFallbackModelId.trim().length === 0
+    ) {
+      throw new Error("normalChatRecommenderFallbackModelId must be null or a non-empty string");
+    } else {
+      out.normalChatRecommenderFallbackModelId = input.normalChatRecommenderFallbackModelId.trim();
+    }
+  }
+  if (input.normalChatRecommenderFallbackReasoningLevel !== undefined) {
+    if (input.normalChatRecommenderFallbackReasoningLevel === null) {
+      out.normalChatRecommenderFallbackReasoningLevel = null;
+    } else if (!isProviderNativeReasoningValue(input.normalChatRecommenderFallbackReasoningLevel)) {
+      throw new Error(
+        "normalChatRecommenderFallbackReasoningLevel must be null or a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh')",
+      );
+    } else {
+      out.normalChatRecommenderFallbackReasoningLevel =
+        input.normalChatRecommenderFallbackReasoningLevel;
+    }
   }
   if (input.failureBehavior !== undefined) {
     if (!isFailureBehavior(input.failureBehavior)) {
@@ -643,6 +709,40 @@ export function parseRouterSettingsForSave(
         field: "normalChatRecommenderReasoningLevel",
         message:
           "normalChatRecommenderReasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh').",
+      });
+    }
+  }
+
+  let normalChatRecommenderFallbackModelId: string | null =
+    DEFAULT_ROUTER_SETTINGS.normalChatRecommenderFallbackModelId;
+  if (b.normalChatRecommenderFallbackModelId !== undefined) {
+    if (b.normalChatRecommenderFallbackModelId === null) {
+      normalChatRecommenderFallbackModelId = null;
+    } else if (
+      typeof b.normalChatRecommenderFallbackModelId === "string" &&
+      b.normalChatRecommenderFallbackModelId.trim().length > 0
+    ) {
+      normalChatRecommenderFallbackModelId = b.normalChatRecommenderFallbackModelId.trim();
+    } else {
+      errors.push({
+        field: "normalChatRecommenderFallbackModelId",
+        message: "normalChatRecommenderFallbackModelId must be null or a non-empty string.",
+      });
+    }
+  }
+
+  let normalChatRecommenderFallbackReasoningLevel: string | null =
+    DEFAULT_ROUTER_SETTINGS.normalChatRecommenderFallbackReasoningLevel;
+  if (b.normalChatRecommenderFallbackReasoningLevel !== undefined) {
+    if (b.normalChatRecommenderFallbackReasoningLevel === null) {
+      normalChatRecommenderFallbackReasoningLevel = null;
+    } else if (isProviderNativeReasoningValue(b.normalChatRecommenderFallbackReasoningLevel)) {
+      normalChatRecommenderFallbackReasoningLevel = b.normalChatRecommenderFallbackReasoningLevel;
+    } else {
+      errors.push({
+        field: "normalChatRecommenderFallbackReasoningLevel",
+        message:
+          "normalChatRecommenderFallbackReasoningLevel must be null or a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh').",
       });
     }
   }
@@ -899,6 +999,47 @@ export function parseRouterSettingsForSave(
         message: `${normalChatRecommenderModelId} is an OpenAI API model. OpenAI API router use is disabled — set Settings → Router → "Allow OpenAI API router use" to opt in.`,
       });
     }
+
+    // Same gating for the user-configured normal-chat recommender
+    // fallback. When set, it must be a configured provider the user
+    // is allowed to use; the same OpenAI-API opt-in gate applies.
+    // `null` (no user fallback) skips this block entirely.
+    if (normalChatRecommenderFallbackModelId !== null) {
+      const fallbackId = normalChatRecommenderFallbackModelId;
+      const fallbackEntry = registry.models.find((m) => m.modelId === fallbackId);
+      const fallbackProviderId = fallbackEntry?.providerId ?? providerIdFromModelId(fallbackId);
+      if (!fallbackEntry && fallbackProviderId === "openai") {
+        errors.push({
+          field: "normalChatRecommenderFallbackModelId",
+          message: `Unknown recommender fallback model id: ${fallbackId}.`,
+        });
+      } else if (fallbackEntry && !fallbackEntry.configured) {
+        errors.push({
+          field: "normalChatRecommenderFallbackModelId",
+          message: `${fallbackId} is not configured for this provider.`,
+        });
+      } else if (fallbackProviderId === "openai" && !allowOpenAiApiRouter) {
+        errors.push({
+          field: "normalChatRecommenderFallbackModelId",
+          message: `${fallbackId} is an OpenAI API model. OpenAI API router use is disabled — set Settings → Router → "Allow OpenAI API router use" to opt in.`,
+        });
+      }
+    }
+  }
+
+  // Cross-field invariant: the fallback reasoning level must be null
+  // when the fallback model is null, and must be non-empty when the
+  // fallback model is set. The runtime adapter validates the value
+  // against the fallback model's `reasoningCapability.options`.
+  if (
+    normalChatRecommenderFallbackModelId === null &&
+    normalChatRecommenderFallbackReasoningLevel !== null
+  ) {
+    errors.push({
+      field: "normalChatRecommenderFallbackReasoningLevel",
+      message:
+        "normalChatRecommenderFallbackReasoningLevel must be null when no fallback model is configured.",
+    });
   }
 
   // Stage 2: legacy fallback must be in the allowlist only when automatic
@@ -938,6 +1079,8 @@ export function parseRouterSettingsForSave(
       fallbackReasoningLevel,
       allowedCombos,
       normalChatRecommenderAllowedModels,
+      normalChatRecommenderFallbackModelId,
+      normalChatRecommenderFallbackReasoningLevel,
     },
   };
 }
@@ -977,6 +1120,14 @@ export function serializeRouterSettings(settings: RouterSettings): string {
 export type RouterRecommenderCandidate = {
   modelId: string;
   providerId: "openai" | "codex" | "minimax";
+  /**
+   * `true` when this candidate was inserted into the chain because the
+   * user explicitly picked it as the recommender fallback
+   * (`normalChatRecommenderFallbackModelId`). The route uses this
+   * discriminator to pick the right reasoning level at call time —
+   * the fallback reasoning level is separate from the primary one.
+   */
+  isUserConfiguredFallback?: boolean;
 };
 
 export type RouterModelResolution =
@@ -984,7 +1135,7 @@ export type RouterModelResolution =
       ok: true;
       modelId: string;
       providerId: "openai" | "codex" | "minimax";
-      source: "configured" | "codex" | "minimax" | "openai";
+      source: "configured" | "configured_fallback" | "codex" | "minimax" | "openai";
       reason: string;
     }
   | { ok: false; reason: string };
@@ -1007,13 +1158,21 @@ type ResolverFn = (
  *
  * The order is:
  *
- *   configured  → Codex (subscription) → MiniMax (subscription)
- *   → OpenAI API (only when `allowOpenAiApiRouter === true`)
+ *   configured  → optional user-configured fallback
+ *                 → Codex (subscription) → MiniMax (subscription)
+ *                 → OpenAI API (only when `allowOpenAiApiRouter === true`)
  *
  * `allowedCombos` is consulted to prefer a Codex entry the user
  * actually authorized (rather than blindly defaulting to one catalog
  * entry); falls back to the static Codex default when none is
  * authorized.
+ *
+ * `configuredRouterFallbackModelId` is the user-picked single-model
+ * fallback. When set, it is inserted right after the configured
+ * primary AND marked with `isUserConfiguredFallback: true` so the
+ * route can pick the right reasoning level at call time. `null`
+ * (or omitted) means no user-configured fallback — the chain still
+ * works with the deterministic Codex → MiniMax → OpenAI API defaults.
  */
 export function buildRouterFallbackChain(input: {
   configuredRouterModelId: string;
@@ -1022,6 +1181,7 @@ export function buildRouterFallbackChain(input: {
   codexDefault: string;
   minimaxDefault: string;
   openaiDefault: string;
+  configuredRouterFallbackModelId?: string | null;
 }): ReadonlyArray<RouterRecommenderCandidate> {
   const {
     configuredRouterModelId,
@@ -1030,6 +1190,7 @@ export function buildRouterFallbackChain(input: {
     codexDefault,
     minimaxDefault,
     openaiDefault,
+    configuredRouterFallbackModelId = null,
   } = input;
 
   const chain: RouterRecommenderCandidate[] = [];
@@ -1042,7 +1203,25 @@ export function buildRouterFallbackChain(input: {
     }
   }
 
-  // 2. Codex subscription. Prefer a codex entry the user authorized
+  // 2. User-configured fallback (single model, optional). When the
+  //    user picked one, it is tried right after the configured
+  //    primary AND BEFORE the deterministic Codex default. The
+  //    `isUserConfiguredFallback: true` flag lets the route pick
+  //    the right reasoning level when this rung succeeds.
+  //    The chain dedupes against any earlier rung, so a fallback
+  //    equal to the configured model is silently skipped.
+  if (configuredRouterFallbackModelId) {
+    const fallbackProviderId = providerIdFromModelId(configuredRouterFallbackModelId);
+    if (fallbackProviderId && !chain.some((c) => c.modelId === configuredRouterFallbackModelId)) {
+      chain.push({
+        modelId: configuredRouterFallbackModelId,
+        providerId: fallbackProviderId,
+        isUserConfiguredFallback: true,
+      });
+    }
+  }
+
+  // 3. Codex subscription. Prefer a codex entry the user authorized
   //    in `allowedCombos`; fall back to the static default.
   const codexFromAllowlist = allowedCombos.find((c) => c.modelId.startsWith("codex:"));
   const codexId = codexFromAllowlist?.modelId ?? codexDefault;
@@ -1050,12 +1229,12 @@ export function buildRouterFallbackChain(input: {
     chain.push({ modelId: codexId, providerId: "codex" });
   }
 
-  // 3. MiniMax M3 subscription fallback.
+  // 4. MiniMax M3 subscription fallback.
   if (minimaxDefault && !chain.some((c) => c.modelId === minimaxDefault)) {
     chain.push({ modelId: minimaxDefault, providerId: "minimax" });
   }
 
-  // 4. OpenAI API — strictly behind the explicit opt-in flag. Never
+  // 5. OpenAI API — strictly behind the explicit opt-in flag. Never
   //    silently included.
   if (allowOpenAiApiRouter && openaiDefault) {
     if (!chain.some((c) => c.modelId === openaiDefault)) {
@@ -1084,7 +1263,8 @@ export async function pickRouterModelForRun(input: {
   const { chain, resolver, allowOpenAiApiRouter } = input;
 
   let lastReason = "no candidates available";
-  for (const candidate of chain) {
+  for (let index = 0; index < chain.length; index++) {
+    const candidate = chain[index]!;
     if (candidate.providerId === "openai" && !allowOpenAiApiRouter) {
       // Defense-in-depth: skip OpenAI API candidates when the opt-in
       // is off, even if they made it into the chain.
@@ -1093,26 +1273,42 @@ export async function pickRouterModelForRun(input: {
     const result = await resolver(candidate);
     if (result.ok) {
       // `source` discriminates whether we honored the user's
-      // configured model or fell back to a default candidate. The
-      // configured case means the chain tried the configured id
-      // first AND it succeeded; the provider-specific cases mean
-      // the configured id was not viable (or absent) and we picked
-      // the static default for that provider tier.
+      // configured model, fell back to the user-configured fallback,
+      // or fell back to a default candidate. The chain is built
+      // deterministically by `buildRouterFallbackChain`:
+      //   [0] configured primary
+      //   [1] user-configured fallback (optional)
+      //   [2+] deterministic Codex → MiniMax → OpenAI API defaults
+      // The `configured` discriminator fires when the chain's first
+      // rung (the configured primary) wins. `configured_fallback`
+      // fires when the user-configured fallback rung wins. The
+      // provider-specific cases mean both the configured primary and
+      // (when set) the user-configured fallback failed and the static
+      // default for that provider tier was used.
       const providerId = candidate.providerId;
-      const source: "configured" | "codex" | "minimax" | "openai" =
-        providerId === "openai"
-          ? "openai"
-          : providerId === "codex"
-            ? "codex"
-            : providerId === "minimax"
-              ? "minimax"
-              : "openai";
+      const isFirstRung = index === 0;
+      const source: "configured" | "configured_fallback" | "codex" | "minimax" | "openai" =
+        isFirstRung && chain.length > 0
+          ? "configured"
+          : candidate.isUserConfiguredFallback
+            ? "configured_fallback"
+            : providerId === "openai"
+              ? "openai"
+              : providerId === "codex"
+                ? "codex"
+                : providerId === "minimax"
+                  ? "minimax"
+                  : "openai";
       const reason =
         source === "openai"
           ? "Using the explicitly enabled OpenAI API router model."
           : source === "codex"
             ? "Using a Codex subscription router model (OpenAI API disabled or unavailable)."
-            : "Using the MiniMax M3 subscription fallback (Codex unavailable).";
+            : source === "configured"
+              ? "Using the configured recommender engine."
+              : source === "configured_fallback"
+                ? "Using the user-configured recommender fallback model (primary engine unavailable)."
+                : "Using the MiniMax M3 subscription fallback (Codex unavailable).";
       return {
         ok: true,
         modelId: candidate.modelId,

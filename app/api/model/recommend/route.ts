@@ -64,10 +64,18 @@ type RecommendationResponse = {
     attemptedCandidateModel: string | null;
     /**
      * Which rung of the cost-safety fallback chain produced the
-     * active recommender (`configured` / `codex` / `minimax` /
-     * `openai`). `null` when no candidate succeeded.
+     * active recommender (`configured` / `configured_fallback` /
+     * `codex` / `minimax` / `openai`). `null` when no candidate
+     * succeeded.
      */
-    recommenderSource: "configured" | "codex" | "minimax" | "openai" | "fallback" | null;
+    recommenderSource:
+      | "configured"
+      | "configured_fallback"
+      | "codex"
+      | "minimax"
+      | "openai"
+      | "fallback"
+      | null;
     /**
      * Human-readable explanation of the resolution (e.g. "Using a
      * Codex subscription router model (OpenAI API disabled or
@@ -119,7 +127,13 @@ function fallbackResponse(
   recommender: { provider: string; modelId: string },
   attemptedCandidateModel: string | null,
   chain: ReadonlyArray<{ providerId: string; modelId: string }> = [],
-  source: "configured" | "codex" | "minimax" | "openai" | "fallback" = "fallback",
+  source:
+    | "configured"
+    | "configured_fallback"
+    | "codex"
+    | "minimax"
+    | "openai"
+    | "fallback" = "fallback",
   resolutionReason: string | null = null,
 ): RecommendationResponse {
   return {
@@ -169,8 +183,17 @@ export async function POST(request: Request) {
   // (separate from `settings.routerModelId`, which is used by the Side B
   // A/B router). The Settings UI lets the user pick the recommender
   // model independently of the A/B router model.
+  //
+  // The user-configured single-model fallback
+  // (`settings.normalChatRecommenderFallbackModelId`) is inserted at
+  // position 2 — right after the configured primary, before the
+  // deterministic Codex → MiniMax → OpenAI API defaults. When set,
+  // the runtime uses `normalChatRecommenderFallbackReasoningLevel`
+  // instead of `normalChatRecommenderReasoningLevel` when the
+  // fallback is the active recommender.
   const chain = buildRouterFallbackChain({
     configuredRouterModelId: settings.normalChatRecommenderModelId,
+    configuredRouterFallbackModelId: settings.normalChatRecommenderFallbackModelId,
     allowedCombos: settings.allowedCombos,
     allowOpenAiApiRouter: settings.allowOpenAiApiRouter,
     codexDefault: "codex:gpt-5.4-mini",
@@ -192,8 +215,19 @@ export async function POST(request: Request) {
     providerId: "openai" | "minimax" | "codex";
     modelId: string;
   } | null = null;
-  let recommenderSource: "configured" | "codex" | "minimax" | "openai" | "fallback" = "fallback";
+  let recommenderSource:
+    | "configured"
+    | "configured_fallback"
+    | "codex"
+    | "minimax"
+    | "openai"
+    | "fallback" = "fallback";
   let recommenderResolutionReason = "All candidates failed.";
+  // When the active recommender is the user-configured fallback, we
+  // use the fallback reasoning level instead of the primary one. The
+  // resolver below records the active rung; the recommender call site
+  // reads it to pick the right level.
+  let activeRungIsUserFallback = false;
 
   try {
     const modelsPayload = await getEffectiveModelsResponse();
@@ -320,6 +354,9 @@ export async function POST(request: Request) {
           modelId: candidate.modelId,
         };
         resolvedActiveRecommender = resolved.resolved;
+        // Track whether the active rung is the user-configured
+        // fallback so we pick the right reasoning level below.
+        activeRungIsUserFallback = Boolean(candidate.isUserConfiguredFallback);
         return { ok: true as const };
       },
     });
@@ -355,8 +392,23 @@ export async function POST(request: Request) {
       modelId: string;
       billingSource: import("@/lib/providers/types").BillingSource;
     } | null;
+    // Pick the right reasoning level for the active recommender:
+    //   - When the user-configured fallback is the active rung, use
+    //     `normalChatRecommenderFallbackReasoningLevel`. When that
+    //     level is null we treat the fallback as accepting the
+    //     provider default and skip forwarding any reasoning hint.
+    //   - Otherwise use the primary `normalChatRecommenderReasoningLevel`.
+    // The runtime adapter's `reasoningOption` is non-nullable, so a
+    // null fallback level is surfaced as `undefined` (omit the option
+    // entirely) instead of crashing. The provider then uses its own
+    // default — matching the "user picked a fallback but no reasoning
+    // level for it" intent.
+    const activeReasoningLevel: string | undefined = activeRungIsUserFallback
+      ? (settings.normalChatRecommenderFallbackReasoningLevel ?? undefined)
+      : settings.normalChatRecommenderReasoningLevel;
     const recommenderProviderOptions: ReturnType<typeof getRuntimeProviderOptions> = (() => {
       if (!resolvedRecommender) return undefined;
+      if (activeReasoningLevel === undefined) return undefined;
       const recommenderMeta = getModelMeta(resolvedRecommender.modelId);
       const capability = recommenderMeta?.reasoningCapability ?? UNKNOWN_REASONING_CAPABILITY;
       // Pass the configured value verbatim. The runtime adapter
@@ -365,7 +417,7 @@ export async function POST(request: Request) {
       return getRuntimeProviderOptions({
         resolved: resolvedRecommender,
         capability,
-        reasoningOption: settings.normalChatRecommenderReasoningLevel,
+        reasoningOption: activeReasoningLevel,
       });
     })();
 

@@ -183,6 +183,18 @@ type FormState = {
   normalChatRecommenderModelId: string;
   /** Editor for the engine reasoning/thinking option. Persists via /api/router-settings. */
   normalChatRecommenderReasoningLevel: string;
+  /**
+   * Optional user-configured single-model fallback for the recommender
+   * engine. `null` = no fallback (chain uses deterministic Codex →
+   * MiniMax → OpenAI API defaults). Non-null = tried right after the
+   * primary engine fails.
+   */
+  normalChatRecommenderFallbackModelId: string | null;
+  /**
+   * Reasoning / thinking level for the fallback model. `null` when no
+   * fallback is configured (the validator enforces this invariant).
+   */
+  normalChatRecommenderFallbackReasoningLevel: string | null;
   /** A/B router model id (legacy Router A/B knob, persists via /api/router-settings). */
   routerModelId: string;
   /** Failure behavior of the Side B A/B router (legacy). */
@@ -199,6 +211,10 @@ function initialForm(dto: RouterSettingsDto): FormState {
   return {
     normalChatRecommenderModelId: dto.effective.normalChatRecommenderModelId,
     normalChatRecommenderReasoningLevel: dto.effective.normalChatRecommenderReasoningLevel,
+    normalChatRecommenderFallbackModelId:
+      dto.effective.normalChatRecommenderFallbackModelId ?? null,
+    normalChatRecommenderFallbackReasoningLevel:
+      dto.effective.normalChatRecommenderFallbackReasoningLevel ?? null,
     routerModelId: dto.effective.routerModelId,
     failureBehavior: dto.effective.failureBehavior,
     longPromptThresholdChars:
@@ -261,6 +277,11 @@ function formToPayload(form: FormState): {
       routerModelId: form.routerModelId,
       normalChatRecommenderModelId: form.normalChatRecommenderModelId,
       normalChatRecommenderReasoningLevel: form.normalChatRecommenderReasoningLevel,
+      // The fallback model + reasoning are user-configurable. We
+      // send `null` through unchanged so the user can clear the
+      // fallback (the default = no fallback).
+      normalChatRecommenderFallbackModelId: form.normalChatRecommenderFallbackModelId,
+      normalChatRecommenderFallbackReasoningLevel: form.normalChatRecommenderFallbackReasoningLevel,
       failureBehavior: form.failureBehavior,
       allowedCombos,
       normalChatRecommenderAllowedModels:
@@ -275,6 +296,13 @@ function formToPayload(form: FormState): {
 function hasFormChanged(form: FormState, baseline: FormState): boolean {
   if (form.normalChatRecommenderModelId !== baseline.normalChatRecommenderModelId) return true;
   if (form.normalChatRecommenderReasoningLevel !== baseline.normalChatRecommenderReasoningLevel)
+    return true;
+  if (form.normalChatRecommenderFallbackModelId !== baseline.normalChatRecommenderFallbackModelId)
+    return true;
+  if (
+    form.normalChatRecommenderFallbackReasoningLevel !==
+    baseline.normalChatRecommenderFallbackReasoningLevel
+  )
     return true;
   if (form.routerModelId !== baseline.routerModelId) return true;
   if (form.failureBehavior !== baseline.failureBehavior) return true;
@@ -986,11 +1014,29 @@ export const RouterSettingsPage: FC<{
           candidatePoolSize={candidateCount}
           onEngineModelChange={(id) => update({ normalChatRecommenderModelId: id })}
           onEngineReasoningChange={(opt) => update({ normalChatRecommenderReasoningLevel: opt })}
+          fallbackModelId={form.normalChatRecommenderFallbackModelId}
+          fallbackReasoningOption={form.normalChatRecommenderFallbackReasoningLevel}
+          onFallbackModelChange={(id) =>
+            update({
+              normalChatRecommenderFallbackModelId: id,
+              // Clear the reasoning level whenever the user clears
+              // the fallback model — the validator enforces the
+              // (model + level) pair as a unit.
+              normalChatRecommenderFallbackReasoningLevel:
+                id === null ? null : form.normalChatRecommenderFallbackReasoningLevel,
+            })
+          }
+          onFallbackReasoningChange={(opt) =>
+            update({ normalChatRecommenderFallbackReasoningLevel: opt })
+          }
+          promptPreview={dto.normalChatRecommenderPrompt}
           onTestEngine={onTestEngine}
           saveError={
             errorsByField.has("normalChatRecommenderModelId")
               ? (errorsByField.get("normalChatRecommenderModelId")?.[0]?.message ?? null)
-              : null
+              : errorsByField.has("normalChatRecommenderFallbackModelId")
+                ? (errorsByField.get("normalChatRecommenderFallbackModelId")?.[0]?.message ?? null)
+                : null
           }
         />
 

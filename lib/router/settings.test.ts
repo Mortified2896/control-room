@@ -1299,3 +1299,381 @@ test("serializeRouterSettings round-trips normalChatRecommenderReasoningLevel", 
   const roundTripped = parseRouterSettings(JSON.parse(serialized));
   assert.equal(roundTripped.normalChatRecommenderReasoningLevel, "high");
 });
+
+// ---------------------------------------------------------------------------
+// normalChatRecommenderFallbackModelId + normalChatRecommenderFallbackReasoningLevel
+// ---------------------------------------------------------------------------
+
+test("DEFAULT_ROUTER_SETTINGS.normalChatRecommenderFallbackModelId is null", () => {
+  assert.equal(DEFAULT_ROUTER_SETTINGS.normalChatRecommenderFallbackModelId, null);
+});
+
+test("DEFAULT_ROUTER_SETTINGS.normalChatRecommenderFallbackReasoningLevel is null", () => {
+  assert.equal(DEFAULT_ROUTER_SETTINGS.normalChatRecommenderFallbackReasoningLevel, null);
+});
+
+test("parseRouterSettings accepts a normalChatRecommenderFallbackModelId override", () => {
+  const parsed = parseRouterSettings({
+    normalChatRecommenderFallbackModelId: "MiniMax-M3",
+  });
+  assert.equal(parsed.normalChatRecommenderFallbackModelId, "MiniMax-M3");
+});
+
+test("parseRouterSettings accepts a null normalChatRecommenderFallbackModelId", () => {
+  // The lenient parser must round-trip `null` through (the user can
+  // explicitly clear the fallback via the Settings UI).
+  const parsed = parseRouterSettings({
+    normalChatRecommenderFallbackModelId: null,
+  });
+  assert.equal(parsed.normalChatRecommenderFallbackModelId, null);
+});
+
+test("parseRouterSettings rejects an empty / non-string normalChatRecommenderFallbackModelId", () => {
+  assert.throws(
+    () => parseRouterSettings({ normalChatRecommenderFallbackModelId: "  " }),
+    /null or a non-empty string/,
+  );
+  assert.throws(
+    () => parseRouterSettings({ normalChatRecommenderFallbackModelId: 42 }),
+    /null or a non-empty string/,
+  );
+});
+
+test("parseRouterSettings accepts a normalChatRecommenderFallbackReasoningLevel override", () => {
+  const parsed = parseRouterSettings({
+    normalChatRecommenderFallbackReasoningLevel: "medium",
+  });
+  assert.equal(parsed.normalChatRecommenderFallbackReasoningLevel, "medium");
+});
+
+test("parseRouterSettings accepts a null normalChatRecommenderFallbackReasoningLevel", () => {
+  const parsed = parseRouterSettings({
+    normalChatRecommenderFallbackReasoningLevel: null,
+  });
+  assert.equal(parsed.normalChatRecommenderFallbackReasoningLevel, null);
+});
+
+test("parseRouterSettings rejects an empty / non-string normalChatRecommenderFallbackReasoningLevel", () => {
+  assert.throws(
+    () => parseRouterSettings({ normalChatRecommenderFallbackReasoningLevel: "" }),
+    /null or a non-empty provider-native value/,
+  );
+  assert.throws(
+    () => parseRouterSettings({ normalChatRecommenderFallbackReasoningLevel: 42 }),
+    /null or a non-empty provider-native value/,
+  );
+});
+
+test("parseRouterSettingsForSave accepts a normalChatRecommenderFallbackModelId", () => {
+  // Without a registry, the legacy validator uses
+  // `listRouterAllowedPool` which only knows about OpenAI models.
+  // We use an OpenAI id here so the legacy path accepts it; the
+  // registry-aware path is covered separately below.
+  const result = parseRouterSettingsForSave({
+    allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
+    fallbackModelId: "gpt-5.4-mini",
+    fallbackReasoningLevel: "low",
+    allowOpenAiApiRouter: true,
+    normalChatRecommenderFallbackModelId: "gpt-5.4-mini",
+    normalChatRecommenderFallbackReasoningLevel: "low",
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.normalChatRecommenderFallbackModelId, "gpt-5.4-mini");
+    assert.equal(result.value.normalChatRecommenderFallbackReasoningLevel, "low");
+  }
+});
+
+test("parseRouterSettingsForSave accepts a null fallback model", () => {
+  // Without a registry, the legacy validator uses
+  // `listRouterAllowedPool` (OpenAI-only). We use an OpenAI id here
+  // so the legacy path accepts it.
+  const result = parseRouterSettingsForSave({
+    allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
+    fallbackModelId: "gpt-5.4-mini",
+    fallbackReasoningLevel: "low",
+    allowOpenAiApiRouter: true,
+    normalChatRecommenderFallbackModelId: null,
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.normalChatRecommenderFallbackModelId, null);
+  }
+});
+
+test("parseRouterSettingsForSave rejects a reasoning level with no fallback model", () => {
+  // Cross-field invariant: the fallback reasoning level must be null
+  // when no fallback model is configured. This is enforced so the
+  // persisted payload never has a dangling reasoning level for a
+  // missing fallback.
+  const result = parseRouterSettingsForSave({
+    allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],
+    fallbackModelId: "codex:gpt-5.4-mini",
+    fallbackReasoningLevel: "low",
+    normalChatRecommenderFallbackModelId: null,
+    normalChatRecommenderFallbackReasoningLevel: "low",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(
+      result.errors.some(
+        (e) =>
+          e.field === "normalChatRecommenderFallbackReasoningLevel" &&
+          /must be null when no fallback model/.test(e.message),
+      ),
+      `expected a fallback reasoning level cross-field error, got: ${JSON.stringify(result.errors)}`,
+    );
+  }
+});
+
+test("parseRouterSettingsForSave rejects an empty / non-string fallback model id", () => {
+  const result = parseRouterSettingsForSave({
+    allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],
+    fallbackModelId: "codex:gpt-5.4-mini",
+    fallbackReasoningLevel: "low",
+    normalChatRecommenderFallbackModelId: "  ",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(
+      result.errors.some((e) => e.field === "normalChatRecommenderFallbackModelId"),
+      `expected a fallback model id error, got: ${JSON.stringify(result.errors)}`,
+    );
+  }
+});
+
+test("parseRouterSettingsForSave with registry: accepts a Codex subscription fallback", () => {
+  // Subscription providers are accepted by default under the
+  // subscription-first policy.
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],
+      fallbackModelId: "codex:gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+      normalChatRecommenderFallbackModelId: "codex:gpt-5.5",
+      normalChatRecommenderFallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          displayLabel: "GPT-5.4 Mini",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["low", "medium"], "supported"),
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "local_meta",
+        },
+        {
+          providerId: "codex",
+          modelId: "codex:gpt-5.5",
+          displayLabel: "Codex · GPT-5.5",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: false,
+          reasoningCapability: UNKNOWN_REASONING_CAPABILITY,
+          supportedReasoningLevels: [],
+          tier: "expensive",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: false,
+          capabilities: {
+            reasoning: false,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "env_static",
+        },
+      ],
+      defaults: { manualModelId: "gpt-5.4-mini", reasoningLevel: "low" },
+      discovery: {
+        modelIds: ["gpt-5.4-mini"],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 1,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 1,
+        discoveredConfigured: 1,
+        discoveredUnclassified: 0,
+        configuredAvailable: 1,
+        stale: 0,
+        manualSelectorVisible: 2,
+        routerEligible: 1,
+      },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
+  if (!result.ok) {
+    assert.fail(`expected Codex fallback to be accepted, got: ${JSON.stringify(result.errors)}`);
+  }
+  assert.equal(result.value.normalChatRecommenderFallbackModelId, "codex:gpt-5.5");
+});
+
+test("parseRouterSettingsForSave with registry: rejects an OpenAI fallback when allowOpenAiApiRouter is off", () => {
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
+      fallbackModelId: "gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+      normalChatRecommenderFallbackModelId: "gpt-5.5",
+      normalChatRecommenderFallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          displayLabel: "GPT-5.4 Mini",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["low", "medium"], "supported"),
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "local_meta",
+        },
+        {
+          providerId: "openai",
+          modelId: "gpt-5.5",
+          displayLabel: "GPT-5.5",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["low", "medium"], "supported"),
+          supportedReasoningLevels: ["low", "medium"],
+          tier: "expensive",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "local_meta",
+        },
+      ],
+      defaults: { manualModelId: "gpt-5.4-mini", reasoningLevel: "low" },
+      discovery: {
+        modelIds: ["gpt-5.4-mini", "gpt-5.5"],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 2,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 2,
+        discoveredConfigured: 2,
+        discoveredUnclassified: 0,
+        configuredAvailable: 2,
+        stale: 0,
+        manualSelectorVisible: 2,
+        routerEligible: 2,
+      },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.ok(
+      result.errors.some(
+        (e) =>
+          e.field === "normalChatRecommenderFallbackModelId" &&
+          /OpenAI API router use is disabled/.test(e.message),
+      ),
+      `expected an OpenAI-API cost-safety error, got: ${JSON.stringify(result.errors)}`,
+    );
+  }
+});
+
+test("serializeRouterSettings round-trips normalChatRecommenderFallbackModelId", () => {
+  const serialized = serializeRouterSettings({
+    ...DEFAULT_ROUTER_SETTINGS,
+    normalChatRecommenderFallbackModelId: "MiniMax-M3",
+    normalChatRecommenderFallbackReasoningLevel: "low",
+  });
+  const roundTripped = parseRouterSettings(JSON.parse(serialized));
+  assert.equal(roundTripped.normalChatRecommenderFallbackModelId, "MiniMax-M3");
+  assert.equal(roundTripped.normalChatRecommenderFallbackReasoningLevel, "low");
+});
+
+test("serializeRouterSettings round-trips a null normalChatRecommenderFallbackModelId", () => {
+  const serialized = serializeRouterSettings({
+    ...DEFAULT_ROUTER_SETTINGS,
+    normalChatRecommenderFallbackModelId: null,
+    normalChatRecommenderFallbackReasoningLevel: null,
+  });
+  const roundTripped = parseRouterSettings(JSON.parse(serialized));
+  assert.equal(roundTripped.normalChatRecommenderFallbackModelId, null);
+  assert.equal(roundTripped.normalChatRecommenderFallbackReasoningLevel, null);
+});
+
+test("getRouterSettings env-var round-trip preserves the fallback fields", () => {
+  const previousEnv = process.env.CONTROL_ROOM_ROUTER_SETTINGS;
+  process.env.CONTROL_ROOM_ROUTER_SETTINGS = JSON.stringify({
+    normalChatRecommenderFallbackModelId: "MiniMax-M3",
+    normalChatRecommenderFallbackReasoningLevel: "low",
+  });
+  __resetRouterSettingsCacheForTests();
+  try {
+    const settings = getRouterSettings();
+    assert.equal(settings.normalChatRecommenderFallbackModelId, "MiniMax-M3");
+    assert.equal(settings.normalChatRecommenderFallbackReasoningLevel, "low");
+  } finally {
+    if (previousEnv === undefined) {
+      delete process.env.CONTROL_ROOM_ROUTER_SETTINGS;
+    } else {
+      process.env.CONTROL_ROOM_ROUTER_SETTINGS = previousEnv;
+    }
+    __resetRouterSettingsCacheForTests();
+  }
+});
