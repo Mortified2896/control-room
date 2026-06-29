@@ -1,5 +1,6 @@
 import type { ModelMeta, ModelOption, ReasoningLevel } from "./types";
 import { getStaticOpenAIModelAlias, listStaticOpenAIModelAliases } from "./openai-static";
+import { getEffectiveReasoningLevels } from "./capability";
 
 /**
  * Canonical OpenAI model metadata.
@@ -31,7 +32,9 @@ function deriveStaticMetas(): ReadonlyArray<OpenAIModelMeta> {
       modelId,
       modelLabel: alias.label,
       tier: alias.tier,
-      reasoningLevels: alias.reasoningLevels,
+      reasoningCapability: alias.reasoningCapability,
+      reasoningLevels: getEffectiveReasoningLevels(alias.reasoningCapability),
+      billingSource: "api_billing" as const,
     }));
 }
 
@@ -55,15 +58,16 @@ export function getOpenAIModels(): ModelOption[] {
   const hasKey = Boolean(process.env.OPENAI_API_KEY?.trim());
   return OPENAI_MODEL_METAS.map((m) => ({
     providerId: m.providerId,
-    providerLabel: "OpenAI API",
+    providerLabel: "OpenAI API billing",
     modelId: m.modelId,
     modelLabel: `OpenAI API · ${m.modelLabel}`,
     enabled: hasKey,
     accessPath: "openai_api",
-    billingLabel: "API billed",
+    billingLabel: "OpenAI API billing",
     capabilityKind: "model_provider",
     description:
-      "Access: OpenAI API key · API billed. Direct OpenAI API call; not subscription-backed.",
+      "Access: OpenAI API key · OpenAI API billing. Direct OpenAI API call; not subscription-backed. This provider is API-billed per token and is never a silent fallback under the no-API-billing-fallback policy.",
+    reasoningCapability: m.reasoningCapability,
     reasoningLevels: m.reasoningLevels,
     tier: m.tier,
     ...(hasKey ? {} : { reason: DISABLED_REASON }),
@@ -88,7 +92,9 @@ export function getOpenAIModelMeta(modelId: string): ModelMeta | null {
     modelId,
     modelLabel: alias.label,
     tier: alias.tier,
-    reasoningLevels: alias.reasoningLevels,
+    reasoningCapability: alias.reasoningCapability,
+    reasoningLevels: getEffectiveReasoningLevels(alias.reasoningCapability),
+    billingSource: "api_billing" as const,
   };
 }
 

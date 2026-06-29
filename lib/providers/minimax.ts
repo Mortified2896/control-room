@@ -1,4 +1,10 @@
 import type { ModelMeta, ModelOption } from "./types";
+import type { ReasoningCapability } from "./capability";
+import {
+  getEffectiveReasoningLevels,
+  MINIMAX_THINKING_MODE_VALUES,
+  thinkingBudgetCapability,
+} from "./capability";
 import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
 
 export const MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io/v1";
@@ -30,20 +36,59 @@ export function isMiniMaxEnabled(): boolean {
   return getMiniMaxConfig().apiKeySet;
 }
 
-function toMiniMaxModelOption(modelId: string, enabled: boolean, reason?: string): ModelOption {
+/**
+ * Capability for MiniMax M3 — the well-known default model. M3
+ * exposes provider-native thinking controls that do NOT fit the
+ * OpenAI `reasoning_effort` shape.
+ *
+ * We do NOT force MiniMax into the OpenAI-style `low | medium | high`
+ * effort-level enum — the provider-native mode values
+ * (`provider_default`, `adaptive`, `enabled`, `disabled`) flow
+ * through the runtime adapter verbatim and the UI renders the raw
+ * names. The runtime adapter (`getRuntimeProviderOptions` in
+ * `runtime.ts`) translates the user's pick into the MiniMax /
+ * OpenRouter-compatible `reasoning` payload.
+ */
+export const MINIMAX_M3_CAPABILITY: ReasoningCapability = thinkingBudgetCapability("supported", {
+  modes: MINIMAX_THINKING_MODE_VALUES.map((v) => ({ value: v })),
+  defaultMode: "provider_default",
+  supportsEnabled: true,
+  supportsTokenBudget: true,
+  supportsExclude: true,
+  source: "static",
+});
+
+/**
+ * Capability for a discovered MiniMax model id we do not have static
+ * metadata for. We know the *family* is thinking-budget-capable
+ * (because the M3 family is), but the exact set of provider-native
+ * modes is unknown. The UI must NOT render a fake effort-level
+ * dropdown; it shows a "thinking capability: unknown" notice instead.
+ */
+export function capabilityForUnknownMiniMaxModel(): ReasoningCapability {
+  return thinkingBudgetCapability("unknown", { source: "static" });
+}
+
+function toMiniMaxModelOption(
+  modelId: string,
+  enabled: boolean,
+  capability: ReasoningCapability,
+  reason?: string,
+): ModelOption {
   return {
     providerId: minimaxProvider.id,
-    providerLabel: "MiniMax API",
+    providerLabel: "MiniMax subscription",
     modelId,
-    modelLabel: `MiniMax API · ${modelId}`,
+    modelLabel: `MiniMax-M3 · MiniMax subscription`.replace("MiniMax-M3", modelId),
     enabled,
     accessPath: "minimax_api",
-    billingLabel: "MiniMax token plan",
+    billingLabel: "MiniMax subscription",
     capabilityKind: "model_provider",
     description:
-      "Access: MiniMax API key · MiniMax token plan/subscription. Direct MiniMax API call.",
+      "Access: MiniMax subscription. The env key is the subscription secret, not an API-billed per-token meter. This provider is never an API-billed fallback under the no-API-billing-fallback policy.",
     ...(reason ? { reason } : {}),
-    reasoningLevels: [],
+    reasoningCapability: capability,
+    reasoningLevels: getEffectiveReasoningLevels(capability),
     tier: "cheap",
   };
 }
@@ -54,6 +99,7 @@ export function getMiniMaxModels(): ModelOption[] {
     toMiniMaxModelOption(
       config.defaultModel,
       config.apiKeySet,
+      MINIMAX_M3_CAPABILITY,
       config.apiKeySet ? undefined : MINIMAX_DISABLED_REASON,
     ),
   ];
@@ -70,7 +116,18 @@ export async function getDiscoveredMiniMaxModels(): Promise<ModelOption[]> {
       : snapshot.errorMessage
         ? `MiniMax discovery failed; using last cached models. ${snapshot.errorMessage}`
         : undefined;
-  return [...new Set(ids)].sort().map((id) => toMiniMaxModelOption(id, config.apiKeySet, reason));
+  return [...new Set(ids)].sort().map((id) =>
+    toMiniMaxModelOption(
+      id,
+      config.apiKeySet,
+      // Default model id (`MiniMax-M3`) gets the M3 capability we know;
+      // any other discovered id is treated as model_dependent — we
+      // know the family but not the exact surface, so the UI must
+      // show a capability-aware control instead of a fake dropdown.
+      id === config.defaultModel ? MINIMAX_M3_CAPABILITY : capabilityForUnknownMiniMaxModel(),
+      reason,
+    ),
+  );
 }
 
 export function getMiniMaxModelMeta(modelId: string): ModelMeta | null {
@@ -81,6 +138,8 @@ export function getMiniMaxModelMeta(modelId: string): ModelMeta | null {
     modelId,
     modelLabel: modelId,
     tier: "cheap",
-    reasoningLevels: [],
+    reasoningCapability: MINIMAX_M3_CAPABILITY,
+    reasoningLevels: getEffectiveReasoningLevels(MINIMAX_M3_CAPABILITY),
+    billingSource: "subscription",
   };
 }

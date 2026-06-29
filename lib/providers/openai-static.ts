@@ -5,7 +5,7 @@
  *   - which model ids are "known" (have local metadata),
  *   - the canonical display label,
  *   - the cost tier (cheap vs expensive),
- *   - the reasoning levels the model is allowed to be paired with.
+ *   - the reasoning / thinking capability this model advertises.
  *
  * Dynamic discovery (`lib/providers/openai-discovery.ts`) determines
  * which of these models is *available* to the configured API key.
@@ -20,21 +20,73 @@
  *     the alias map so the merge layer can tag it as "known" when fake
  *     discovery returns it; production builds never receive it from
  *     OpenAI's `/v1/models` endpoint.
+ *
+ * Notes on reasoning capability:
+ *   - OpenAI API models expose `reasoning_effort` as a discrete set of
+ *     provider-native values. We do NOT narrow to a fixed
+ *     `low | medium | high` enum — the values advertised by the model
+ *     flow through unchanged. Models that have not yet had their full
+ *     option set confirmed by a provider refresh ship with the
+ *     conservative tier-appropriate default set.
+ *   - Static metadata carries `source: "static"` and `refreshedAt`
+ *     set to the build time. When the provider refresh path
+ *     (`lib/providers/reasoning-refresh.ts`) discovers richer options
+ *     later, the registry merge layer upgrades `source` to
+ *     `"provider_refresh"` and updates `refreshedAt`.
  */
-import type { ModelTier, ReasoningLevel } from "./types";
+import type { ModelTier } from "./types";
+import type { ReasoningCapability } from "./capability";
+import { effortLevelsCapability } from "./capability";
 
 export type StaticOpenAIModelAlias = {
   label: string;
   tier: ModelTier;
-  reasoningLevels: ReadonlyArray<ReasoningLevel>;
+  reasoningCapability: ReasoningCapability;
 };
 
 const OPENAI_STATIC_ALIASES: ReadonlyMap<string, StaticOpenAIModelAlias> = new Map([
-  ["gpt-5.4-mini", { label: "GPT-5.4 Mini", tier: "cheap", reasoningLevels: ["low", "medium"] }],
-  ["gpt-5.5", { label: "GPT-5.5", tier: "expensive", reasoningLevels: ["low", "medium", "high"] }],
+  [
+    "gpt-5.4-mini",
+    {
+      label: "GPT-5.4 Mini",
+      tier: "cheap",
+      // Cheap-tier model — OpenAI's current docs list
+      // `none | low | medium | high` for `gpt-5.4-mini`. We surface
+      // every advertised value so the picker shows `none` literally
+      // and does not hide `none` behind a "default" copy.
+      reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported", {
+        defaultOption: "low",
+        source: "static",
+      }),
+    },
+  ],
+  [
+    "gpt-5.5",
+    {
+      label: "GPT-5.5",
+      tier: "expensive",
+      // Expensive-tier model — advertises the full
+      // `none | minimal | low | medium | high | xhigh` set. We
+      // surface every provider-native value literally.
+      reasoningCapability: effortLevelsCapability(
+        ["none", "minimal", "low", "medium", "high", "xhigh"],
+        "supported",
+        { defaultOption: "low", source: "static" },
+      ),
+    },
+  ],
   [
     "gpt-fake-known-extra",
-    { label: "GPT-Fake Known Extra", tier: "cheap", reasoningLevels: ["low", "medium"] },
+    {
+      label: "GPT-Fake Known Extra",
+      tier: "cheap",
+      // Deterministic dev/Playwright-only entry — mirrors the
+      // `gpt-5.4-mini` cheap-tier option set.
+      reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported", {
+        defaultOption: "low",
+        source: "static",
+      }),
+    },
   ],
 ]);
 

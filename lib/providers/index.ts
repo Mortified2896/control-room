@@ -12,7 +12,10 @@ import {
   isMiniMaxEnabled,
   minimaxProvider,
 } from "./minimax";
+import { isCodexCatalogModelId } from "./codex-catalog";
+import { getBillingSourceForProvider } from "./billing-source";
 import type {
+  BillingSource,
   ModelMeta,
   ModelOption,
   ModelsResponse,
@@ -35,9 +38,45 @@ function findModel(modelId: string): ModelOption | undefined {
   return getAvailableModels().models.find((m) => m.modelId === modelId);
 }
 
+/**
+ * Codex subscription ids are surfaced through a separate static catalog
+ * (`lib/providers/codex-catalog.ts`) — the chat picker appends them
+ * directly to `/api/models`, but `getAvailableModels` (the OpenAI +
+ * MiniMax list the chat resolver consults) does not include them.
+ *
+ * The recommender chain (`buildRouterFallbackChain`) carries Codex
+ * candidates on the assumption that the resolver can recognize them
+ * — if the resolver only consulted `getAvailableModels` those
+ * candidates would silently fail and the chain would drop down to
+ * the next rung (which defeats the explicit “Codex first” intent).
+ * Recognise Codex ids here so the resolver can probe the runtime
+ * for them.
+ */
+function isCodexModelId(modelId: string): boolean {
+  if (!modelId.startsWith("codex:")) return false;
+  const raw = modelId.slice("codex:".length);
+  return isCodexCatalogModelId(raw);
+}
+
 export function resolveModel(modelId: string | undefined): ResolveResult {
   const all = getAvailableModels().models;
   const allowedIds = all.map((m) => m.modelId);
+
+  // Codex subscription ids are first-class resolvable targets so the
+  // recommender chain / chat-route guards can probe them. The chat
+  // runtime itself still routes Codex ids through the agent backend
+  // (see `CodexChatPane`); the resolver only returns metadata for
+  // the policy + access-control layers to inspect.
+  if (modelId && isCodexModelId(modelId)) {
+    return {
+      ok: true,
+      resolved: {
+        providerId: "codex",
+        modelId,
+        billingSource: "subscription",
+      },
+    };
+  }
 
   if (!modelId) {
     const firstEnabled = all.find((m) => m.enabled);
@@ -47,6 +86,10 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
         resolved: {
           providerId: firstEnabled.providerId as ProviderId,
           modelId: firstEnabled.modelId,
+          billingSource: getBillingSourceForProvider(
+            firstEnabled.providerId as ProviderId,
+            firstEnabled.modelId,
+          ),
         },
       };
     }
@@ -96,7 +139,11 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
 
   return {
     ok: true,
-    resolved: { providerId: found.providerId as ProviderId, modelId: found.modelId },
+    resolved: {
+      providerId: found.providerId as ProviderId,
+      modelId: found.modelId,
+      billingSource: getBillingSourceForProvider(found.providerId as ProviderId, found.modelId),
+    },
   };
 }
 
