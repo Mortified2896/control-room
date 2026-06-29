@@ -569,19 +569,24 @@ export const RecommenderControl: FC<{
   const selectedFallback = modelOptions.find((o) => o.modelId === fallbackModelId) ?? null;
 
   return (
-    <div className="flex flex-wrap items-center gap-2" data-testid="recommender-control">
-      <RecommenderToggle
-        on={enabled}
-        onToggle={onToggle}
-        disabled={toggleDisabled}
-        disabledReason={toggleDisabledReason}
-      />
-      <>
+    <div
+      className="flex w-full items-start gap-3 rounded-xl border border-border/60 bg-muted/5 px-3 py-3 shadow-sm"
+      data-testid="recommender-control"
+    >
+      <div className="shrink-0 pt-0.5">
+        <RecommenderToggle
+          on={enabled}
+          onToggle={onToggle}
+          disabled={toggleDisabled}
+          disabledReason={toggleDisabledReason}
+        />
+      </div>
+      <div className="min-w-0 flex-1 space-y-3">
         <div
-          className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-muted/10 px-2 py-1"
+          className="grid items-center gap-2 lg:grid-cols-[minmax(14rem,1fr)_minmax(20rem,1.35fr)_9rem]"
           data-testid="chat-recommender-engine-controls"
         >
-          <div className="mr-1 text-[10px] leading-tight text-muted-foreground">
+          <div className="min-w-0 text-xs leading-tight text-muted-foreground">
             <div className="font-semibold text-foreground">Recommender engine</div>
             <div>This model recommends which model to use. It is not the chat model itself.</div>
           </div>
@@ -608,15 +613,12 @@ export const RecommenderControl: FC<{
 
         {onFallbackModelChange ? (
           <div
-            className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-muted/10 px-2 py-1"
+            className="grid items-center gap-2 border-t border-border/50 pt-3 lg:grid-cols-[minmax(14rem,1fr)_minmax(20rem,1.35fr)_9rem]"
             data-testid="chat-recommender-fallback-controls"
           >
-            <div className="mr-1 text-[10px] leading-tight text-muted-foreground">
-              <div className="font-semibold text-foreground">Fallback engine</div>
-              <div>
-                Used only if the recommender engine fails. This is an explicitly configured
-                fallback.
-              </div>
+            <div className="min-w-0 text-xs leading-tight text-muted-foreground">
+              <div className="font-semibold text-foreground">Fallback engine (one)</div>
+              <div>Used only if the primary recommender engine fails.</div>
             </div>
             <select
               data-testid="chat-recommender-fallback-model"
@@ -624,7 +626,7 @@ export const RecommenderControl: FC<{
               onChange={(e) => onFallbackModelChange(e.target.value === "" ? null : e.target.value)}
               disabled={modelLoading || modelSaving}
               aria-label="Fallback recommender engine model"
-              className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-7 rounded-md border px-2 text-xs shadow-xs outline-none focus-visible:ring-[3px]"
+              className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 min-w-0 rounded-md border px-2 text-xs shadow-xs outline-none focus-visible:ring-[3px] disabled:opacity-60"
             >
               <option value="">No fallback</option>
               {modelOptions.map((option) => (
@@ -645,16 +647,16 @@ export const RecommenderControl: FC<{
             ) : null}
           </div>
         ) : null}
-      </>
-      {modelSaving ? (
-        <span
-          className="text-[10px] text-muted-foreground"
-          data-testid="chat-recommender-model-saving"
-          aria-live="polite"
-        >
-          saving…
-        </span>
-      ) : null}
+        {modelSaving ? (
+          <span
+            className="text-[10px] text-muted-foreground"
+            data-testid="chat-recommender-model-saving"
+            aria-live="polite"
+          >
+            saving…
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 };

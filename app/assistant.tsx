@@ -707,30 +707,35 @@ const RouterControlsBar: FC<{
     onRouterAbChange(false);
   }, [supportsRouterAb, routerAbOn, onRouterAbChange]);
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-background px-3 py-2 sm:px-4">
-      <div
-        className="flex flex-wrap items-center gap-1.5 rounded-md border border-border/60 bg-muted/10 px-2 py-1"
-        data-testid="manual-chat-model-controls"
-      >
-        <div className="mr-1 text-[10px] leading-tight text-muted-foreground">
-          <div className="font-semibold text-foreground">Manual chat model</div>
-          <div>Used when Recommend is off or when you choose Keep current.</div>
+    <div className="space-y-3 border-b border-border/60 bg-background px-3 py-3 sm:px-4">
+      <div className="flex items-start gap-2">
+        <div
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-muted/5 px-3 py-2 shadow-sm"
+          data-testid="manual-chat-model-controls"
+        >
+          <div className="min-w-0 flex-1 text-xs leading-tight text-muted-foreground">
+            <div className="font-semibold text-foreground">Manual chat model</div>
+            <div>Used when Recommend is off or when you choose Keep current.</div>
+          </div>
+          <ReasoningControls
+            capability={capability}
+            reasoningLevel={reasoningLevel}
+            onReasoningChange={onReasoningChange}
+            thinkingMode={thinkingMode}
+            onThinkingModeChange={onThinkingModeChange}
+          />
+          {supportsRouterAb ? (
+            <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
+          ) : (
+            <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-1.5 text-xs text-muted-foreground">
+              Router A/B is OpenAI-only.
+            </div>
+          )}
         </div>
-        <ReasoningControls
-          capability={capability}
-          reasoningLevel={reasoningLevel}
-          onReasoningChange={onReasoningChange}
-          thinkingMode={thinkingMode}
-          onThinkingModeChange={onThinkingModeChange}
-        />
+        <div className="shrink-0 pt-1">
+          <ThemeToggle />
+        </div>
       </div>
-      {supportsRouterAb ? (
-        <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
-      ) : (
-        <div className="rounded-md border border-border/50 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
-          Router A/B is OpenAI-only.
-        </div>
-      )}
       {onToggleRecommender ? (
         onRecommenderModelChange ? (
           <RecommenderControl
@@ -752,9 +757,6 @@ const RouterControlsBar: FC<{
           <RecommenderToggle on={recommenderEnabled} onToggle={onToggleRecommender} />
         )
       ) : null}
-      <div className="ml-auto flex items-center">
-        <ThemeToggle />
-      </div>
     </div>
   );
 };

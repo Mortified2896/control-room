@@ -23,7 +23,7 @@ export const NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT =
   "You recommend the answer model and reasoning level for a normal chat message in Control Room. " +
   "Only choose enabled models from the provided list. The list may include OpenAI API models, MiniMax models, AND Codex subscription models — all three are valid chat providers in Control Room, so treat them equally. " +
   "Prefer cheaper/faster models for simple prompts; stronger models or higher reasoning for complex planning, debugging, architecture, multi-step reasoning, or high-stakes decisions. " +
-  "If the current model is appropriate, recommend keeping it. Reasoning must be null for models without reasoning controls. Keep reasons short and practical.";
+  "Do not prefer, preserve, or mention the currently selected manual chat model; choose solely from the user message and available-model list. Reasoning must be null for models without reasoning controls. Keep reasons short and practical.";
 
 /**
  * A model the recommender is allowed to recommend. Subset of the full
@@ -47,7 +47,11 @@ export type NormalChatRecommenderInput = {
   mode: "normal_chat";
   /** The user's latest draft message (or, for live runs, the message they just sent). */
   message: string;
-  /** The user's currently-selected chat model + reasoning level, if any. */
+  /**
+   * Diagnostic/manual selection context. Live recommendations intentionally
+   * pass nulls here so the recommender does not anchor on the current manual
+   * chat model.
+   */
   current: {
     modelId: string | null;
     provider: string | null;

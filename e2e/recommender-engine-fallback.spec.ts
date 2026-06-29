@@ -293,11 +293,20 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
   test("Chat UI exposes primary + fallback recommender engine controls", async ({ page }) => {
     await gotoSettings(page);
     await page.goto("/");
-    await expect(page.getByTestId("recommender-control")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("manual-chat-model-controls")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("manual-chat-model-controls")).toContainText(/Manual chat model/);
+    await expect(page.getByTestId("recommender-toggle").first()).toBeVisible();
+    await expect(page.getByTestId("recommender-control")).toBeVisible();
     await expect(page.getByTestId("chat-recommender-engine-controls")).toBeVisible();
+    await expect(page.getByTestId("chat-recommender-engine-controls")).toContainText(
+      /Recommender engine/,
+    );
     await expect(page.getByTestId("chat-recommender-model")).toBeVisible();
     await expect(page.getByTestId("chat-recommender-reasoning")).toBeVisible();
     await expect(page.getByTestId("chat-recommender-fallback-controls")).toBeVisible();
+    await expect(page.getByTestId("chat-recommender-fallback-controls")).toContainText(
+      /Fallback engine/,
+    );
     await expect(page.getByTestId("chat-recommender-fallback-model")).toBeVisible();
     await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toBeVisible();
     await expect(
@@ -315,7 +324,7 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
     );
     await page.waitForTimeout(800);
 
-    const body = await fetch(`${apiBase}/api/router-settings`).then((r) => r.json());
+    let body = await fetch(`${apiBase}/api/router-settings`).then((r) => r.json());
     expect(body.effective.normalChatRecommenderFallbackModelId).toBe("MiniMax-M3");
     expect(body.effective.normalChatRecommenderFallbackReasoningLevel).toBe("provider_default");
 
@@ -326,6 +335,17 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
     await expect(
       page.getByTestId("router-settings-normal-chat-recommender-fallback-reasoning"),
     ).toHaveValue("provider_default");
+
+    await page.goto("/");
+    await expect(page.getByTestId("chat-recommender-fallback-model")).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByTestId("chat-recommender-fallback-model").selectOption("");
+    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toBeDisabled();
+    await page.waitForTimeout(800);
+    body = await fetch(`${apiBase}/api/router-settings`).then((r) => r.json());
+    expect(body.effective.normalChatRecommenderFallbackModelId).toBeNull();
+    expect(body.effective.normalChatRecommenderFallbackReasoningLevel).toBeNull();
   });
 
   test("Changing Settings Tab B reflects in Chat UI after reload", async ({ page }) => {

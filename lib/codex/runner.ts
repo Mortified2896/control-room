@@ -246,7 +246,7 @@ export function isCodexModelId(value: string): value is CodexModelId {
 export async function runCodexExec(
   binary: string,
   prompt: string,
-  opts: { model?: CodexModelId } = {},
+  opts: { model?: CodexModelId; maxPromptLength?: number } = {},
 ): Promise<CodexChatResult> {
   // Defensive: limit prompt size so a runaway client can't OOM us.
   if (typeof prompt !== "string") {
@@ -268,12 +268,13 @@ export async function runCodexExec(
       durationMs: 0,
     };
   }
-  if (trimmed.length > 4000) {
+  const maxPromptLength = opts.maxPromptLength ?? 4000;
+  if (trimmed.length > maxPromptLength) {
     return {
       ok: false,
       responseText: null,
       exitCode: null,
-      error: "prompt must be <= 4000 chars",
+      error: `prompt must be <= ${maxPromptLength} chars`,
       durationMs: 0,
     };
   }

@@ -4,6 +4,7 @@ import { generateText, Output, stepCountIs } from "ai";
 import { z } from "zod/v4";
 import { getEffectiveModelsResponse } from "@/lib/providers/registry";
 import { getModelMeta, resolveModel } from "@/lib/providers";
+import type { ResolvedModel } from "@/lib/providers/types";
 import { getRuntimeModel, getRuntimeProviderOptions } from "@/lib/providers/runtime";
 import { getEffectiveRouterSettings } from "@/lib/router/settings-store";
 import { buildRouterFallbackChain, pickRouterModelForRun } from "@/lib/router/schema";
@@ -17,6 +18,7 @@ import {
   enforceNoApiBillingFallback,
   NoApiBillingFallbackErrorClass,
 } from "@/lib/policy/no-api-billing-fallback";
+import { isCodexModelId, resolveCodexBinary, runCodexExec } from "@/lib/codex/runner";
 
 export const dynamic = "force-dynamic";
 
@@ -121,6 +123,45 @@ const outputSchema = z.object({
     }),
   ),
 });
+
+type RecommenderOutput = z.infer<typeof outputSchema>;
+
+async function runCodexRecommender(args: {
+  modelId: string;
+  system: string;
+  user: string;
+}): Promise<RecommenderOutput> {
+  const binary = resolveCodexBinary();
+  if (!binary) throw new Error("codex_cli_not_installed");
+  const codexModelId = args.modelId.startsWith("codex:")
+    ? args.modelId.slice("codex:".length)
+    : args.modelId;
+  if (!isCodexModelId(codexModelId)) throw new Error("invalid_codex_recommender_model");
+
+  const schemaHint = `Return ONLY minified JSON with this shape: {"recommendedModelId":"string","recommendedProvider":"string","recommendedReasoningLevel":null,"reasoning":"short reason","alternatives":[{"modelId":"string","provider":"string","recommendedReasoningLevel":null,"reason":"short reason"}]}. No markdown, no code fences.`;
+  const result = await runCodexExec(
+    binary,
+    `${args.system}\n\n${schemaHint}\n\nInput JSON:\n${args.user}`,
+    { model: codexModelId, maxPromptLength: 24_000 },
+  );
+  if (!result.ok) throw new Error(result.error);
+  const parsed = parseJsonObjectFromText(result.responseText);
+  return outputSchema.parse(parsed);
+}
+
+function parseJsonObjectFromText(text: string): unknown {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+    if (fenced) return JSON.parse(fenced);
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+    throw new Error("codex_recommender_returned_non_json");
+  }
+}
 
 function fallbackResponse(
   input: z.infer<typeof bodySchema>,
@@ -378,9 +419,14 @@ export async function POST(request: Request) {
       mode: input.mode,
       message: input.message,
       current: {
-        modelId: input.currentModelId ?? null,
-        provider: input.currentProvider ?? null,
-        reasoningLevel: input.currentReasoningLevel ?? null,
+        // Deliberately do not feed the currently selected manual chat
+        // model into the recommender. The manual/default model is only
+        // used when Recommend is off or when the user chooses Keep
+        // current; recommendations should be based on the prompt and
+        // candidate settings, not anchored to the current selector.
+        modelId: null,
+        provider: null,
+        reasoningLevel: null,
       },
       availableModels,
     });
@@ -421,21 +467,34 @@ export async function POST(request: Request) {
       });
     })();
 
-    const result = await generateText({
-      model: getRuntimeModel(resolvedActiveRecommender),
-      system: prompt.system,
-      prompt: prompt.user,
-      output: Output.object({ schema: outputSchema, name: "normal_chat_model_recommendation" }),
-      stopWhen: stepCountIs(1),
-      // Honor the user-configured reasoning level for the recommender
-      // itself. The runtime adapter returns `undefined` for unknown
-      // / non-effort-level capabilities (Codex / MiniMax unknown
-      // discovery, etc.) so this is a no-op when the recommender
-      // cannot accept reasoning controls.
-      ...(recommenderProviderOptions ? { providerOptions: recommenderProviderOptions } : {}),
-    });
-
-    const value = result.output;
+    const activeForRun = resolvedActiveRecommender as ResolvedModel;
+    const value =
+      activeForRun.providerId === "codex"
+        ? await runCodexRecommender({
+            modelId: activeForRun.modelId,
+            system: prompt.system,
+            user: prompt.user,
+          })
+        : (
+            await generateText({
+              model: getRuntimeModel(activeForRun),
+              system: prompt.system,
+              prompt: prompt.user,
+              output: Output.object({
+                schema: outputSchema,
+                name: "normal_chat_model_recommendation",
+              }),
+              stopWhen: stepCountIs(1),
+              // Honor the user-configured reasoning level for the recommender
+              // itself. The runtime adapter returns `undefined` for unknown
+              // / non-effort-level capabilities (Codex / MiniMax unknown
+              // discovery, etc.) so this is a no-op when the recommender
+              // cannot accept reasoning controls.
+              ...(recommenderProviderOptions
+                ? { providerOptions: recommenderProviderOptions }
+                : {}),
+            })
+          ).output;
     attemptedCandidateModel = value?.recommendedModelId ?? null;
     const picked = value
       ? availableModels.find(
