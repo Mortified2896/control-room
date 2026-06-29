@@ -102,33 +102,6 @@ the correct env, and verify the rendered browser UI after refresh/cache-bust. If
 the screenshot still shows the old UI, assume stale runtime or stale browser
 bundle before debugging React code.
 
-Live build safety:
-Do not run `npm run build` in the live production repo and then leave the old
-`next start` process running. The build rewrites `.next` and can break the
-currently served app. For API/UI/server changes, build + restart + smoke check
-are one deploy operation and must be followed by `scripts/smoke-prod.sh`; UI
-changes also require rendered browser verification. If an agent is running
-inside a Control Room-hosted chat/session, it must not restart the Control Room
-process that is hosting its own active response, and it must not run the
-production build in the live serving directory unless an external restart is
-immediately planned. If the agent is running externally (Pi terminal, Pi
-Telegram, OpenCode terminal, Codex terminal/app, SSH, tmux, or systemd), it may
-restart Control Room and should not use “active Control Room session” as a
-reason to skip the deploy sequence.
-
-Use `scripts/smoke-prod.sh` for live JSON API verification. Production restarts
-must follow `docs/production-debugging.md` and should use `scripts/restart-prod.sh`
-from a session that is not hosted by the Control Room process being restarted.
-
-Do not restart Control Room from inside a Control Room-hosted chat/session if
-that would kill the current response. External Pi/OpenCode/Codex/SSH/tmux/systemd
-sessions may restart Control Room; the browser tab may disconnect or need
-refresh, but the external worker should continue. If running externally, agents
-should either perform the normal deploy sequence (`npm run db:migrate` if
-needed, `npm run typecheck`, `npm test`, `npm run build`,
-`scripts/restart-prod.sh`, `scripts/smoke-prod.sh`) or clearly say why they
-cannot.
-
 ## Required change report format
 
 For every code/docs/config change, final reports must include:
@@ -209,7 +182,7 @@ Validation:
 
 Production restart:
 
-- no — not performed because this agent is running inside a Control Room-hosted chat/session; user or an external Pi/OpenCode/Codex/SSH/tmux session must run `scripts/restart-prod.sh`
+- no — restart not performed for this change
 
 API smoke:
 
@@ -222,7 +195,6 @@ Rendered UI check:
 Caveats:
 
 - live browser may still show the old client bundle until rebuild/restart/refresh is completed
-- if running from an external Pi/OpenCode/Codex/SSH/tmux session, do not use “active Control Room session” as the reason to skip restart; perform the deploy sequence or state the actual blocker
 ```
 
 API/server change after restart:
