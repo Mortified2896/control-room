@@ -215,6 +215,19 @@ export async function POST(request: Request) {
     // will honor and prompts it to return `recommendedReasoningLevel: null`.
     const allowlist = settings.normalChatRecommenderAllowedModels;
     const allowedSet = allowlist === null ? null : new Set(allowlist);
+    // Per-(model, reasoning) option allowlist from the Recommender
+    // candidates tab. The recommender must NOT suggest a reasoning level
+    // outside this set. `allowedCombos` is the user-curated surface for
+    // this — when a row is fully unconstrained, the model’s full
+    // capability is exposed; when the user has narrowed a row to a few
+    // checkboxes, only those are surfaced. The runtime engine picks
+    // exactly from `allowedReasoningLevels` for each model.
+    const candidateOptionsByModel = new Map<string, string[]>();
+    for (const combo of settings.allowedCombos) {
+      const arr = candidateOptionsByModel.get(combo.modelId) ?? [];
+      arr.push(combo.reasoningLevel);
+      candidateOptionsByModel.set(combo.modelId, arr);
+    }
     const availableModels: ReadonlyArray<NormalChatAvailableModel> = modelsPayload.models
       .filter((m) => m.enabled)
       .filter((m) => allowedSet === null || allowedSet.has(m.modelId))
@@ -229,6 +242,23 @@ export async function POST(request: Request) {
         const isEffortLevels =
           m.reasoningCapability.kind === "effort_levels" &&
           m.reasoningCapability.control !== "unknown";
+        let modelReasoningLevels: ReadonlyArray<string> = [];
+        if (!isCodex && isEffortLevels) {
+          const native =
+            m.reasoningCapability.kind === "effort_levels"
+              ? m.reasoningCapability.options.map((o) => o.value)
+              : [];
+          // If the user has narrowed the Tab C allowlist for this
+          // model, intersect with the narrowing set. The runtime
+          // also defends against stale provider-native values below.
+          const narrowed = candidateOptionsByModel.get(m.modelId);
+          if (narrowed && narrowed.length > 0) {
+            const set = new Set(native);
+            modelReasoningLevels = narrowed.filter((v) => set.has(v));
+          } else {
+            modelReasoningLevels = native;
+          }
+        }
         return {
           provider: m.providerId,
           modelId: m.modelId,
@@ -238,15 +268,11 @@ export async function POST(request: Request) {
           // off to it via `CodexChatPane` rather than the regular
           // `/api/chat` route. MiniMax is excluded because its
           // capability is `thinking_budget`, not effort-level.
-          supportsReasoningControls: !isCodex && isEffortLevels,
-          // Provider-native option values, NOT the narrow
-          // `ReasoningLevel` enum.
-          allowedReasoningLevels:
-            !isCodex && isEffortLevels
-              ? m.reasoningCapability.kind === "effort_levels"
-                ? m.reasoningCapability.options.map((o) => o.value)
-                : []
-              : [],
+          supportsReasoningControls: modelReasoningLevels.length > 0,
+          // Provider-native option values that survive both the
+          // Tab C per-model narrowing AND the model's capability
+          // surface. NOT the narrow `ReasoningLevel` enum.
+          allowedReasoningLevels: modelReasoningLevels,
           enabled: m.enabled,
           accessPath: m.accessPath ?? null,
           tier: m.tier,

@@ -165,11 +165,11 @@ test("registry rows expose a Recommender toggle and toggling persists the allowl
   await expect(codexSwitch).toHaveAttribute("data-state", "checked");
 
   // Uncheck it via the registry row → summary reflects "X of N enabled
-  // models may be recommended" (N depends on the registry in fake mode,
+  // models may be suggested" (N depends on the registry in fake mode,
   // but it must be a finite integer, not "No models …").
   const summary = page.getByTestId("router-settings-recommender-allowlist-summary");
   await codexSwitch.click();
-  await expect(summary).toContainText(/of \d+ enabled models may be recommended/);
+  await expect(summary).toContainText(/of \d+ enabled models may be suggested/);
 
   await page.getByTestId("router-settings-save").click();
   await expect(page.getByTestId("router-settings-save-status")).toBeVisible({ timeout: 5_000 });

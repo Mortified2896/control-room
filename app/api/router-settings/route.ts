@@ -515,6 +515,7 @@ export async function PUT(req: Request) {
 
   const merged: Record<string, unknown> = {
     abEnabled: b.abEnabled ?? current.abEnabled,
+    allowOpenAiApiRouter: b.allowOpenAiApiRouter ?? current.allowOpenAiApiRouter,
     allowExpensiveModels: b.allowExpensiveModels ?? current.allowExpensiveModels,
     allowLongPromptWhenExpensive:
       b.allowLongPromptWhenExpensive ?? current.allowLongPromptWhenExpensive,

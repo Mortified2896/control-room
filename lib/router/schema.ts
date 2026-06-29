@@ -24,6 +24,59 @@
  * code. It only depends on `lib/providers` (which is also dependency-free)
  * and on Node's `process.env` accessor, which is fine at build time even in
  * a client bundle — Next inlines `process.env.X` reads for the client.
+ *
+ * ----------------------------------------------------------------------
+ * UI section ownership (post split refactor — see AGENTS.md and the
+ * `/settings/router` page for the user-facing surface)
+ * ----------------------------------------------------------------------
+ *
+ * The Settings UI exposes three focused tabs/cards. Each tab owns its
+ * slice of these fields; the schema keeps them coalesced into a single
+ * singleton row for persistence simplicity but the UI splits them up so
+ * users never have to guess which toggle affects which decision:
+ *
+ *   Tab A · Manual chat picker
+ *     Persists via /api/model-selector-prefs (separate singleton row in
+ *     `model_selector_prefs`), NOT in `RouterSettings`. The Tab A
+ *     controls answer "What can I manually select?" — they include /
+ *     exclude models from `/api/models` and the chat composer dropdown.
+ *
+ *   Tab B · Recommender engine
+ *     `normalChatRecommenderModelId`        — engine model id
+ *     `normalChatRecommenderReasoningLevel` — engine reasoning/thinking
+ *     These together answer "What model recommends?". The engine model
+ *     is distinct from the candidates it may recommend: the engine reads
+ *     the user prompt and picks a chat model from the Tab C candidate
+ *     pool. Engine unavailable → loud failure, never silent fallback.
+ *
+ *   Tab C · Recommender candidates
+ *     `normalChatRecommenderAllowedModels` — model allowlist
+ *       (`null` = no restriction, `[]` = block all, otherwise explicit).
+ *     `allowedCombos`                       — per-(model, reasoning/thinking)
+ *       option allowlist. Constrains BOTH the Side B A/B router pool
+ *       AND the normal chat recommender pick. The UI surfaces this as
+ *       per-row reasoning/thinking checkboxes.
+ *     Bulk actions:
+ *       - Allow subscription standard models
+ *       - Block API-billed models
+ *       - Block all
+ *       - Reset safe defaults
+ *
+ * Outside the three tabs (Router A/B legacy surface, kept for now):
+ *   `routerModelId`               — A/B recommender model id (separate)
+ *   `allowExpensiveModels`        — Side B global guard (auto-opened by
+ *                                    `normalizeTableDrivenRouterSettings`
+ *                                    so hidden persisted flags cannot
+ *                                    contradict a row enabled in Tab C)
+ *   `allowLongPromptWhenExpensive` — Side B long-prompt guard (also auto-
+ *                                    opened)
+ *   `longPromptThresholdChars`    — long-prompt cutoff
+ *   `failureBehavior`             — Router A/B failure behavior
+ *   `abEnabled`, `maxCost*`, `fallback*` — Side B / A/B bookkeeping
+ *
+ * The Settings UI does NOT introduce a fourth "Advanced registry" tab
+ * for the leftover knobs in the brief — they remain where they are
+ * until Router A/B itself is solved in a later pass.
  */
 import { DEFAULT_REASONING_LEVEL } from "@/lib/providers/openai";
 import { listRouterAllowedPool } from "@/lib/providers";
