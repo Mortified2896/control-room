@@ -681,12 +681,12 @@ export async function getEffectiveModelsResponse(): Promise<{
       process.env.OPENAI_API_KEY?.trim();
     const option: ModelOption = {
       providerId: m.providerId,
-      providerLabel: "OpenAI API",
+      providerLabel: "OpenAI API billing",
       modelId: m.modelId,
       modelLabel: `OpenAI API · ${m.displayLabel}`,
       enabled: Boolean(canCallNow),
       accessPath: "openai_api",
-      billingLabel: "API billed",
+      billingLabel: "OpenAI API billing",
       capabilityKind: "model_provider",
       description:
         "Access: OpenAI API key · API billed. Direct OpenAI API call; not subscription-backed.",
@@ -730,16 +730,16 @@ export async function getEffectiveModelsResponse(): Promise<{
     const capability = refreshed ?? m.reasoningCapability;
     return {
       providerId: "codex",
-      providerLabel: "Codex CLI / ChatGPT login",
+      providerLabel: "Codex subscription",
       modelId: `codex:${m.id}`,
-      modelLabel: `Codex · ${m.label} · included`,
+      modelLabel: `Codex · ${m.label} · Codex subscription`,
       enabled: codexEnabled,
       accessPath: "codex_chatgpt",
-      billingLabel: "ChatGPT subscription",
+      billingLabel: "Codex subscription",
       capabilityKind: "agent_backend",
       description: `Access: Codex CLI / ChatGPT login. Source: Official Codex catalog.${
         m.mayBePlanGated ? " May require Pro." : ""
-      } Does not use OPENAI_API_KEY.`,
+      } This is a subscription-backed chat provider; it is never an API-billed fallback under the no-API-billing-fallback policy.`,
       // Honest per-model capability — the Codex CLI / config / IDE
       // surfaces `reasoning_effort` when the underlying model
       // supports it. We mirror the documented set for known models
@@ -750,7 +750,9 @@ export async function getEffectiveModelsResponse(): Promise<{
       reasoningCapability: capability,
       reasoningLevels: getEffectiveReasoningLevels(capability),
       tier: m.tier,
-      ...(codexEnabled ? {} : { reason: "Codex subscription manual chat is disabled in Settings." }),
+      ...(codexEnabled
+        ? {}
+        : { reason: "Codex subscription manual chat is disabled in Settings." }),
     };
   });
   const minimaxModels = (await getDiscoveredMiniMaxModels())

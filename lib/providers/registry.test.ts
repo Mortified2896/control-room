@@ -7,6 +7,8 @@ import {
   type DiscoverySnapshot,
 } from "@/lib/repo/openai-models-discovery-types.ts";
 import type { SelectorPreferences } from "@/lib/repo/model-selector-prefs-types.ts";
+import type { ReasoningCapability } from "./capability.ts";
+import { effortLevelsCapability, thinkingBudgetCapability } from "./capability.ts";
 
 function snapshot(
   modelIds: ReadonlyArray<string>,
@@ -32,11 +34,28 @@ const PROD_ALIASES = new Map<
   {
     label: string;
     tier: "cheap" | "expensive";
-    reasoningLevels: ReadonlyArray<"low" | "medium" | "high">;
+    reasoningCapability: ReasoningCapability;
   }
 >([
-  ["gpt-5.4-mini", { label: "GPT-5.4 Mini", tier: "cheap", reasoningLevels: ["low", "medium"] }],
-  ["gpt-5.5", { label: "GPT-5.5", tier: "expensive", reasoningLevels: ["low", "medium", "high"] }],
+  [
+    "gpt-5.4-mini",
+    {
+      label: "GPT-5.4 Mini",
+      tier: "cheap",
+      reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported"),
+    },
+  ],
+  [
+    "gpt-5.5",
+    {
+      label: "GPT-5.5",
+      tier: "expensive",
+      reasoningCapability: effortLevelsCapability(
+        ["none", "minimal", "low", "medium", "high", "xhigh"],
+        "supported",
+      ),
+    },
+  ],
 ]);
 // Fake-mode alias fixture: adds `gpt-fake-known-extra` as a known alias
 // (cheap tier, low/medium reasoning). `gpt-fake-unknown-xyz` is intentionally
@@ -45,7 +64,7 @@ const FAKE_ALIASES = new Map(PROD_ALIASES);
 FAKE_ALIASES.set("gpt-fake-known-extra", {
   label: "GPT-Fake Known Extra",
   tier: "cheap",
-  reasoningLevels: ["low", "medium"],
+  reasoningCapability: effortLevelsCapability(["low", "medium"], "supported"),
 });
 
 const NO_PREFS: SelectorPreferences = Object.freeze({});
@@ -62,7 +81,7 @@ function makeOverrides(includeFake: boolean) {
           {
             label: string;
             tier: "cheap" | "expensive";
-            reasoningLevels: ReadonlyArray<"low" | "medium" | "high">;
+            reasoningCapability: ReasoningCapability;
           },
         ]
       >,
@@ -334,10 +353,156 @@ test("buildEffectiveRegistry capabilities include reasoning for configured model
   assert.equal(mini.capabilities.images, false);
   assert.equal(mini.capabilities.functionCalling, false);
   assert.equal(mini.capabilities.structuredOutput, false);
-  // Unconfigured models get the conservative default reasoning set
-  // (["low"]) so the UI can render a single reasoning checkbox; the
-  // capability flags surface "unknown" via `configured: false` rather
-  // than via capabilities.
-  assert.equal(unclassified.capabilities.reasoning, true);
+  // Unconfigured / discovered-only models do NOT pretend to support
+  // any specific reasoning level. The capability is `kind: "unknown",
+  // control: "unknown"`, the derived `supportedReasoningLevels` is
+  // empty, and the UI must surface "Reasoning capability unknown"
+  // instead of a fake `["low"]` dropdown.
+  assert.equal(unclassified.reasoningCapability.kind, "unknown");
+  assert.equal(unclassified.reasoningCapability.control, "unknown");
+  assert.deepEqual(unclassified.supportedReasoningLevels, []);
+  assert.equal(unclassified.supportsReasoning, false);
+  assert.equal(unclassified.capabilities.reasoning, false);
   assert.equal(unclassified.capabilities.streaming, true);
+});
+
+test("buildEffectiveRegistry preserves the advertised reasoning levels for configured models", () => {
+  // Regression: previously the registry hardcoded reasoningLevels:
+  // ["low"] for unconfigured / discovered-only models. The capability
+  // model must surface the real, per-model advertised set for
+  // configured models and explicitly mark unknown models as unknown.
+  const registry = buildEffectiveRegistry({
+    discovery: snapshot(["gpt-5.4-mini", "gpt-5.5", "gpt-not-a-real-model"]),
+    selectorPrefs: NO_PREFS,
+    openaiKeySet: true,
+    fakeMode: false,
+    ...makeOverrides(false),
+  });
+  const mini = registry.models.find((m) => m.modelId === "gpt-5.4-mini");
+  const big = registry.models.find((m) => m.modelId === "gpt-5.5");
+  const unknown = registry.models.find((m) => m.modelId === "gpt-not-a-real-model");
+  assert.ok(mini);
+  assert.ok(big);
+  assert.ok(unknown);
+  // Configured models surface their static alias capability as-is.
+  // With the provider-native refactor, `gpt-5.4-mini` advertises
+  // `none | low | medium | high` (the cheap-tier set, no `xhigh`),
+  // and `gpt-5.5` advertises `none | minimal | low | medium | high
+  // | xhigh`. The registry forwards every provider-native value
+  // verbatim — there is no narrow enum in the middle.
+  assert.equal(mini.reasoningCapability.kind, "effort_levels");
+  assert.equal(mini.reasoningCapability.control, "supported");
+  assert.deepEqual(mini.supportedReasoningLevels, ["none", "low", "medium", "high"]);
+  assert.equal(big.reasoningCapability.kind, "effort_levels");
+  assert.equal(big.reasoningCapability.control, "supported");
+  assert.deepEqual(big.supportedReasoningLevels, [
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ]);
+  // Discovered-only model gets the honest "unknown" capability, NOT
+  // a faked `["low"]` reasoning set.
+  assert.equal(unknown.reasoningCapability.kind, "unknown");
+  assert.deepEqual(unknown.supportedReasoningLevels, []);
+});
+
+test("buildEffectiveRegistry round-trips Codex + MiniMax capabilities when surfaced via the effective response builder", () => {
+  // Sanity check that the helper modules expose capabilities that the
+  // merge layer can compose with. We do not exercise the chat-response
+  // builder here (it requires DB), only the static metadata shape.
+  const miniMaxM3Capability = thinkingBudgetCapability("supported", {
+    supportsEnabled: true,
+    supportsTokenBudget: true,
+    defaultMode: "provider_default",
+  });
+  assert.equal(miniMaxM3Capability.kind, "thinking_budget");
+  assert.equal(miniMaxM3Capability.control, "supported");
+  const unknownMiniMax = thinkingBudgetCapability("unknown");
+  assert.equal(unknownMiniMax.kind, "thinking_budget");
+  assert.equal(unknownMiniMax.control, "unknown");
+});
+
+test("buildEffectiveRegistry surfaces the full provider-native effort set for expensive OpenAI models", () => {
+  // Regression for the provider-native refactor: the registry
+  // merge layer must NOT narrow `gpt-5.5` to a fixed
+  // `low | medium | high` triple. The capability carries every
+  // value OpenAI advertises — `none`, `minimal`, `low`, `medium`,
+  // `high`, `xhigh` — verbatim.
+  const registry = buildEffectiveRegistry({
+    discovery: snapshot(["gpt-5.5"]),
+    selectorPrefs: NO_PREFS,
+    openaiKeySet: true,
+    fakeMode: false,
+    ...makeOverrides(false),
+  });
+  const big = registry.models.find((m) => m.modelId === "gpt-5.5");
+  assert.ok(big);
+  assert.equal(big.reasoningCapability.kind, "effort_levels");
+  if (big.reasoningCapability.kind === "effort_levels") {
+    // The capability carries the full set as ReasoningOption values.
+    assert.deepEqual(
+      big.reasoningCapability.options.map((o) => o.value),
+      ["none", "minimal", "low", "medium", "high", "xhigh"],
+    );
+    // The legacy field is derived from the option values.
+    assert.deepEqual(big.supportedReasoningLevels, [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+  }
+});
+
+test('buildEffectiveRegistry propagates `source: "static"` from the alias map', () => {
+  // Static alias entries ship with `source: \"static\"` so the UI
+  // can tell static metadata apart from a future
+  // `source: \"provider_refresh\"` discovery result.
+  const registry = buildEffectiveRegistry({
+    discovery: snapshot(["gpt-5.4-mini"]),
+    selectorPrefs: NO_PREFS,
+    openaiKeySet: true,
+    fakeMode: false,
+    ...makeOverrides(false),
+  });
+  const mini = registry.models.find((m) => m.modelId === "gpt-5.4-mini");
+  assert.ok(mini);
+  assert.equal(mini.reasoningCapability.kind, "effort_levels");
+  if (mini.reasoningCapability.kind === "effort_levels") {
+    assert.equal(mini.reasoningCapability.source, "static");
+    assert.equal(mini.reasoningCapability.refreshedAt, undefined);
+  }
+});
+
+test('buildEffectiveRegistry propagates `source: "static"` and stable per-provider refresh targets', () => {
+  // The async refresh path targets OpenAI / Codex / MiniMax
+  // entries. The sync registry exposes a `refreshedCapabilitiesById`
+  // bridge on the async path so Codex + MiniMax DTO rows pick up
+  // the refreshed metadata even though the sync registry only
+  // contains OpenAI rows. This test pins the bridge to its
+  // documented shape: the field is optional on the sync path and
+  // absent on `buildEffectiveRegistry`.
+  const registry = buildEffectiveRegistry({
+    discovery: snapshot(["gpt-5.4-mini", "gpt-5.5"]),
+    selectorPrefs: NO_PREFS,
+    openaiKeySet: true,
+    fakeMode: false,
+    ...makeOverrides(false),
+  });
+  assert.equal(registry.refreshedCapabilitiesById, undefined);
+  // The static alias map carries `source: \"static\"` for every
+  // configured model. This is the foundation the async refresh
+  // path upgrades to `\"provider_refresh\"` when a real provider
+  // discovery is wired in.
+  for (const model of registry.models) {
+    assert.equal(model.reasoningCapability.kind, "effort_levels");
+    if (model.reasoningCapability.kind === "effort_levels") {
+      assert.equal(model.reasoningCapability.source, "static");
+    }
+  }
 });

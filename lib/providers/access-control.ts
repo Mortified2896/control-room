@@ -5,7 +5,8 @@ import { getModelMeta } from "@/lib/providers";
 import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
 import { getMiniMaxConfig } from "./minimax";
 import { isCodexCatalogModelId } from "./codex-catalog";
-import type { ReasoningLevel } from "./types";
+import type { ReasoningCapability } from "./capability";
+import { isReasoningOptionValid } from "./capability";
 
 export type StableProviderId = "codex_subscription" | "openai_api" | "minimax_api";
 export type ExecutionSurface = "manual_chat" | "router" | "backend_test" | "smoke_test";
@@ -154,11 +155,64 @@ export class ProviderAccessError extends Error {
   }
 }
 
+/**
+ * Pure helper: validate a `reasoningLevel` (provider-native value)
+ * against a model capability. Exported so the chat route and unit
+ * tests can exercise the same rules without spinning up the
+ * registry. See `assertModelExecutionAllowed` above for the per-`kind`
+ * rationale.
+ *
+ * The validator does NOT narrow the value to a fixed enum —
+ * provider-native values (e.g. Codex `xhigh`, MiniMax `adaptive`)
+ * pass through unchanged. The capability's `options` (effort-level)
+ * or `modes` (thinking-budget) list is the source of truth for
+ * "is this value still valid?". When a value is no longer valid —
+ * typically after a provider refresh removed or renamed an option —
+ * the validator rejects it and the chat route falls back to the
+ * provider default.
+ */
+export function validateReasoningLevelForCapability(
+  reasoningLevel: string | null | undefined,
+  capability: ReasoningCapability,
+  modelId: string,
+  providerId: StableProviderId,
+): void {
+  if (!reasoningLevel) return;
+  if (capability.kind === "none") {
+    throw new ProviderAccessError(providerId, `${modelId} does not support reasoning controls.`);
+  }
+  if (capability.kind === "unknown") {
+    // We have no metadata; pass the value through rather than
+    // rejecting a request that may be valid against the upstream
+    // provider.
+    return;
+  }
+  if (capability.kind === "thinking_budget") {
+    // Thinking-budget models do not expose `reasoning_effort`. The
+    // runtime adapter translates a separate `thinkingMode` field
+    // (when present) into provider-native thinking controls. A
+    // `reasoningLevel` for a thinking-budget model is a stale
+    // legacy field — accept it silently to keep the API
+    // backwards-compatible.
+    return;
+  }
+  if (capability.kind === "effort_levels") {
+    if (capability.control === "unknown") return;
+    if (capability.control === "model_dependent") return;
+    if (!isReasoningOptionValid(capability, reasoningLevel)) {
+      throw new ProviderAccessError(
+        providerId,
+        `Reasoning level ${reasoningLevel} is not supported by ${modelId}.`,
+      );
+    }
+  }
+}
+
 export async function assertModelExecutionAllowed(args: {
   providerId: string;
   modelId: string;
   surface: ExecutionSurface;
-  reasoningLevel?: ReasoningLevel | null;
+  reasoningLevel?: string | null;
 }) {
   const providerId = stableProviderId(args.providerId);
   const provider = (await getProviderAccessSettings()).find((p) => p.provider_id === providerId);
@@ -208,14 +262,28 @@ export async function assertModelExecutionAllowed(args: {
   }
   if (!meta || stableProviderId(meta.providerId) !== providerId)
     throw new ProviderAccessError(providerId, "Model does not belong to the requested provider.");
-  if (
-    args.reasoningLevel &&
-    meta.reasoningLevels.length > 0 &&
-    !meta.reasoningLevels.includes(args.reasoningLevel)
-  ) {
-    throw new ProviderAccessError(
-      providerId,
-      `Reasoning level ${args.reasoningLevel} is not supported by ${args.modelId}.`,
-    );
-  }
+  // Capability-aware reasoning-level validation:
+  //   - `kind: "effort_levels"` + `control: "supported"` → the level
+  //     must be in the model's advertised list.
+  //   - `kind: "effort_levels"` + `control: "model_dependent"` →
+  //     trust the underlying provider; accept any of the standard
+  //     levels without rejecting.
+  //   - `kind: "effort_levels"` + `control: "unknown"` → we don't know
+  //     the surface; skip the validation rather than rejecting or
+  //     faking. Do not silently rewrite the call.
+  //   - `kind: "thinking_budget"` → effort levels do not apply. The
+  //     runtime forwards the user's pick to the provider-native
+  //     thinking controls (see `getRuntimeProviderOptions`). Reject
+  //     only when the caller is sending a `reasoningLevel` that the
+  //     runtime cannot translate.
+  //   - `kind: "none"` → reject any non-null reasoning level (the
+  //     model does not support reasoning at all).
+  //   - `kind: "unknown"` → unknown capability; skip the validation
+  //     rather than rejecting or faking.
+  validateReasoningLevelForCapability(
+    args.reasoningLevel,
+    meta.reasoningCapability,
+    args.modelId,
+    providerId,
+  );
 }
