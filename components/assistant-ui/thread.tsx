@@ -10,6 +10,7 @@ import { RouterAbPanel, payloadFromMessageParts } from "@/components/assistant-u
 import { PanelErrorBoundary } from "@/components/assistant-ui/panel-error-boundary";
 import { Button } from "@/components/ui/button";
 import { KbdHint } from "@/components/kbd-hint";
+import { RecommenderToggle } from "@/components/assistant-ui/router-ab-controls";
 import { cn } from "@/lib/utils";
 import { SHORTCUT_TARGETS } from "@/lib/shortcuts";
 import {
@@ -30,11 +31,11 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
-  SparklesIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
+  Loader2,
   MessageCircleIcon,
   MicIcon,
   MoreHorizontalIcon,
@@ -59,7 +60,14 @@ type NoteResponse = {
 type ThreadMode = "chat" | "coding_task";
 type HandoffWorker = "pi" | "codex" | "opencode";
 type HandoffTaskType = "implement" | "debug" | "inspect" | "refactor" | "test" | "review";
-type ReasoningLevel = "low" | "medium" | "high";
+/**
+ * Provider-native reasoning-effort value (`"low"`, `"medium"`,
+ * `"xhigh"`, `"none"`, etc.). The chat composer stores the
+ * recommender's pick as this string and renders it via the chat
+ * composer picker — the runtime adapter validates it against the
+ * model's `reasoningCapability.options`.
+ */
+type ReasoningLevel = string;
 
 type ModelRecommendation = {
   recommendedModelId: string;
@@ -78,6 +86,17 @@ export const Thread: FC<{
   workflowContent?: ReactNode;
   showWelcome?: boolean;
   routerAbOn?: boolean;
+  /**
+   * When `true`, the chat composer intercepts the Send action and
+   * fetches a model recommendation before letting the message go
+   * through. The Accept/Decline buttons in the recommendation banner
+   * then automatically trigger the actual send.
+   *
+   * When `false`, the composer behaves like a normal chat composer:
+   * the user's manual model selection is used directly.
+   */
+  recommenderEnabled?: boolean;
+  onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   onRecommend?: (message: string) => void;
@@ -92,6 +111,8 @@ export const Thread: FC<{
   workflowContent,
   showWelcome = true,
   routerAbOn = false,
+  recommenderEnabled = false,
+  onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
   onRecommend,
@@ -150,6 +171,8 @@ export const Thread: FC<{
               activeProjectId={activeProjectId}
               threadMode={threadMode}
               harness={harness}
+              recommenderEnabled={recommenderEnabled}
+              onToggleRecommender={onToggleRecommender}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
               onRecommend={onRecommend}
@@ -234,6 +257,8 @@ const Composer: FC<{
   activeProjectId: string | null;
   threadMode: ThreadMode;
   harness: HandoffWorker | null;
+  recommenderEnabled?: boolean;
+  onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   onRecommend?: (message: string) => void;
@@ -244,6 +269,8 @@ const Composer: FC<{
   activeProjectId,
   threadMode,
   harness,
+  recommenderEnabled = false,
+  onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
   onRecommend,
@@ -251,6 +278,7 @@ const Composer: FC<{
   onKeepCurrent,
 }) => {
   const [error, setError] = useState<string | null>(null);
+  const composerText = useAuiState((s) => s.composer.text);
   const isCodingTask = threadMode === "coding_task";
   const worker = isCodingTask ? harness : null;
 
@@ -258,8 +286,21 @@ const Composer: FC<{
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
       onSubmit={(event) => {
-        if (!isCodingTask) return;
-        event.preventDefault();
+        if (isCodingTask) {
+          event.preventDefault();
+          return;
+        }
+        // When the recommend-model toggle is ON, intercept Send and
+        // route the current draft through the recommender first. The
+        // Accept/Decline buttons in the resulting banner will then
+        // trigger the actual send via `ComposerAction.pendingSendAfterRecommend`.
+        // We always re-fetch (even if a banner is already showing)
+        // because the user might have edited the draft text after
+        // seeing the previous recommendation.
+        if (recommenderEnabled && composerText.trim().length > 0 && onRecommend) {
+          event.preventDefault();
+          onRecommend(composerText);
+        }
       }}
     >
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -271,7 +312,8 @@ const Composer: FC<{
           {isCodingTask && worker ? (
             <div className="flex flex-wrap items-center gap-2 px-2 pt-1 text-xs">
               <span className="rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-medium text-primary">
-                Coding task · {worker === "opencode" ? "OpenCode" : worker === "codex" ? "Codex" : "Pi"}
+                Coding task ·{" "}
+                {worker === "opencode" ? "OpenCode" : worker === "codex" ? "Codex" : "Pi"}
               </span>
             </div>
           ) : null}
@@ -290,9 +332,10 @@ const Composer: FC<{
             threadId={threadId}
             activeProjectId={activeProjectId}
             onError={setError}
+            recommenderEnabled={recommenderEnabled}
+            onToggleRecommender={onToggleRecommender}
             recommendation={recommendation}
             recommendationLoading={recommendationLoading}
-            onRecommend={onRecommend}
             onUseRecommendation={onUseRecommendation}
             onKeepCurrent={onKeepCurrent}
           />
@@ -314,9 +357,10 @@ const ComposerAction: FC<{
   threadId: string | null;
   activeProjectId: string | null;
   onError: (message: string | null) => void;
+  recommenderEnabled?: boolean;
+  onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
-  onRecommend?: (message: string) => void;
   onUseRecommendation?: () => void;
   onKeepCurrent?: () => void;
 }> = ({
@@ -326,15 +370,53 @@ const ComposerAction: FC<{
   threadId,
   activeProjectId,
   onError,
+  recommenderEnabled = false,
+  onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
-  onRecommend,
   onUseRecommendation,
   onKeepCurrent,
 }) => {
   const aui = useAui();
   const [creatingDraft, setCreatingDraft] = useState(false);
   const composerText = useAuiState((s) => s.composer.text);
+  // Toggle-ON flow: after Accept/Decline we need to programmatically
+  // trigger the actual send (the intercept in `ComposerPrimitive.Root.onSubmit`
+  // swallowed the initial Send so we cannot rely on the runtime's
+  // built-in send). We schedule it via a useEffect so the parent's
+  // model/recommendation state updates land before `send()` runs
+  // (React 18 batches both setState calls in the same handler).
+  const [pendingSendAfterRecommend, setPendingSendAfterRecommend] = useState(false);
+
+  useEffect(() => {
+    if (!pendingSendAfterRecommend) return;
+    setPendingSendAfterRecommend(false);
+    try {
+      aui.composer().send();
+    } catch (err) {
+      // Surfacing send errors here would interrupt the user's flow;
+      // the runtime already surfaces them via the assistant message
+      // status. Log and bail.
+      // eslint-disable-next-line no-console
+      console.error("[composer] post-recommend send failed:", err);
+    }
+  }, [pendingSendAfterRecommend, aui]);
+
+  const handleAcceptRecommendation = () => {
+    onUseRecommendation?.();
+    if (recommenderEnabled) {
+      // Trigger send on the next render so the model change has
+      // committed before the runtime reads it.
+      setPendingSendAfterRecommend(true);
+    }
+  };
+
+  const handleDeclineRecommendation = () => {
+    onKeepCurrent?.();
+    if (recommenderEnabled) {
+      setPendingSendAfterRecommend(true);
+    }
+  };
 
   const createDraft = async () => {
     if (!worker) {
@@ -353,13 +435,23 @@ const ComposerAction: FC<{
       const res = await fetch("/api/handoffs/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: activeProjectId, threadId, worker, taskType, instruction }),
+        body: JSON.stringify({
+          projectId: activeProjectId,
+          threadId,
+          worker,
+          taskType,
+          instruction,
+        }),
       });
       if (!res.ok) throw new Error(`status ${res.status}`);
       aui.composer().setText("");
       onError(`Handoff draft created for ${worker}. Execution is not enabled yet.`);
     } catch (err) {
-      onError(err instanceof Error ? `Failed to create handoff draft: ${err.message}` : "Failed to create handoff draft.");
+      onError(
+        err instanceof Error
+          ? `Failed to create handoff draft: ${err.message}`
+          : "Failed to create handoff draft.",
+      );
     } finally {
       setCreatingDraft(false);
     }
@@ -367,21 +459,48 @@ const ComposerAction: FC<{
 
   return (
     <div className="aui-composer-action-wrapper relative flex flex-col gap-2">
-      {!isCodingTask && recommendation ? (
-        <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
-          <div className="font-medium text-foreground">
-            Recommended: {recommendation.recommendedModelId}
-            {recommendation.recommendedReasoningLevel ? ` · ${recommendation.recommendedReasoningLevel}` : ""}
-          </div>
-          <div className="mt-0.5 text-muted-foreground">Reason: {recommendation.reasoning}</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <Button type="button" size="sm" className="h-7 rounded-full px-3" onClick={onUseRecommendation}>
-              Use recommendation
-            </Button>
-            <Button type="button" variant="outline" size="sm" className="h-7 rounded-full px-3" onClick={onKeepCurrent}>
-              Keep current
-            </Button>
-          </div>
+      {!isCodingTask && (recommendation || recommendationLoading) ? (
+        <div
+          className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs"
+          data-testid="recommender-banner"
+        >
+          {recommendation ? (
+            <>
+              <div className="font-medium text-foreground">
+                Recommended: {recommendation.recommendedModelId}
+                {recommendation.recommendedReasoningLevel
+                  ? ` · ${recommendation.recommendedReasoningLevel}`
+                  : ""}
+              </div>
+              <div className="mt-0.5 text-muted-foreground">Reason: {recommendation.reasoning}</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 rounded-full px-3"
+                  data-testid="recommender-accept"
+                  onClick={handleAcceptRecommendation}
+                >
+                  {recommenderEnabled ? "Accept & send" : "Use recommendation"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full px-3"
+                  data-testid="recommender-decline"
+                  onClick={handleDeclineRecommendation}
+                >
+                  {recommenderEnabled ? "Decline & send" : "Keep current"}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              <span>Finding a model recommendation…</span>
+            </div>
+          )}
         </div>
       ) : null}
       <div className="flex items-center justify-between">
@@ -389,97 +508,87 @@ const ComposerAction: FC<{
           <ComposerAddAttachment />
           <span aria-hidden="true" className="bg-border/60 h-4 w-px" />
           <KbdHint combo="c" className="aui-composer-focus-shortcut" />
+          {!isCodingTask && onToggleRecommender ? (
+            <RecommenderToggle on={recommenderEnabled} onToggle={onToggleRecommender} />
+          ) : null}
         </div>
         <div className="flex items-center gap-1.5">
-        <AuiIf condition={(s) => s.thread.capabilities.dictation}>
-          <AuiIf condition={(s) => s.composer.dictation == null}>
-            <ComposerPrimitive.Dictate asChild>
-              <TooltipIconButton
-                tooltip="Voice input"
-                side="bottom"
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="aui-composer-dictate size-7 rounded-full"
-                aria-label="Start voice input"
-              >
-                <MicIcon className="aui-composer-dictate-icon size-4" />
-              </TooltipIconButton>
-            </ComposerPrimitive.Dictate>
+          <AuiIf condition={(s) => s.thread.capabilities.dictation}>
+            <AuiIf condition={(s) => s.composer.dictation == null}>
+              <ComposerPrimitive.Dictate asChild>
+                <TooltipIconButton
+                  tooltip="Voice input"
+                  side="bottom"
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="aui-composer-dictate size-7 rounded-full"
+                  aria-label="Start voice input"
+                >
+                  <MicIcon className="aui-composer-dictate-icon size-4" />
+                </TooltipIconButton>
+              </ComposerPrimitive.Dictate>
+            </AuiIf>
+            <AuiIf condition={(s) => s.composer.dictation != null}>
+              <ComposerPrimitive.StopDictation asChild>
+                <TooltipIconButton
+                  tooltip="Stop dictation"
+                  side="bottom"
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
+                  aria-label="Stop voice input"
+                >
+                  <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
+                </TooltipIconButton>
+              </ComposerPrimitive.StopDictation>
+            </AuiIf>
           </AuiIf>
-          <AuiIf condition={(s) => s.composer.dictation != null}>
-            <ComposerPrimitive.StopDictation asChild>
-              <TooltipIconButton
-                tooltip="Stop dictation"
-                side="bottom"
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
-                aria-label="Stop voice input"
-              >
-                <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
-              </TooltipIconButton>
-            </ComposerPrimitive.StopDictation>
-          </AuiIf>
-        </AuiIf>
-        {!isCodingTask && onRecommend ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 rounded-full px-2.5 text-xs"
-            disabled={recommendationLoading || composerText.trim().length === 0}
-            onClick={() => onRecommend(composerText)}
-          >
-            <SparklesIcon className="mr-1 size-3.5" />
-            {recommendationLoading ? "Recommending…" : "Recommend"}
-          </Button>
-        ) : null}
-        {isCodingTask ? (
-          <TooltipIconButton
-            tooltip="Create handoff draft"
-            side="bottom"
-            type="button"
-            variant="default"
-            size="icon"
-            className="aui-composer-send size-7 rounded-full"
-            aria-label="Create handoff draft"
-            disabled={creatingDraft}
-            onClick={createDraft}
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-          </TooltipIconButton>
-        ) : (
-          <AuiIf condition={(s) => !s.thread.isRunning}>
-            <ComposerPrimitive.Send asChild>
-              <TooltipIconButton
-                tooltip="Send message"
-                side="bottom"
-                type="button"
-                variant="default"
-                size="icon"
-                className="aui-composer-send size-7 rounded-full"
-                aria-label="Send message"
-              >
-                <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-              </TooltipIconButton>
-            </ComposerPrimitive.Send>
-          </AuiIf>
-        )}
-        <AuiIf condition={(s) => s.thread.isRunning}>
-          <ComposerPrimitive.Cancel asChild>
-            <Button
+          {isCodingTask ? (
+            <TooltipIconButton
+              tooltip="Create handoff draft"
+              side="bottom"
               type="button"
               variant="default"
               size="icon"
-              className="aui-composer-cancel size-7 rounded-full"
-              aria-label="Stop generating"
+              className="aui-composer-send size-7 rounded-full"
+              aria-label="Create handoff draft"
+              disabled={creatingDraft}
+              onClick={createDraft}
             >
-              <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
-            </Button>
-          </ComposerPrimitive.Cancel>
-        </AuiIf>
+              <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+            </TooltipIconButton>
+          ) : (
+            <AuiIf condition={(s) => !s.thread.isRunning}>
+              <ComposerPrimitive.Send asChild>
+                <TooltipIconButton
+                  tooltip="Send message"
+                  side="bottom"
+                  type="button"
+                  variant="default"
+                  size="icon"
+                  className="aui-composer-send size-7 rounded-full"
+                  aria-label="Send message"
+                >
+                  <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+                </TooltipIconButton>
+              </ComposerPrimitive.Send>
+            </AuiIf>
+          )}
+          <AuiIf condition={(s) => s.thread.isRunning}>
+            <ComposerPrimitive.Cancel asChild>
+              <Button
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-cancel size-7 rounded-full"
+                aria-label="Stop generating"
+              >
+                <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
+              </Button>
+            </ComposerPrimitive.Cancel>
+          </AuiIf>
         </div>
       </div>
     </div>

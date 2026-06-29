@@ -10,7 +10,16 @@ import { routerAbDataSchemas } from "@/lib/assistant-ui/router-ab-data-schemas";
 import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai";
 import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
-import { RouterAbToggle, ReasoningLevelSelect } from "@/components/assistant-ui/router-ab-controls";
+import {
+  RecommenderToggle,
+  RouterAbToggle,
+  ReasoningControls,
+  RecommenderControl,
+} from "@/components/assistant-ui/router-ab-controls";
+import type { RecommenderModelOption } from "@/components/assistant-ui/recommender-model-selector";
+import type { ReasoningCapability } from "@/lib/providers/capability";
+import type { ThinkingMode } from "@/lib/providers/runtime";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { KbdHint } from "@/components/kbd-hint";
 import { Button } from "@/components/ui/button";
 import { useMediaQuery } from "@/components/layout/use-media-query";
@@ -48,7 +57,16 @@ function triggerTarget(target: ShortcutTarget) {
   }
 }
 
-type ReasoningLevel = "low" | "medium" | "high";
+/**
+ * Provider-native reasoning-effort value (OpenAI / Codex
+ * `reasoning_effort`, MiniMax mapped mode, or any future
+ * provider-native value). The chat composer stores the user's
+ * pick as this string and sends it verbatim to `/api/chat`.
+ * The runtime adapter validates the value against the selected
+ * model's `reasoningCapability.options` before forwarding it
+ * to the provider.
+ */
+type ReasoningLevel = string;
 type ModelTier = "cheap" | "expensive";
 
 type ModelOption = {
@@ -62,6 +80,18 @@ type ModelOption = {
   billingLabel?: "API billed" | "MiniMax token plan" | "ChatGPT subscription";
   capabilityKind?: "model_provider" | "agent_backend";
   description?: string;
+  /**
+   * Canonical reasoning / thinking capability for this model. When
+   * the registry has no metadata for the id (e.g. opted-in
+   * unconfigured model), this is `{ kind: "unknown", control: "unknown" }`
+   * — the UI shows the "unknown" notice rather than a fake dropdown.
+   */
+  reasoningCapability: ReasoningCapability;
+  /**
+   * Derived legacy field — concrete effort-level list, derived from
+   * `reasoningCapability`. Empty for thinking-budget, none, and
+   * unknown capabilities.
+   */
   reasoningLevels: ReadonlyArray<ReasoningLevel>;
   tier: ModelTier;
 };
@@ -86,12 +116,17 @@ type ModelsResponse = {
 type ModelRecommendation = {
   recommendedModelId: string;
   recommendedProvider: string;
-  recommendedReasoningLevel: ReasoningLevel | null;
+  /**
+   * Provider-native reasoning-effort value the recommender picked
+   * for the answer model (`null` when the model does not support
+   * reasoning controls).
+   */
+  recommendedReasoningLevel: string | null;
   reasoning: string;
   alternatives?: Array<{
     modelId: string;
     provider: string;
-    reasoningLevel: ReasoningLevel | null;
+    recommendedReasoningLevel: string | null;
     reason: string;
   }>;
   diagnostics: {
@@ -100,6 +135,20 @@ type ModelRecommendation = {
     fallback: boolean;
     fallbackReason: string | null;
     attemptedCandidateModel?: string | null;
+  };
+};
+
+type RouterSettingsLiteResponse = {
+  normalChatRouterProvider: string;
+  normalChatRouterModelId: string | null;
+  normalChatRecommenderModelId: string | null;
+  normalChatRecommenderReasoningLevel: string;
+  recommenderModelOptions: ReadonlyArray<RecommenderModelOption>;
+  defaults: {
+    normalChatRouterProvider: string;
+    normalChatRouterModelId: string | null;
+    normalChatRecommenderModelId: string | null;
+    normalChatRecommenderReasoningLevel: string;
   };
 };
 
@@ -112,6 +161,7 @@ type ThreadListItem = {
   projectId?: string | null;
   threadMode?: ThreadMode;
   harness?: ThreadHarness | null;
+  modelId?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -213,7 +263,17 @@ const CodexChatPane: FC<{
   threadMode?: ThreadMode;
   harness?: ThreadHarness | null;
   onFinish: () => void;
-}> = ({ modelId, threadId, initialMessages, notesDisabled, routerAbOn, activeProjectId, threadMode, harness, onFinish }) => {
+}> = ({
+  modelId,
+  threadId,
+  initialMessages,
+  notesDisabled,
+  routerAbOn,
+  activeProjectId,
+  threadMode,
+  harness,
+  onFinish,
+}) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
     : "gpt-5.4-mini";
@@ -268,12 +328,15 @@ const ChatPane: FC<{
   initialMessages: UIMessage[];
   notesDisabled: boolean;
   routerAbOn: boolean;
-  reasoningLevel: ReasoningLevel;
+  reasoningLevel: string;
+  thinkingMode: ThinkingMode;
   models: ModelOption[];
   activeProjectId: string | null;
   threadMode?: ThreadMode;
   harness?: ThreadHarness | null;
   onFinish: () => void;
+  recommenderEnabled?: boolean;
+  onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   onRecommend?: (message: string) => void;
@@ -286,11 +349,14 @@ const ChatPane: FC<{
   notesDisabled,
   routerAbOn,
   reasoningLevel,
+  thinkingMode,
   models,
   activeProjectId,
   threadMode,
   harness,
   onFinish,
+  recommenderEnabled = false,
+  onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
   onRecommend,
@@ -319,8 +385,11 @@ const ChatPane: FC<{
       new AssistantChatTransport({
         api: "/api/chat",
         // Static body bits only. We use `prepareSendMessagesRequest` to inject
-        // the *current* reasoning level + routerAb toggle at send time so
-        // changes between sends are reflected in the next request.
+        // the *current* reasoning level + thinkingMode + routerAb toggle at
+        // send time so changes between sends are reflected in the next
+        // request. The chat route picks the right wire payload based on the
+        // model's `reasoningCapability` (effort_levels → reasoningEffort,
+        // thinking_budget → minimax.reasoning.enabled, etc.).
         body: { modelId, threadId },
         prepareSendMessagesRequest: ({ body, messages }) => ({
           body: {
@@ -328,12 +397,16 @@ const ChatPane: FC<{
             messages,
             modelId,
             threadId,
-            reasoningLevel,
+            // Send the provider-native value verbatim — the chat
+            // route's capability validator rejects stale values
+            // before forwarding to the runtime adapter.
+            reasoningOption: reasoningLevel,
+            thinkingMode,
             routerAb: effectiveRouterAbOn,
           },
         }),
       }),
-    [modelId, threadId, reasoningLevel, effectiveRouterAbOn],
+    [modelId, threadId, reasoningLevel, thinkingMode, effectiveRouterAbOn],
   );
 
   const runtime = useChatRuntime({
@@ -357,6 +430,8 @@ const ChatPane: FC<{
         harness={harness}
         notesDisabled={notesDisabled}
         routerAbOn={effectiveRouterAbOn}
+        recommenderEnabled={recommenderEnabled}
+        onToggleRecommender={onToggleRecommender}
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
         onRecommend={onRecommend}
@@ -535,26 +610,50 @@ const ModelSelector: FC<{
 const RouterControlsBar: FC<{
   models: ModelOption[];
   selectedModelId: string | null;
-  reasoningLevel: ReasoningLevel;
-  onReasoningChange: (next: ReasoningLevel) => void;
+  reasoningLevel: string;
+  onReasoningChange: (next: string) => void;
+  thinkingMode: ThinkingMode;
+  onThinkingModeChange: (next: ThinkingMode) => void;
   routerAbOn: boolean;
   onRouterAbChange: (next: boolean) => void;
+  recommenderEnabled?: boolean;
+  onToggleRecommender?: (next: boolean) => void;
+  recommenderModelId?: string | null;
+  recommenderModelOptions?: ReadonlyArray<RecommenderModelOption>;
+  recommenderModelLoading?: boolean;
+  recommenderModelSaving?: boolean;
+  onRecommenderModelChange?: (modelId: string) => void;
+  recommenderReasoningLevel?: string;
+  onRecommenderReasoningChange?: (level: string) => void;
 }> = ({
   models,
   selectedModelId,
   reasoningLevel,
   onReasoningChange,
+  thinkingMode,
+  onThinkingModeChange,
   routerAbOn,
   onRouterAbChange,
+  recommenderEnabled = false,
+  onToggleRecommender,
+  recommenderModelId = null,
+  recommenderModelOptions = [],
+  recommenderModelLoading = false,
+  recommenderModelSaving = false,
+  onRecommenderModelChange,
+  recommenderReasoningLevel = "low" as string,
+  onRecommenderReasoningChange,
 }) => {
   const selectedModel = useMemo(
     () => models.find((m) => m.modelId === selectedModelId) ?? null,
     [models, selectedModelId],
   );
-  const supportedLevels: ReadonlyArray<ReasoningLevel> = selectedModel
+  const capability: ReasoningCapability | null = selectedModel
+    ? selectedModel.reasoningCapability
+    : null;
+  const supportedLevels: ReadonlyArray<string> = selectedModel
     ? selectedModel.reasoningLevels
     : ["low"];
-  const supportsReasoningControls = supportedLevels.length > 0;
   const supportsRouterAb = selectedModel?.providerId === "openai";
   // If the persisted reasoning level is no longer supported by the new
   // model, snap to the cheapest supported level so the dropdown stays sane.
@@ -569,17 +668,13 @@ const RouterControlsBar: FC<{
   }, [supportsRouterAb, routerAbOn, onRouterAbChange]);
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-background px-3 py-2 sm:px-4">
-      {supportsReasoningControls ? (
-        <ReasoningLevelSelect
-          value={reasoningLevel}
-          options={supportedLevels}
-          onChange={onReasoningChange}
-        />
-      ) : (
-        <div className="rounded-md border border-border/50 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
-          Reasoning controls are not supported for this provider.
-        </div>
-      )}
+      <ReasoningControls
+        capability={capability}
+        reasoningLevel={reasoningLevel}
+        onReasoningChange={onReasoningChange}
+        thinkingMode={thinkingMode}
+        onThinkingModeChange={onThinkingModeChange}
+      />
       {supportsRouterAb ? (
         <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
       ) : (
@@ -587,6 +682,26 @@ const RouterControlsBar: FC<{
           Router A/B is OpenAI-only.
         </div>
       )}
+      {onToggleRecommender ? (
+        onRecommenderModelChange ? (
+          <RecommenderControl
+            enabled={recommenderEnabled}
+            onToggle={onToggleRecommender}
+            modelId={recommenderModelId}
+            modelOptions={recommenderModelOptions}
+            onModelChange={onRecommenderModelChange}
+            modelLoading={recommenderModelLoading}
+            modelSaving={recommenderModelSaving}
+            reasoningLevel={recommenderReasoningLevel}
+            onReasoningChange={onRecommenderReasoningChange}
+          />
+        ) : (
+          <RecommenderToggle on={recommenderEnabled} onToggle={onToggleRecommender} />
+        )
+      ) : null}
+      <div className="ml-auto flex items-center">
+        <ThemeToggle />
+      </div>
     </div>
   );
 };
@@ -700,7 +815,11 @@ const NewChatDialog: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
   project: ProjectListItem | null;
-  onCreate: (input: { threadMode: ThreadMode; harness?: ThreadHarness | null; firstMessage?: string }) => void;
+  onCreate: (input: {
+    threadMode: ThreadMode;
+    harness?: ThreadHarness | null;
+    firstMessage?: string;
+  }) => void;
 }> = ({ open, onOpenChange, project, onCreate }) => {
   const [threadMode, setThreadMode] = useState<ThreadMode>("chat");
   const [instruction, setInstruction] = useState("");
@@ -759,7 +878,11 @@ const NewChatDialog: FC<{
       setError("Choose a harness before creating the coding task thread.");
       return;
     }
-    onCreate({ threadMode: "coding_task", harness: selectedHarness, firstMessage: instruction.trim() });
+    onCreate({
+      threadMode: "coding_task",
+      harness: selectedHarness,
+      firstMessage: instruction.trim(),
+    });
     onOpenChange(false);
   };
 
@@ -768,15 +891,27 @@ const NewChatDialog: FC<{
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40" />
         <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-50 w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-background p-4 shadow-xl">
-          <DialogPrimitive.Title className="text-base font-semibold">New chat</DialogPrimitive.Title>
+          <DialogPrimitive.Title className="text-base font-semibold">
+            New chat
+          </DialogPrimitive.Title>
           <DialogPrimitive.Description className="mt-1 text-sm text-muted-foreground">
             {project ? `Create a chat in ${project.name}.` : "Create a general chat."}
           </DialogPrimitive.Description>
 
           <div className="mt-4 flex gap-2 text-sm">
-            <Button variant={threadMode === "chat" ? "default" : "outline"} onClick={() => setThreadMode("chat")}>Chat</Button>
+            <Button
+              variant={threadMode === "chat" ? "default" : "outline"}
+              onClick={() => setThreadMode("chat")}
+            >
+              Chat
+            </Button>
             {project ? (
-              <Button variant={threadMode === "coding_task" ? "default" : "outline"} onClick={() => setThreadMode("coding_task")}>Coding task</Button>
+              <Button
+                variant={threadMode === "coding_task" ? "default" : "outline"}
+                onClick={() => setThreadMode("coding_task")}
+              >
+                Coding task
+              </Button>
             ) : null}
           </div>
 
@@ -793,12 +928,16 @@ const NewChatDialog: FC<{
               </Button>
               {recommendation ? (
                 <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
-                  <div className="font-medium">Recommended harness: {harnessLabel(recommendation.recommendedHarness)}</div>
+                  <div className="font-medium">
+                    Recommended harness: {harnessLabel(recommendation.recommendedHarness)}
+                  </div>
                   <p className="mt-1 text-muted-foreground">{recommendation.reasoning}</p>
                   {recommendation.alternatives?.length ? (
                     <ul className="mt-2 list-disc pl-5 text-xs text-muted-foreground">
                       {recommendation.alternatives.map((alt) => (
-                        <li key={alt.harness}>{harnessLabel(alt.harness)}: {alt.reason}</li>
+                        <li key={alt.harness}>
+                          {harnessLabel(alt.harness)}: {alt.reason}
+                        </li>
                       ))}
                     </ul>
                   ) : null}
@@ -806,7 +945,12 @@ const NewChatDialog: FC<{
               ) : null}
               <div className="flex flex-wrap gap-2 text-sm">
                 {(["pi", "codex", "opencode"] as const).map((harness) => (
-                  <Button key={harness} type="button" variant={selectedHarness === harness ? "default" : "outline"} onClick={() => setSelectedHarness(harness)}>
+                  <Button
+                    key={harness}
+                    type="button"
+                    variant={selectedHarness === harness ? "default" : "outline"}
+                    onClick={() => setSelectedHarness(harness)}
+                  >
                     {harnessLabel(harness)}
                   </Button>
                 ))}
@@ -816,8 +960,14 @@ const NewChatDialog: FC<{
 
           {error ? <div className="mt-3 text-sm text-destructive">{error}</div> : null}
           <div className="mt-5 flex justify-end gap-2">
-            <DialogPrimitive.Close asChild><Button type="button" variant="ghost">Cancel</Button></DialogPrimitive.Close>
-            <Button type="button" onClick={create}>Create thread</Button>
+            <DialogPrimitive.Close asChild>
+              <Button type="button" variant="ghost">
+                Cancel
+              </Button>
+            </DialogPrimitive.Close>
+            <Button type="button" onClick={create}>
+              Create thread
+            </Button>
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
@@ -847,8 +997,41 @@ export const Assistant = () => {
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
-  const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<ReasoningLevel>("low");
+  const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<string>("low");
+  const [selectedThinkingMode, setSelectedThinkingMode] =
+    useState<ThinkingMode>("provider_default");
   const [routerAbOn, setRouterAbOn] = useState(true);
+  const [recommenderModelId, setRecommenderModelId] = useState<string | null>(null);
+  const [recommenderModelOptions, setRecommenderModelOptions] = useState<
+    ReadonlyArray<RecommenderModelOption>
+  >([]);
+  const [recommenderModelLoading, setRecommenderModelLoading] = useState(true);
+  const [recommenderModelSaving, setRecommenderModelSaving] = useState(false);
+  const [recommenderModelError, setRecommenderModelError] = useState<string | null>(null);
+  const [recommenderReasoningLevel, setRecommenderReasoningLevel] = useState<string>("low");
+  // Recommend-model toggle. When ON, every Send goes through a
+  // recommendation round-trip first. When OFF, the chat composer
+  // sends with the manually selected model immediately. Persisted
+  // per-tab via sessionStorage so a refresh keeps the user's choice.
+  const [recommenderEnabled, setRecommenderEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.sessionStorage.getItem("control_room.recommender_enabled") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleRecommender = useCallback((next: boolean) => {
+    setRecommenderEnabled(next);
+    try {
+      window.sessionStorage.setItem("control_room.recommender_enabled", String(next));
+    } catch {
+      // sessionStorage may be unavailable (private mode, etc.) — that's fine.
+    }
+    // Toggling off clears any in-flight recommendation banner so the
+    // composer returns to a clean state.
+    if (!next) setRecommendation(null);
+  }, []);
   const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -929,6 +1112,104 @@ export const Assistant = () => {
     };
   }, [mounted]);
 
+  // Fetch the lightweight router settings (current recommender model +
+  // available options). This drives the inline `RecommenderControl` in
+  // the chat composer. Failures are non-fatal: the picker just stays
+  // empty until the user clicks Save in Settings.
+  useEffect(() => {
+    if (!mounted) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/router/settings", { cache: "no-store" });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data: RouterSettingsLiteResponse = await res.json();
+        if (cancelled) return;
+        setRecommenderModelId(data.normalChatRecommenderModelId ?? null);
+        setRecommenderModelOptions(data.recommenderModelOptions ?? []);
+        if (data.normalChatRecommenderReasoningLevel) {
+          setRecommenderReasoningLevel(data.normalChatRecommenderReasoningLevel);
+        }
+        setRecommenderModelError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setRecommenderModelError(
+          err instanceof Error ? err.message : "Failed to load recommender settings",
+        );
+      } finally {
+        if (!cancelled) setRecommenderModelLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted]);
+
+  const handleRecommenderModelChange = useCallback(
+    async (nextId: string) => {
+      if (!nextId) return;
+      const previousId = recommenderModelId;
+      setRecommenderModelId(nextId);
+      setRecommenderModelSaving(true);
+      setRecommenderModelError(null);
+      try {
+        const res = await fetch("/api/router/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ normalChatRecommenderModelId: nextId }),
+        });
+        if (!res.ok) {
+          const reason = await res
+            .json()
+            .catch(() => ({ reason: `status ${res.status}` }))
+            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
+          throw new Error(reason);
+        }
+      } catch (err) {
+        // Roll back so the picker reflects what the server actually saved.
+        setRecommenderModelId(previousId);
+        setRecommenderModelError(
+          err instanceof Error ? err.message : "Failed to save recommender model",
+        );
+      } finally {
+        setRecommenderModelSaving(false);
+      }
+    },
+    [recommenderModelId],
+  );
+
+  const handleRecommenderReasoningChange = useCallback(
+    async (nextLevel: ReasoningLevel) => {
+      if (nextLevel === recommenderReasoningLevel) return;
+      const previousLevel = recommenderReasoningLevel;
+      setRecommenderReasoningLevel(nextLevel);
+      setRecommenderModelSaving(true);
+      setRecommenderModelError(null);
+      try {
+        const res = await fetch("/api/router/settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ normalChatRecommenderReasoningLevel: nextLevel }),
+        });
+        if (!res.ok) {
+          const reason = await res
+            .json()
+            .catch(() => ({ reason: `status ${res.status}` }))
+            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
+          throw new Error(reason);
+        }
+      } catch (err) {
+        setRecommenderReasoningLevel(previousLevel);
+        setRecommenderModelError(
+          err instanceof Error ? err.message : "Failed to save recommender reasoning level",
+        );
+      } finally {
+        setRecommenderModelSaving(false);
+      }
+    },
+    [recommenderReasoningLevel],
+  );
+
   useEffect(() => {
     if (!mounted || isLocalThreadId(activeThreadId)) {
       setThreadMessages([]);
@@ -948,6 +1229,28 @@ export const Assistant = () => {
           setThreads((prev) =>
             prev.map((t) => (t.id === data.thread?.id ? { ...t, ...data.thread } : t)),
           );
+          // When the user switches to a chat, restore its stored
+          // model so the picker + reasoning controls reflect the
+          // model the chat was created with. The chat composer uses
+          // this id to send new messages; without restoring it, the
+          // picker would keep showing the previously-active model's
+          // settings, which makes chat switching feel broken (the
+          // user changes chats and the dropdown silently stays on
+          // the old model). We only update if the stored modelId
+          // is still in the available models list so the picker
+          // never shows a model that the user has since disabled.
+          const thread = data.thread;
+          if (thread && thread.modelId) {
+            setSelectedModelId((prev) => {
+              if (prev === thread.modelId) return prev;
+              // models is read via closure; the effect deps include
+              // `models` so this re-runs whenever they change.
+              if (models.some((m) => m.modelId === thread.modelId && m.enabled)) {
+                return thread.modelId ?? null;
+              }
+              return prev;
+            });
+          }
         }
       } catch {
         if (!cancelled) setThreadMessages([]);
@@ -958,53 +1261,56 @@ export const Assistant = () => {
     return () => {
       cancelled = true;
     };
-  }, [mounted, activeThreadId]);
+  }, [mounted, activeThreadId, models]);
 
-  const handleCreateThread = useCallback(async (input?: {
-    threadMode?: ThreadMode;
-    harness?: ThreadHarness | null;
-    firstMessage?: string;
-  }) => {
-    const threadMode = input?.threadMode ?? "chat";
-    const harness = input?.harness ?? null;
-    const firstMessage = input?.firstMessage?.trim() ?? "";
-    if (dbConfigured) {
-      try {
-        const res = await fetch("/api/threads", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: "New chat",
-            modelId: selectedModelId,
-            projectId: activeProjectId,
-            threadMode,
-            harness,
-            firstMessage,
-          }),
-        });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data: { thread: ThreadListItem } = await res.json();
-        setThreads((prev) => [data.thread, ...prev.filter((t) => t.id !== data.thread.id)]);
-        setActiveThreadId(data.thread.id);
-        setThreadMessages([]);
-        return;
-      } catch {
-        setDbConfigured(false);
+  const handleCreateThread = useCallback(
+    async (input?: {
+      threadMode?: ThreadMode;
+      harness?: ThreadHarness | null;
+      firstMessage?: string;
+    }) => {
+      const threadMode = input?.threadMode ?? "chat";
+      const harness = input?.harness ?? null;
+      const firstMessage = input?.firstMessage?.trim() ?? "";
+      if (dbConfigured) {
+        try {
+          const res = await fetch("/api/threads", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "New chat",
+              modelId: selectedModelId,
+              projectId: activeProjectId,
+              threadMode,
+              harness,
+              firstMessage,
+            }),
+          });
+          if (!res.ok) throw new Error(`status ${res.status}`);
+          const data: { thread: ThreadListItem } = await res.json();
+          setThreads((prev) => [data.thread, ...prev.filter((t) => t.id !== data.thread.id)]);
+          setActiveThreadId(data.thread.id);
+          setThreadMessages([]);
+          return;
+        } catch {
+          setDbConfigured(false);
+        }
       }
-    }
 
-    newChatCounter.current += 1;
-    const newThread: ThreadListItem = {
-      id: `local-${Date.now()}-${newChatCounter.current}`,
-      title: `New chat ${newChatCounter.current}`,
-      projectId: activeProjectId,
-      threadMode,
-      harness,
-    };
-    setThreads((prev) => [newThread, ...prev]);
-    setActiveThreadId(newThread.id);
-    setThreadMessages([]);
-  }, [dbConfigured, selectedModelId, activeProjectId]);
+      newChatCounter.current += 1;
+      const newThread: ThreadListItem = {
+        id: `local-${Date.now()}-${newChatCounter.current}`,
+        title: `New chat ${newChatCounter.current}`,
+        projectId: activeProjectId,
+        threadMode,
+        harness,
+      };
+      setThreads((prev) => [newThread, ...prev]);
+      setActiveThreadId(newThread.id);
+      setThreadMessages([]);
+    },
+    [dbConfigured, selectedModelId, activeProjectId],
+  );
 
   const handleNewThread = useCallback(() => {
     if (activeProjectId) setNewChatOpen(true);
@@ -1230,8 +1536,19 @@ export const Assistant = () => {
           selectedModelId={selectedModelId}
           reasoningLevel={selectedReasoningLevel}
           onReasoningChange={setSelectedReasoningLevel}
+          thinkingMode={selectedThinkingMode}
+          onThinkingModeChange={setSelectedThinkingMode}
           routerAbOn={routerAbOn}
           onRouterAbChange={setRouterAbOn}
+          recommenderEnabled={recommenderEnabled}
+          onToggleRecommender={toggleRecommender}
+          recommenderModelId={recommenderModelId}
+          recommenderModelOptions={recommenderModelOptions}
+          recommenderModelLoading={recommenderModelLoading}
+          recommenderModelSaving={recommenderModelSaving}
+          onRecommenderModelChange={handleRecommenderModelChange}
+          recommenderReasoningLevel={recommenderReasoningLevel}
+          onRecommenderReasoningChange={handleRecommenderReasoningChange}
         />
 
         {!dbConfigured && (
@@ -1245,6 +1562,17 @@ export const Assistant = () => {
             Failed to load models: {modelsError}
           </div>
         )}
+
+        {recommenderModelError ? (
+          <div
+            className="border-b border-border bg-destructive/10 px-4 py-2 text-xs text-destructive"
+            data-testid="chat-recommender-model-error"
+            role="alert"
+          >
+            Recommender model: {recommenderModelError}. You can still pick a model in Settings →
+            Router → Normal-chat recommender model.
+          </div>
+        ) : null}
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {messagesLoading ? (
@@ -1260,10 +1588,13 @@ export const Assistant = () => {
               notesDisabled={!dbConfigured || threadsLoading}
               routerAbOn={routerAbOn}
               reasoningLevel={selectedReasoningLevel}
+              thinkingMode={selectedThinkingMode}
               models={models}
               activeProjectId={activeProjectId}
               threadMode={activeThread?.threadMode ?? "chat"}
               harness={activeThread?.harness ?? null}
+              recommenderEnabled={recommenderEnabled}
+              onToggleRecommender={toggleRecommender}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
               onRecommend={handleRecommendModel}

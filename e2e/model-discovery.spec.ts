@@ -231,9 +231,7 @@ test.describe("Model discovery + unified Model Registry", () => {
     const reEnablePutRes = await reEnablePutPromise;
     expect(reEnablePutRes.ok()).toBeTruthy();
     const restored = await request.get("/api/models");
-    const restoredIds = (await restored.json()).models.map(
-      (m: { modelId: string }) => m.modelId,
-    );
+    const restoredIds = (await restored.json()).models.map((m: { modelId: string }) => m.modelId);
     expect(restoredIds).toContain("gpt-5.4-mini");
   });
 
