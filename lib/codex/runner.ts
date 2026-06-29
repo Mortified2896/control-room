@@ -220,6 +220,24 @@ export type CodexChatResult =
       responseText: string | null;
       exitCode: number | null;
       error: string;
+      /**
+       * Normalized failure category, used by the chat route to pick
+       * the right user-facing copy. Defaults to `"internal"` when the
+       * caller does not populate it. NEVER log secrets here.
+       */
+      errorKind: CodexFailureKind;
+      /**
+       * Raw `stderr` from the Codex CLI subprocess. Kept on the
+       * failure envelope so the API route can log it server-side for
+       * debugging, but the chat route MUST NOT forward it to the
+       * client (raw stderr is what the original UI was showing as a
+       * normal assistant message — see AGENTS.md "do not echo raw
+       * backend stderr to the network"). The chat route logs it at
+       * info level and the user sees only `error` above.
+       */
+      rawStderr?: string;
+      /** Raw `stdout` from the Codex CLI subprocess. Same handling as `rawStderr`. */
+      rawStdout?: string;
       durationMs: number;
     };
 
@@ -255,6 +273,7 @@ export async function runCodexExec(
       responseText: null,
       exitCode: null,
       error: "prompt must be a string",
+      errorKind: "internal",
       durationMs: 0,
     };
   }
@@ -265,6 +284,7 @@ export async function runCodexExec(
       responseText: null,
       exitCode: null,
       error: "prompt must not be empty",
+      errorKind: "internal",
       durationMs: 0,
     };
   }
@@ -275,6 +295,7 @@ export async function runCodexExec(
       responseText: null,
       exitCode: null,
       error: `prompt must be <= ${maxPromptLength} chars`,
+      errorKind: "internal",
       durationMs: 0,
     };
   }
@@ -303,27 +324,24 @@ export async function runCodexExec(
       responseText: null,
       exitCode: null,
       error: `codex exec timed out after ${EXEC_TIMEOUT_MS}ms`,
+      errorKind: "internal",
       durationMs: Date.now() - start,
     };
   }
   if (result.exitCode !== 0) {
-    const combined = `${result.stdout}\n${result.stderr}`;
-    const tail = combined
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(-3)
-      .join(" | ");
-    let humanError = `codex exec exited ${result.exitCode}`;
-    if (tail) humanError += `: ${tail}`;
-    if (/401 unauthorized|missing bearer|not logged in/i.test(combined)) {
-      humanError = "Codex is installed but not logged in. Run: codex login --device-auth";
-    }
+    const classified = classifyCodexFailure(`${result.stdout}\n${result.stderr}`);
     return {
       ok: false,
       responseText: null,
       exitCode: result.exitCode,
-      error: humanError,
+      error: classified.userMessage,
+      errorKind: classified.kind,
+      // Raw `stdout + stderr` are kept on the failure envelope so the
+      // API route can log them server-side, but the chat route MUST
+      // NOT forward them to the client — the user-visible message is
+      // the normalized `error` above.
+      rawStderr: result.stderr,
+      rawStdout: result.stdout,
       durationMs: Date.now() - start,
     };
   }
@@ -334,6 +352,149 @@ export async function runCodexExec(
     exitCode: result.exitCode,
     durationMs: Date.now() - start,
   };
+}
+
+/**
+ * Classify a Codex CLI failure into a user-facing error kind + a
+ * sanitized message. The raw stderr/stdout are NEVER surfaced to the
+ * chat client; the chat route only forwards `userMessage` (plus the
+ * kind for diagnostics).
+ *
+ * Categories (ordered most → least specific):
+ *   1. `usage_limit`   — the Codex account is out of credits. Distinct
+ *                       from a generic "exited 1" because the user
+ *                       needs to know it's a quota problem and not a
+ *                       network/permissions/auth issue.
+ *   2. `auth`          — Codex is installed but not logged in, or the
+ *                       bearer token is missing / rejected.
+ *   3. `rate_limit`    — Codex is throttling the request (HTTP 429).
+ *   4. `unsupported`   — the requested model id is not in the catalog.
+ *   5. `internal`      — anything else (process crash, network, etc.).
+ *
+ * All "fatal" categories are returned with a clean UI copy. The
+ * Codex skill-budget warning is filtered out as noise when the same
+ * stderr carries a real fatal `ERROR:` line.
+ */
+export type CodexFailureKind = "usage_limit" | "auth" | "rate_limit" | "unsupported" | "internal";
+
+export type CodexFailureClassification = {
+  kind: CodexFailureKind;
+  /**
+   * Sanitized, user-facing error message. Safe to render in the chat
+   * composer / settings page; does NOT include raw stderr or
+   * stack-trace noise. Codex skill-budget warnings are intentionally
+   * dropped here because they are advisory, not fatal.
+   */
+  userMessage: string;
+};
+
+export function classifyCodexFailure(combinedOutput: string): CodexFailureClassification {
+  const text = combinedOutput ?? "";
+  const lower = text.toLowerCase();
+
+  // 1. Usage limit / quota exhaustion. Codex emits these via
+  //    "You've hit your usage limit" and via upgrade links under
+  //    chatgpt.com/codex/settings/usage. We treat any matching line
+  //    as a usage-limit failure even when other warnings (e.g. the
+  //    skills-context budget warning) are interleaved.
+  if (
+    /you'?ve hit your usage limit/i.test(text) ||
+    /usage limit reached/i.test(text) ||
+    /quota (exhausted|exceeded)/i.test(text) ||
+    /upgrade to pro/i.test(text) ||
+    /chatgpt\.com\/codex\/settings\/usage/i.test(text)
+  ) {
+    return {
+      kind: "usage_limit",
+      userMessage:
+        "Codex usage limit reached. This message was not sent with Codex — try again after the limit resets or switch to a different model.",
+    };
+  }
+
+  // 2. Auth / login errors. The runner already handles "Not logged in"
+  //    in a preflight, but the CLI may also surface bearer-token
+  //    rejections mid-exec.
+  if (
+    /401 unauthorized/i.test(text) ||
+    /missing bearer/i.test(text) ||
+    /not logged in/i.test(text) ||
+    /api key not set/i.test(text)
+  ) {
+    return {
+      kind: "auth",
+      userMessage: "Codex is installed but not logged in. Run: codex login --device-auth",
+    };
+  }
+
+  // 3. Rate limit (HTTP 429 from the upstream provider, distinct
+  //    from the per-account "usage limit" cap above).
+  if (/429 too many requests|rate.?limit(ed)?/i.test(lower)) {
+    return {
+      kind: "rate_limit",
+      userMessage: "Codex rate limit hit. Wait a moment and try again, or switch models.",
+    };
+  }
+
+  // 4. Unknown / unsupported model id.
+  if (/unknown model|model not found|model .* not supported/i.test(lower)) {
+    return {
+      kind: "unsupported",
+      userMessage: "This Codex model id is not recognized by the installed CLI.",
+    };
+  }
+
+  // 5. Default. Pull only the last `ERROR: ...` line (or the last
+  //    non-empty line if there is no ERROR marker) so we never echo
+  //    the skills-context warning, the bubblewrap warning, or other
+  //    advisory noise.
+  const errorLine = lastErrorLine(text);
+  const tail = errorLine
+    ? sanitizeErrorLine(errorLine)
+    : "Codex exec exited with a non-zero status. See the server logs for the raw output.";
+  return {
+    kind: "internal",
+    userMessage: tail,
+  };
+}
+
+/**
+ * Pick the last line that looks like a fatal Codex error. The Codex
+ * CLI prints advisory warnings (skill budget, bubblewrap, etc.) above
+ * the actual `ERROR:` line, and we only want the error. If no
+ * `ERROR:` line exists we fall back to the last non-empty line.
+ */
+function lastErrorLine(combined: string): string | null {
+  const lines = combined
+    .split("\n")
+    .map((l) => l.replace(/\u001b\[[0-9;]*m/g, "")) // strip ANSI colors
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] ?? "";
+    if (/^error[:\s]/i.test(line)) return line;
+  }
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] ?? "";
+    if (/^warning[:\s]/i.test(line)) continue; // skip warnings
+    return line;
+  }
+  return null;
+}
+
+/**
+ * Strip the noisy prefix the CLI prefixes to `ERROR:` lines, collapse
+ * repeated whitespace, and cap the line length so the UI never shows
+ * a wall of stderr. We never trim to nothing — at minimum we surface
+ * "Codex exec failed." so the user is never left guessing.
+ */
+function sanitizeErrorLine(line: string): string {
+  const stripped = line
+    .replace(/^(error|warning)\s*[:-]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped) return "Codex exec failed.";
+  const MAX = 240;
+  return stripped.length > MAX ? `${stripped.slice(0, MAX - 1)}…` : stripped;
 }
 
 /**

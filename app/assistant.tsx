@@ -282,6 +282,27 @@ const CodexChatPane: FC<{
   threadMode?: ThreadMode;
   harness?: ThreadHarness | null;
   onFinish: () => void;
+  /**
+   * Recommender props are forwarded to the inner `Thread` so the
+   * Codex pane honors the chat-level "Recommend on" toggle. Without
+   * these the composer would send every message straight to the
+   * Codex backend — bypassing the recommender's fallback chain
+   * (primary → configured_fallback) and silently surfacing raw
+   * Codex CLI stderr as a normal assistant message whenever Codex
+   * itself failed (e.g. usage-limit). The brief is explicit:
+   * "Recommend ON means run recommender engine first. manual model
+   * is only used when Recommend is OFF or user chooses Keep current."
+   */
+  recommenderEnabled?: boolean;
+  onToggleRecommender?: (next: boolean) => void;
+  recommendation?: ModelRecommendation | null;
+  recommendationLoading?: boolean;
+  manualModelSummary?: string;
+  recommenderEngineSummary?: string;
+  fallbackEngineSummary?: string;
+  onRecommend?: (message: string) => void;
+  onUseRecommendation?: () => void;
+  onKeepCurrent?: () => void;
 }> = ({
   modelId,
   threadId,
@@ -292,6 +313,16 @@ const CodexChatPane: FC<{
   threadMode,
   harness,
   onFinish,
+  recommenderEnabled = false,
+  onToggleRecommender,
+  recommendation = null,
+  recommendationLoading = false,
+  manualModelSummary,
+  recommenderEngineSummary,
+  fallbackEngineSummary,
+  onRecommend,
+  onUseRecommendation,
+  onKeepCurrent,
 }) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
@@ -310,15 +341,34 @@ const CodexChatPane: FC<{
           ok: boolean;
           responseText: string | null;
           error: string | null;
+          errorKind?: string | null;
         };
         onFinish();
+        if (!data.ok) {
+          // THROW instead of returning the error as text. The old
+          // behavior of returning `Codex backend error: <stderr>` as
+          // a normal assistant text part is what made the user's
+          // chat history look like the Codex CLI was answering them.
+          // assistant-ui attaches thrown errors to the message part
+          // so the existing message-error UI can render a clean
+          // final-send failure card (kind + user-facing copy) instead
+          // of normal assistant prose. The route never forwards raw
+          // stderr — `data.error` is already sanitized by
+          // `classifyCodexFailure` in `lib/codex/runner.ts`.
+          const kind = data.errorKind ?? "internal";
+          const err = new Error(data.error ?? "Codex request failed");
+          (err as Error & { codexErrorKind?: string; codexErrorCategory?: string }).codexErrorKind =
+            kind;
+          (
+            err as Error & { codexErrorKind?: string; codexErrorCategory?: string }
+          ).codexErrorCategory = "codex_final_send_failed";
+          throw err;
+        }
         return {
           content: [
             {
               type: "text",
-              text: data.ok
-                ? (data.responseText ?? "")
-                : `Codex backend error: ${data.error ?? "Unknown error"}`,
+              text: data.responseText ?? "",
             },
           ],
         };
@@ -336,6 +386,16 @@ const CodexChatPane: FC<{
         harness={harness}
         notesDisabled={notesDisabled}
         routerAbOn={routerAbOn}
+        recommenderEnabled={recommenderEnabled}
+        onToggleRecommender={onToggleRecommender}
+        recommendation={recommendation}
+        recommendationLoading={recommendationLoading}
+        manualModelSummary={manualModelSummary}
+        recommenderEngineSummary={recommenderEngineSummary}
+        fallbackEngineSummary={fallbackEngineSummary}
+        onRecommend={onRecommend}
+        onUseRecommendation={onUseRecommendation}
+        onKeepCurrent={onKeepCurrent}
       />
     </AssistantRuntimeProvider>
   );
@@ -403,6 +463,19 @@ const ChatPane: FC<{
         threadMode={threadMode}
         harness={harness}
         onFinish={onFinish}
+        // Forward the recommender props so the Codex pane honors
+        // the chat-level "Recommend on" toggle. See CodexChatPane's
+        // docstring for the full rationale.
+        recommenderEnabled={recommenderEnabled}
+        onToggleRecommender={onToggleRecommender}
+        recommendation={recommendation}
+        recommendationLoading={recommendationLoading}
+        manualModelSummary={manualModelSummary}
+        recommenderEngineSummary={recommenderEngineSummary}
+        fallbackEngineSummary={fallbackEngineSummary}
+        onRecommend={onRecommend}
+        onUseRecommendation={onUseRecommendation}
+        onKeepCurrent={onKeepCurrent}
       />
     );
   }

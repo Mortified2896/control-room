@@ -7,7 +7,7 @@ import { getModelMeta, resolveModel } from "@/lib/providers";
 import type { ResolvedModel } from "@/lib/providers/types";
 import { getRuntimeModel, getRuntimeProviderOptions } from "@/lib/providers/runtime";
 import { getEffectiveRouterSettings } from "@/lib/router/settings-store";
-import { buildRouterFallbackChain, pickRouterModelForRun } from "@/lib/router/schema";
+import { buildRouterFallbackChain } from "@/lib/router/schema";
 import {
   buildNormalChatRecommenderPrompt,
   type NormalChatAvailableModel,
@@ -91,6 +91,16 @@ type RecommendationResponse = {
      * actually call OpenAI?" diagnostics.
      */
     fallbackChain: ReadonlyArray<{ providerId: string; modelId: string }>;
+    /**
+     * Per-rung call-attempt trace. Records every recommender rung
+     * the route actually called, with the failure reason for any
+     * rung that did not produce a parseable recommendation. Lets
+     * the chat composer render diagnostics like
+     * "primary recommender failed: codex:gpt-5.4-mini · low ·
+     * usage_limit; configured fallback tried: MiniMax-M3 ·
+     * provider_default" exactly as the brief asks.
+     */
+    callAttempts?: ReadonlyArray<{ providerId: string; modelId: string; reason: string }>;
   };
 };
 
@@ -250,12 +260,9 @@ export async function POST(request: Request) {
     null as unknown as { provider: "openai" | "codex" | "minimax"; modelId: string };
   // Cache the resolved provider/model from the chain walker so we
   // don't need to re-resolve the same id (TS can't narrow the
-  // closure-assigned variable, but `resolvedActiveRecommender` is
-  // a fresh local we control).
-  let resolvedActiveRecommender: {
-    providerId: "openai" | "minimax" | "codex";
-    modelId: string;
-  } | null = null;
+  // closure-assigned variable, but the call-site consumes
+  // `resolvedForCall` directly, so we do not need a separate outer
+  // `resolvedActiveRecommender` here.
   let recommenderSource:
     | "configured"
     | "configured_fallback"
@@ -269,6 +276,16 @@ export async function POST(request: Request) {
   // resolver below records the active rung; the recommender call site
   // reads it to pick the right level.
   let activeRungIsUserFallback = false;
+  // Per-rung call-attempt trace. Populated as the route walks the
+  // chain at the call level; surfaced in the response `diagnostics`
+  // so the chat composer can render "primary recommender failed: …
+  // usage_limit; configured fallback tried: …" exactly as the brief
+  // asks. Declared in the outer scope so the catch block can also
+  // include it in the loud-failure response.
+  let callAttempts: Array<{
+    candidate: { providerId: "openai" | "codex" | "minimax"; modelId: string };
+    reason: string;
+  }> = [];
 
   try {
     const modelsPayload = await getEffectiveModelsResponse();
@@ -373,45 +390,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // Walk the chain. For each candidate, try to resolve the
-    // provider/model id to a runtime-invokable shape. The
-    // `resolve_failed_*` reasons are how the chain advances past
-    // a model that the registry refuses to surface (e.g. Codex
-    // gated off in Settings) — the next candidate gets tried
-    // without ever calling OpenAI.
-    const resolution = await pickRouterModelForRun({
-      chain,
-      allowOpenAiApiRouter: settings.allowOpenAiApiRouter,
-      resolver: async (candidate) => {
-        const resolved = resolveModel(candidate.modelId);
-        if (!resolved.ok) {
-          return {
-            ok: false as const,
-            reason: `resolve_failed:${resolved.error.kind}`,
-          };
-        }
-        activeRecommender = {
-          provider: candidate.providerId,
-          modelId: candidate.modelId,
-        };
-        resolvedActiveRecommender = resolved.resolved;
-        // Track whether the active rung is the user-configured
-        // fallback so we pick the right reasoning level below.
-        activeRungIsUserFallback = Boolean(candidate.isUserConfiguredFallback);
-        return { ok: true as const };
-      },
-    });
-    if (!resolution.ok) {
-      recommenderResolutionReason = resolution.reason;
-      throw new Error(recommenderResolutionReason);
-    }
-    recommenderSource = resolution.source;
-    recommenderResolutionReason = resolution.reason;
-
-    if (!activeRecommender || !resolvedActiveRecommender) {
-      throw new Error("active_recommender_unset_after_resolution");
-    }
-
     // Build the prompt via the shared helper so the API route and the
     // Settings UI render the same prompt body. The user prompt is
     // JSON-serialized so the model can parse it deterministically.
@@ -431,101 +409,190 @@ export async function POST(request: Request) {
       availableModels,
     });
 
-    // Snapshot to a local const so TS can narrow the mutable outer let
-    // through this call site (the IIFE below loses narrowing).
-    const resolvedRecommender = resolvedActiveRecommender as {
-      providerId: "openai" | "minimax" | "codex";
-      modelId: string;
-      billingSource: import("@/lib/providers/types").BillingSource;
-    } | null;
-    // Pick the right reasoning level for the active recommender:
-    //   - When the user-configured fallback is the active rung, use
-    //     `normalChatRecommenderFallbackReasoningLevel`. When that
-    //     level is null we treat the fallback as accepting the
-    //     provider default and skip forwarding any reasoning hint.
-    //   - Otherwise use the primary `normalChatRecommenderReasoningLevel`.
-    // The runtime adapter's `reasoningOption` is non-nullable, so a
-    // null fallback level is surfaced as `undefined` (omit the option
-    // entirely) instead of crashing. The provider then uses its own
-    // default — matching the "user picked a fallback but no reasoning
-    // level for it" intent.
-    const activeReasoningLevel: string | undefined = activeRungIsUserFallback
-      ? (settings.normalChatRecommenderFallbackReasoningLevel ?? undefined)
-      : settings.normalChatRecommenderReasoningLevel;
-    const recommenderProviderOptions: ReturnType<typeof getRuntimeProviderOptions> = (() => {
-      if (!resolvedRecommender) return undefined;
-      if (activeReasoningLevel === undefined) return undefined;
-      const recommenderMeta = getModelMeta(resolvedRecommender.modelId);
-      const capability = recommenderMeta?.reasoningCapability ?? UNKNOWN_REASONING_CAPABILITY;
-      // Pass the configured value verbatim. The runtime adapter
-      // validates against the capability's `options` list and
-      // forwards the value unchanged to the provider.
-      return getRuntimeProviderOptions({
-        resolved: resolvedRecommender,
-        capability,
-        reasoningOption: activeReasoningLevel,
-      });
-    })();
+    // Walk the chain at the CALL level too. The previous revision of
+    // this route only walked the chain at the resolution level
+    // (`pickRouterModelForRun`), which means a primary recommender
+    // (e.g. Codex) that resolved OK but failed at runtime (e.g.
+    // "usage limit") short-circuited straight to the catch block and
+    // never tried the user-configured fallback (e.g. MiniMax-M3).
+    // The brief is explicit: "If Codex fails because of usage
+    // limit/quota: try the configured fallback recommender engine".
+    //
+    // The walk is bounded to the first candidate that both
+    // (a) resolves to a runtime-invokable shape AND
+    // (b) returns a parseable recommendation from the provider call.
+    // We deliberately do NOT add an automatic retry of the same
+    // candidate — usage-limit / quota errors are deterministic per
+    // session, and the user-configured fallback is the explicit
+    // policy-level answer.
+    // (Note: `callAttempts` is declared in the outer scope so the
+    // catch block can also include it in the loud-failure response.)
+    for (const candidate of chain) {
+      if (candidate.providerId === "openai" && !settings.allowOpenAiApiRouter) {
+        // Defense-in-depth: skip OpenAI API candidates when the
+        // opt-in is off, even if they made it into the chain.
+        callAttempts.push({
+          candidate,
+          reason: "openai_api_opt_in_disabled",
+        });
+        continue;
+      }
+      const resolved = resolveModel(candidate.modelId);
+      if (!resolved.ok) {
+        callAttempts.push({
+          candidate,
+          reason: `resolve_failed:${resolved.error.kind}`,
+        });
+        continue;
+      }
+      const resolvedForCall = resolved.resolved;
+      // Track this rung as the active recommender for diagnostics.
+      // We update diagnostics for each rung so the final response
+      // reflects the rung that actually answered.
+      activeRecommender = {
+        provider: candidate.providerId,
+        modelId: candidate.modelId,
+      };
+      activeRungIsUserFallback = Boolean(candidate.isUserConfiguredFallback);
+      // Pick the reasoning level for this specific rung.
+      const rungReasoningLevel: string | undefined = activeRungIsUserFallback
+        ? (settings.normalChatRecommenderFallbackReasoningLevel ?? undefined)
+        : settings.normalChatRecommenderReasoningLevel;
+      const rungProviderOptions: ReturnType<typeof getRuntimeProviderOptions> = (() => {
+        if (rungReasoningLevel === undefined) return undefined;
+        const meta = getModelMeta(resolvedForCall.modelId);
+        const capability = meta?.reasoningCapability ?? UNKNOWN_REASONING_CAPABILITY;
+        return getRuntimeProviderOptions({
+          resolved: resolvedForCall,
+          capability,
+          reasoningOption: rungReasoningLevel,
+        });
+      })();
 
-    const activeForRun = resolvedActiveRecommender as ResolvedModel;
-    const value =
-      activeForRun.providerId === "codex"
-        ? await runCodexRecommender({
-            modelId: activeForRun.modelId,
-            system: prompt.system,
-            user: prompt.user,
-          })
-        : (
-            await generateText({
-              model: getRuntimeModel(activeForRun),
-              system: prompt.system,
-              prompt: prompt.user,
-              output: Output.object({
-                schema: outputSchema,
-                name: "normal_chat_model_recommendation",
-              }),
-              stopWhen: stepCountIs(1),
-              // Honor the user-configured reasoning level for the recommender
-              // itself. The runtime adapter returns `undefined` for unknown
-              // / non-effort-level capabilities (Codex / MiniMax unknown
-              // discovery, etc.) so this is a no-op when the recommender
-              // cannot accept reasoning controls.
-              ...(recommenderProviderOptions
-                ? { providerOptions: recommenderProviderOptions }
-                : {}),
-            })
-          ).output;
-    attemptedCandidateModel = value?.recommendedModelId ?? null;
-    const picked = value
-      ? availableModels.find(
-          (m) => m.modelId === value.recommendedModelId && m.provider === value.recommendedProvider,
-        )
-      : null;
-    if (!value || !picked) throw new Error("invalid_recommendation");
-    const level = picked.supportsReasoningControls ? value.recommendedReasoningLevel : null;
-    if (level && !picked.allowedReasoningLevels.includes(level))
-      throw new Error("invalid_reasoning_level");
+      let value: RecommenderOutput | null = null;
+      try {
+        value =
+          resolvedForCall.providerId === "codex"
+            ? await runCodexRecommender({
+                modelId: resolvedForCall.modelId,
+                system: prompt.system,
+                user: prompt.user,
+              })
+            : (
+                await generateText({
+                  model: getRuntimeModel(resolvedForCall),
+                  system: prompt.system,
+                  prompt: prompt.user,
+                  output: Output.object({
+                    schema: outputSchema,
+                    name: "normal_chat_model_recommendation",
+                  }),
+                  stopWhen: stepCountIs(1),
+                  ...(rungProviderOptions ? { providerOptions: rungProviderOptions } : {}),
+                })
+              ).output;
+      } catch (callErr) {
+        // Caller-level failure for this rung (Codex CLI crashed, AI
+        // SDK threw, etc.). The brief: "If Codex fails because of
+        // usage limit/quota: try the configured fallback
+        // recommender engine." — so we record the failure and
+        // continue to the next rung.
+        const reason = callErr instanceof Error ? callErr.message : String(callErr);
+        callAttempts.push({ candidate, reason });
+        // Keep the resolved candidate in sync for the
+        // diagnostics block so the failure response can name the
+        // rung we just tried. (`resolvedForCall` is consumed
+        // directly below; this comment is just for the next rung's
+        // `continue` to find a stable reference.)
+        recommenderSource = activeRungIsUserFallback
+          ? "configured_fallback"
+          : candidate.providerId === "codex"
+            ? "codex"
+            : candidate.providerId === "minimax"
+              ? "minimax"
+              : "openai";
+        recommenderResolutionReason = `Recommender rung ${candidate.modelId} (${candidate.providerId}) failed: ${reason}. Trying the next rung.`;
+        // eslint-disable-next-line no-console
+        console.error("[model/recommend] rung failed, trying next", {
+          candidate: `${candidate.providerId}:${candidate.modelId}`,
+          reason,
+        });
+        continue;
+      }
 
-    return Response.json({
-      ...value,
-      recommendedReasoningLevel: level,
-      alternatives: value.alternatives?.filter((a) =>
-        availableModels.some((m) => m.modelId === a.modelId && m.provider === a.provider),
-      ),
-      diagnostics: {
-        recommenderProvider: activeRecommender.provider,
-        recommenderModelId: activeRecommender.modelId,
-        fallback: false,
-        fallbackReason: null,
-        attemptedCandidateModel,
-        recommenderSource,
-        recommenderResolutionReason,
-        fallbackChain: chain.map((c) => ({
-          providerId: c.providerId,
-          modelId: c.modelId,
-        })),
-      },
-    } satisfies RecommendationResponse);
+      if (!value) {
+        callAttempts.push({
+          candidate,
+          reason: "empty_recommendation_output",
+        });
+        continue;
+      }
+      attemptedCandidateModel = value.recommendedModelId;
+      const picked = availableModels.find(
+        (m) => m.modelId === value!.recommendedModelId && m.provider === value!.recommendedProvider,
+      );
+      if (!picked) {
+        callAttempts.push({ candidate, reason: "invalid_recommendation" });
+        continue;
+      }
+      const level = picked.supportsReasoningControls ? value.recommendedReasoningLevel : null;
+      if (level && !picked.allowedReasoningLevels.includes(level)) {
+        callAttempts.push({ candidate, reason: "invalid_reasoning_level" });
+        continue;
+      }
+      // Success. Stash the resolved candidate for the response and
+      // pick a source label that matches the brief's `configured` /
+      // `configured_fallback` / provider taxonomy.
+      recommenderSource = activeRungIsUserFallback
+        ? "configured_fallback"
+        : candidate.providerId === "codex"
+          ? "codex"
+          : candidate.providerId === "minimax"
+            ? "minimax"
+            : "openai";
+      recommenderResolutionReason = activeRungIsUserFallback
+        ? "Using the user-configured recommender fallback (primary engine unavailable)."
+        : candidate.providerId === "codex"
+          ? "Using a Codex subscription router model."
+          : candidate.providerId === "minimax"
+            ? "Using the MiniMax M3 subscription fallback (Codex unavailable)."
+            : "Using the explicitly enabled OpenAI API router model.";
+      return Response.json({
+        ...value,
+        recommendedReasoningLevel: level,
+        alternatives: value.alternatives?.filter((a) =>
+          availableModels.some((m) => m.modelId === a.modelId && m.provider === a.provider),
+        ),
+        diagnostics: {
+          recommenderProvider: activeRecommender.provider,
+          recommenderModelId: activeRecommender.modelId,
+          fallback: false,
+          fallbackReason: null,
+          attemptedCandidateModel,
+          recommenderSource,
+          recommenderResolutionReason,
+          fallbackChain: chain.map((c) => ({
+            providerId: c.providerId,
+            modelId: c.modelId,
+          })),
+          callAttempts: callAttempts.map((a) => ({
+            providerId: a.candidate.providerId,
+            modelId: a.candidate.modelId,
+            reason: a.reason,
+          })),
+        },
+      } satisfies RecommendationResponse);
+    }
+
+    // No rung succeeded. Fall through to the loud-failure response.
+    // Surface the last rung's failure so the user can see which
+    // candidate failed.
+    const lastAttempt = callAttempts[callAttempts.length - 1];
+    throw new Error(
+      lastAttempt
+        ? `All recommender rungs failed. Last: ${lastAttempt.candidate.modelId} (${lastAttempt.candidate.providerId}): ${lastAttempt.reason}.`
+        : "All recommender rungs failed.",
+    );
   } catch (err) {
     // Safe diagnostics only: never log secrets or request headers.
     console.error("[model/recommend] fallback", {
@@ -596,6 +663,14 @@ export async function POST(request: Request) {
     return Response.json({
       ...response,
       proposedSubscriptionFallbacks: proposals,
+      diagnostics: {
+        ...response.diagnostics,
+        callAttempts: callAttempts.map((a) => ({
+          providerId: a.candidate.providerId,
+          modelId: a.candidate.modelId,
+          reason: a.reason,
+        })),
+      },
     } satisfies RecommendationResponse);
   }
 }

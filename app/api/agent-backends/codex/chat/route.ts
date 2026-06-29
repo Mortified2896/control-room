@@ -131,11 +131,40 @@ export async function POST(req: Request): Promise<NextResponse> {
   // The runner already returns the structured shape, but we re-shape
   // here to make the contract explicit and decoupled from runner
   // internals.
+  //
+  // We never forward `result.rawStderr` / `result.rawStdout` to the
+  // client — those are server-side debug artifacts only. The user-
+  // facing copy comes from `result.error`, which the runner
+  // sanitizes (drops bubblewrap warnings, the skills-context budget
+  // warning, and any other non-fatal noise). The brief: "do not
+  // render raw codex exec stderr as the assistant response."
+  if (!result.ok && (result.rawStderr || result.rawStdout)) {
+    // Log once on the server so operators can debug without leaking
+    // stderr to the network. We log the truncated tail (the last
+    // 800 chars) and the classified kind; never the full prompt.
+    // eslint-disable-next-line no-console
+    console.error("[codex/chat] backend failure", {
+      model,
+      kind: result.errorKind,
+      message: result.error,
+      stderrTail: result.rawStderr
+        ? result.rawStderr.replace(/\u001b\[[0-9;]*m/g, "").slice(-800)
+        : null,
+      stdoutTail: result.rawStdout
+        ? result.rawStdout.replace(/\u001b\[[0-9;]*m/g, "").slice(-800)
+        : null,
+    });
+  }
   return NextResponse.json(
     {
       ok: result.ok,
       responseText: result.responseText,
       error: result.ok ? null : result.error,
+      // Expose the classified kind so the client can render a
+      // distinct final-send failure card per category (usage_limit,
+      // auth, rate_limit, unsupported, internal) instead of a single
+      // generic "Codex backend error" string.
+      errorKind: result.ok ? null : (result.errorKind ?? "internal"),
       exitCode: result.exitCode,
     },
     { headers: { "Cache-Control": "no-store" } },

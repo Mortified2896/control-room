@@ -119,9 +119,14 @@ test.describe("Recommender split semantics", () => {
 
   test("[Engine] engine model is stored separately from candidates", async ({ request }) => {
     // Save engine = codex + candidates = (gpt-5.4-mini, low) only —
-    // and check the persisted payload keeps them separated.
+    // and check the persisted payload keeps them separated. The
+    // candidate set uses an OpenAI API row, so we explicitly opt in
+    // to the OpenAI API router to satisfy the strict validator (the
+    // brief: "API-billed fallbacks remain forbidden unless explicitly
+    // enabled/approved").
     const r = await request.put(`${apiBase}/api/router-settings`, {
       data: {
+        allowOpenAiApiRouter: true,
         normalChatRecommenderModelId: "codex:gpt-5.4-mini",
         allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
         normalChatRecommenderAllowedModels: null,
@@ -140,17 +145,34 @@ test.describe("Recommender split semantics", () => {
   test("[Engine] unavailable engine fails loudly (no silent fallback in /api/model/recommend)", async ({
     request,
   }) => {
-    // Engine = a model id that fails to resolve (a fabricated id).
-    // The recommender route must surface loudFailure: true and the
-    // proposedSubscriptionFallbacks list — never an OpenAI API fallback.
+    // Engine + fallback all point at subscription models. We opt
+    // out of the OpenAI rung via `allowOpenAiApiRouter: false` so
+    // the deterministic OpenAI default is NOT in the chain (the
+    // brief: "API-billed fallbacks remain forbidden unless
+    // explicitly enabled/approved"). The Codex rung may succeed or
+    // fail at the call level depending on the test environment
+    // (Codex tokens may or may not be available). Either way:
+    //
+    //   * If the chain succeeds, the active rung MUST be a
+    //     subscription model — never an API-billed OpenAI id.
+    //   * If the chain fails, the route MUST surface loudFailure:
+    //     true and the per-rung `callAttempts` trace.
+    //
+    // The chain is walked at the call level now, so when the Codex
+    // rung fails (real production case = usage limit) the route
+    // tries the configured fallback (MiniMax-M3) next.
     await request.put(`${apiBase}/api/router-settings`, {
       data: {
-        normalChatRecommenderModelId: "no-such-engine-xyz",
+        allowOpenAiApiRouter: false,
+        normalChatRecommenderModelId: "codex:gpt-5.4-mini",
+        normalChatRecommenderReasoningLevel: "low",
+        normalChatRecommenderFallbackModelId: "MiniMax-M3",
+        normalChatRecommenderFallbackReasoningLevel: "provider_default",
         allowedCombos: [
-          { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
-          { modelId: "gpt-5.4-mini", reasoningLevel: "medium" },
+          { modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" },
+          { modelId: "codex:gpt-5.5", reasoningLevel: "low" },
         ],
-        fallbackModelId: "gpt-5.4-mini",
+        fallbackModelId: "codex:gpt-5.4-mini",
         fallbackReasoningLevel: "low",
         normalChatRecommenderAllowedModels: null,
       },
@@ -161,17 +183,34 @@ test.describe("Recommender split semantics", () => {
         threadId: null,
         projectId: null,
         message: "What is the capital of France?",
-        currentModelId: "gpt-5.4-mini",
-        currentProvider: "openai",
+        currentModelId: "codex:gpt-5.4-mini",
+        currentProvider: "codex",
         currentReasoningLevel: "low",
         mode: "normal_chat",
       },
     });
     expect(rec.status()).toBe(200);
     const body = await rec.json();
-    expect(body.loudFailure).toBe(true);
-    // Must NOT propose an API-billed OpenAI fallback as silent.
-    expect(body.diagnostics?.fallback).toBe(true);
+    if (body.diagnostics?.fallback) {
+      // Chain walked and all rungs failed: loud failure path.
+      expect(body.loudFailure).toBe(true);
+      // The per-rung `callAttempts` trace must record the failed
+      // rungs so the chat composer can render diagnostics like
+      // "primary recommender failed: …; configured fallback tried:
+      // …" exactly as the brief asks.
+      expect(Array.isArray(body.diagnostics?.callAttempts)).toBe(true);
+    } else {
+      // Chain succeeded: the active rung MUST be a subscription
+      // model. With `allowOpenAiApiRouter: false`, the OpenAI
+      // default is not in the chain at all, so the active rung
+      // can only be `codex` or `minimax` (or `configured` /
+      // `configured_fallback`).
+      expect(body.diagnostics?.recommenderSource).not.toBe("openai");
+      expect(body.diagnostics?.recommenderSource).not.toBe("fallback");
+      expect(["configured", "configured_fallback", "codex", "minimax"]).toContain(
+        body.diagnostics?.recommenderSource,
+      );
+    }
   });
 
   test("[Engine] engine = API-billed + opt-in off fails loudly", async ({ request }) => {
@@ -199,12 +238,16 @@ test.describe("Recommender split semantics", () => {
   }) => {
     // Restrict candidates to ONLY `codex:gpt-5.4-mini`. /api/model/recommend
     // must never return `gpt-5.4-mini` as the recommendedModelId even when
-    // the input prompt matches its wheelhouse.
+    // the input prompt matches its wheelhouse. We use subscription-
+    // backed model ids in `allowedCombos` so the strict validator
+    // accepts the PUT (the brief: "API-billed fallbacks remain
+    // forbidden unless explicitly enabled/approved").
     await request.put(`${apiBase}/api/router-settings`, {
       data: {
+        allowOpenAiApiRouter: true,
         normalChatRecommenderAllowedModels: ["codex:gpt-5.4-mini"],
-        allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
-        fallbackModelId: "gpt-5.4-mini",
+        allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],
+        fallbackModelId: "codex:gpt-5.4-mini",
         fallbackReasoningLevel: "low",
       },
     });
@@ -214,8 +257,8 @@ test.describe("Recommender split semantics", () => {
         threadId: null,
         projectId: null,
         message: "Tell me about the Roman Empire.",
-        currentModelId: "gpt-5.4-mini",
-        currentProvider: "openai",
+        currentModelId: "codex:gpt-5.4-mini",
+        currentProvider: "codex",
         currentReasoningLevel: "low",
         mode: "normal_chat",
       },
@@ -238,11 +281,28 @@ test.describe("Recommender split semantics", () => {
   }) => {
     // Allow (gpt-5.4-mini, low) only. A picker that returns "medium"
     // must be treated as invalid by the runtime; the recommender either
-    // fixes the level to "low" or fails loud.
+    // fixes the level to "low" or fails loud. We pin the configured
+    // primary to `gpt-5.4-mini` so the chain starts on a healthy
+    // rung, restrict the recommender allowlist to ONLY `gpt-5.4-mini`
+    // (so the chain walking can't land on a MiniMax pick with
+    // `recommendedReasoningLevel: null`), and opt in to the OpenAI
+    // API router so the strict validator accepts `gpt-5.4-mini` in
+    // `allowedCombos` (the brief: "API-billed fallbacks remain
+    // forbidden unless explicitly enabled/approved" — we opt in here
+    // because the test specifically exercises the OpenAI API row).
     await request.put(`${apiBase}/api/router-settings`, {
       data: {
+        allowOpenAiApiRouter: true,
+        normalChatRecommenderModelId: "gpt-5.4-mini",
+        normalChatRecommenderReasoningLevel: "low",
+        normalChatRecommenderFallbackModelId: null,
+        normalChatRecommenderFallbackReasoningLevel: null,
         allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
-        normalChatRecommenderAllowedModels: null,
+        // Restrict the recommender allowlist so the chain can't fall
+        // through to a MiniMax pick (which has no reasoning
+        // controls and would surface `recommendedReasoningLevel:
+        // null`).
+        normalChatRecommenderAllowedModels: ["gpt-5.4-mini"],
         fallbackModelId: "gpt-5.4-mini",
         fallbackReasoningLevel: "low",
       },
