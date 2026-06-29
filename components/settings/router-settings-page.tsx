@@ -33,6 +33,21 @@ import { cn } from "@/lib/utils";
 
 import type { RouterFailureBehavior, RouterSettings } from "@/lib/router/schema";
 import type { ReasoningLevel } from "@/lib/providers/types";
+import { CODEX_CATALOG_MODELS } from "@/lib/providers/codex-catalog";
+import { ThemeToggle } from "@/components/theme-toggle";
+import {
+  RecommenderModelSelector,
+  type RecommenderModelOption,
+} from "@/components/assistant-ui/recommender-model-selector";
+
+/**
+ * Codex model ids formatted with the `codex:` provider prefix. Used
+ * by the normal-chat recommender model selector so the user can pick
+ * a Codex subscription id without having to type the prefix manually.
+ */
+const CODEX_CATALOG_MODEL_IDS: ReadonlyArray<string> = CODEX_CATALOG_MODELS.map(
+  (m) => `codex:${m.id}`,
+);
 
 /**
  * Router Settings page (client component).
@@ -87,7 +102,7 @@ import type { ReasoningLevel } from "@/lib/providers/types";
 type RegistryEntry = {
   modelId: string;
   modelLabel: string;
-  reasoningLevel: ReasoningLevel;
+  reasoningLevel: string;
   tier: "cheap" | "expensive";
   configured: boolean;
   available: boolean;
@@ -127,7 +142,8 @@ type EffectiveRegistryModelDto = {
   available: boolean;
   stale: boolean;
   supportsReasoning: boolean;
-  supportedReasoningLevels: ReadonlyArray<ReasoningLevel>;
+  /** Provider-native reasoning-effort values (e.g. "low", "xhigh"). */
+  supportedReasoningLevels: ReadonlyArray<string>;
   tier: "standard" | "expensive" | "unknown";
   usableForChat: boolean;
   manualSelectorVisible: boolean;
@@ -151,7 +167,7 @@ type RouterSettingsDto = {
   registry: ReadonlyArray<RegistryEntry>;
   effectiveRegistry: {
     models: ReadonlyArray<EffectiveRegistryModelDto>;
-    defaults: { manualModelId: string | null; reasoningLevel: ReasoningLevel };
+    defaults: { manualModelId: string | null; reasoningLevel: string };
     counts: {
       discovered: number;
       discoveredConfigured: number;
@@ -166,15 +182,42 @@ type RouterSettingsDto = {
     selectorPrefs: Record<string, { visible: boolean }>;
     fakeMode: boolean;
   };
+  /**
+   * Read-only preview of the prompt the normal-chat recommender sends
+   * to the configured recommender model. The Settings UI renders both
+   * the system prompt and an example user-prompt body so the user can
+   * see exactly what the model receives on each recommend call.
+   */
+  normalChatRecommenderPrompt: {
+    system: string;
+    user: string;
+    userJsonExample: string;
+  };
 };
 
 type FormState = {
   allowedComboKeys: Set<string>;
   routerModelId: string;
+  normalChatRecommenderModelId: string;
+  /** Provider-native reasoning-effort value for the recommender. */
+  normalChatRecommenderReasoningLevel: string;
   failureBehavior: RouterFailureBehavior;
   allowExpensiveModels: boolean;
   allowLongPromptWhenExpensive: boolean;
   longPromptThresholdChars: string;
+  /**
+   * Models the normal-chat recommender is allowed to recommend. `null`
+   * means "no restriction" (every enabled non-Codex model is eligible).
+   * A `Set` — even an empty one — means the recommender is restricted
+   * to exactly that set. An empty `Set` means "block all".
+   *
+   * The UI renders all enabled models as checked when the value is
+   * `null`. As soon as the user unchecks one box the value flips to a
+   * `Set` (containing every enabled model minus the unchecked one).
+   * Snapping back to `null` happens when the user re-checks the last
+   * box, which keeps the persisted payload clean.
+   */
+  normalChatRecommenderAllowedModels: Set<string> | null;
 };
 
 type FieldError = { field: string; message: string };
@@ -208,16 +251,36 @@ type RegistryFilter =
   | "available"
   | "unavailable";
 
-function comboKey(modelId: string, reasoningLevel: ReasoningLevel): string {
+function comboKey(modelId: string, reasoningLevel: string): string {
   return `${modelId}|${reasoningLevel}`;
 }
 
+/**
+ * Pretty-print the user-prompt body so the Settings preview reads as
+ * indented JSON instead of a single-line blob. Falls back to the raw
+ * string when the body is not valid JSON (defense-in-depth; the
+ * route always ships JSON via `buildNormalChatRecommenderUserPrompt`).
+ */
+function formatJsonExample(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 function initialForm(dto: RouterSettingsDto): FormState {
+  const allowlist = dto.effective.normalChatRecommenderAllowedModels;
   return {
     allowedComboKeys: new Set(
       dto.effective.allowedCombos.map((c) => comboKey(c.modelId, c.reasoningLevel)),
     ),
+    // The reasoningLevel values in `allowedCombos` are provider-
+    // native strings (e.g. "low", "xhigh", "none"); we use them
+    // verbatim in the combo key.
     routerModelId: dto.effective.routerModelId,
+    normalChatRecommenderModelId: dto.effective.normalChatRecommenderModelId,
+    normalChatRecommenderReasoningLevel: dto.effective.normalChatRecommenderReasoningLevel,
     failureBehavior: dto.effective.failureBehavior,
     allowExpensiveModels: dto.effective.allowExpensiveModels,
     allowLongPromptWhenExpensive: dto.effective.allowLongPromptWhenExpensive,
@@ -225,19 +288,25 @@ function initialForm(dto: RouterSettingsDto): FormState {
       dto.effective.longPromptThresholdChars === 0
         ? ""
         : String(dto.effective.longPromptThresholdChars),
+    normalChatRecommenderAllowedModels: allowlist === null ? null : new Set(allowlist),
   };
 }
 
-function formToPayload(
-  form: FormState,
-  registry: ReadonlyArray<RegistryEntry>,
-): {
+function formToPayload(form: FormState): {
   payload: Record<string, unknown>;
   clientErrors: ReadonlyArray<FieldError>;
 } {
   const errors: FieldError[] = [];
-  const registryKeys = new Set(registry.map((e) => comboKey(e.modelId, e.reasoningLevel)));
-  const cleanedKeys = [...form.allowedComboKeys].filter((k) => registryKeys.has(k));
+  // The registry passed in (`dto.registry`) is the router-eligible
+  // OpenAI-only allowlist built by `registryToRouterAllowlist` on the
+  // server. It does NOT include Codex subscription catalog entries or
+  // discovered MiniMax rows — those come from `dto.effectiveRegistry`
+  // instead. The server-side validator (`parseRouterSettingsForSave`)
+  // accepts Codex/MiniMax ids via `providerIdFromModelId` fallback, so
+  // we forward every combo in the form as-is and let the server
+  // decide. The only client-side guard we keep is the "at least one
+  // combo" check, which is the user-facing surface of the allowlist.
+  const cleanedKeys = [...form.allowedComboKeys];
   if (cleanedKeys.length === 0) {
     errors.push({
       field: "allowedCombos",
@@ -262,7 +331,7 @@ function formToPayload(
   }
 
   const allowedCombos = cleanedKeys.map((k) => {
-    const [modelId, reasoningLevel] = k.split("|") as [string, ReasoningLevel];
+    const [modelId, reasoningLevel] = k.split("|") as [string, string];
     return { modelId, reasoningLevel };
   });
 
@@ -275,8 +344,16 @@ function formToPayload(
       allowLongPromptWhenExpensive: true,
       longPromptThresholdChars: threshold,
       routerModelId: form.routerModelId,
+      normalChatRecommenderModelId: form.normalChatRecommenderModelId,
+      normalChatRecommenderReasoningLevel: form.normalChatRecommenderReasoningLevel,
       failureBehavior: form.failureBehavior,
       allowedCombos,
+      // `null` = no restriction. A Set (even an empty one) is the
+      // explicit user-curated allowlist.
+      normalChatRecommenderAllowedModels:
+        form.normalChatRecommenderAllowedModels === null
+          ? null
+          : [...form.normalChatRecommenderAllowedModels],
     },
     clientErrors: errors,
   };
@@ -284,11 +361,31 @@ function formToPayload(
 
 function hasFormChanged(form: FormState, baseline: FormState): boolean {
   if (form.routerModelId !== baseline.routerModelId) return true;
+  if (form.normalChatRecommenderModelId !== baseline.normalChatRecommenderModelId) return true;
+  if (form.normalChatRecommenderReasoningLevel !== baseline.normalChatRecommenderReasoningLevel)
+    return true;
   if (form.failureBehavior !== baseline.failureBehavior) return true;
   if (form.longPromptThresholdChars !== baseline.longPromptThresholdChars) return true;
   if (form.allowedComboKeys.size !== baseline.allowedComboKeys.size) return true;
   for (const k of form.allowedComboKeys) {
     if (!baseline.allowedComboKeys.has(k)) return true;
+  }
+  // Recommender allowlist: `null` differs from a Set in semantics
+  // even when the Set happens to cover every enabled model. Compare
+  // both shape and contents.
+  if (
+    (form.normalChatRecommenderAllowedModels === null) !==
+    (baseline.normalChatRecommenderAllowedModels === null)
+  ) {
+    return true;
+  }
+  if (form.normalChatRecommenderAllowedModels !== null) {
+    const formSet = form.normalChatRecommenderAllowedModels;
+    const baseSet = baseline.normalChatRecommenderAllowedModels ?? new Set<string>();
+    if (formSet.size !== baseSet.size) return true;
+    for (const id of formSet) {
+      if (!baseSet.has(id)) return true;
+    }
   }
   return false;
 }
@@ -484,7 +581,7 @@ const UnconfiguredWarning: FC<{ modelLabel: string }> = ({ modelLabel }) => {
 function reasoningCellState(input: {
   configured: boolean;
   routerOn: boolean;
-  level: ReasoningLevel;
+  level: string;
   allowedComboKeys: Set<string>;
   modelId: string;
 }): {
@@ -580,12 +677,27 @@ export const RouterSettingsPage: FC<{
   }, [registry]);
 
   const reasoningLevelsByModel = useMemo(() => {
-    const m = new Map<string, ReadonlyArray<ReasoningLevel>>();
+    const m = new Map<string, ReadonlyArray<string>>();
+    // First pass: the OpenAI allowlist rows (`dto.registry`) carry one
+    // entry per (modelId, reasoningLevel) — dedupe to the unique set.
     for (const [modelId, entries] of registryByModel) {
       m.set(modelId, Array.from(new Set(entries.map((entry) => entry.reasoningLevel))));
     }
+    // Second pass: every effective-registry row carries its full
+    // `supportedReasoningLevels` (the derived legacy field on
+    // `EffectiveModelEntry`). This is what surfaces Codex and
+    // MiniMax rows whose reasoning levels are not present in the
+    // OpenAI-only `dto.registry` allowlist. Entries already present
+    // from the first pass keep their richer set when both sources
+    // agree.
+    for (const entry of dto?.effectiveRegistry.models ?? []) {
+      if (entry.supportedReasoningLevels.length === 0) continue;
+      const existing = m.get(entry.modelId) ?? [];
+      const merged = Array.from(new Set([...existing, ...entry.supportedReasoningLevels]));
+      m.set(entry.modelId, merged);
+    }
     return m;
-  }, [registryByModel]);
+  }, [registryByModel, dto]);
 
   const registryEntries = useMemo(
     () =>
@@ -607,6 +719,43 @@ export const RouterSettingsPage: FC<{
   );
 
   /**
+   * Options for the normal-chat recommender model selector. Wider
+   * than the A/B router model list because the recommender can use
+   * any provider (OpenAI API gated behind `allowOpenAiApiRouter`,
+   * Codex and MiniMax always available). The validator on save
+   * rejects OpenAI picks when the API router toggle is off.
+   */
+  const normalChatRecommenderModelOptions = useMemo(() => {
+    const openai = (dto?.effectiveRegistry.models ?? [])
+      .filter((entry) => entry.providerId === "openai" && entry.configured)
+      .map((entry) => ({
+        modelId: entry.modelId,
+        displayLabel: entry.displayLabel,
+        providerLabel: entry.providerLabel,
+        providerId: entry.providerId,
+      }));
+    const codex = CODEX_CATALOG_MODEL_IDS.map((id) => ({
+      modelId: id,
+      displayLabel: `Codex · ${id.replace(/^codex:/, "")}`,
+      providerLabel: "Codex subscription",
+      providerId: "codex" as const,
+    }));
+    const minimax = (dto?.effectiveRegistry.models ?? [])
+      .filter((entry) => entry.providerId === "minimax")
+      .map((entry) => ({
+        modelId: entry.modelId,
+        displayLabel: entry.displayLabel,
+        providerLabel: entry.providerLabel,
+        providerId: entry.providerId,
+      }));
+    return [...openai, ...codex, ...minimax].sort((a, b) =>
+      a.displayLabel.localeCompare(b.displayLabel),
+    );
+  }, [dto]);
+
+  const normalChatRecommenderPrompt = dto?.normalChatRecommenderPrompt;
+
+  /**
    * For each registry row, compute the router-toggle state and the
    * per-level checkbox state. Derived purely from the live
    * `form.allowedComboKeys` so toggling a single reasoning checkbox
@@ -619,7 +768,7 @@ export const RouterSettingsPage: FC<{
         routerOn: boolean;
         anyChecked: boolean;
         allChecked: boolean;
-        checkedLevels: ReadonlyArray<ReasoningLevel>;
+        checkedLevels: ReadonlyArray<string>;
       }
     >();
     if (!form) return map;
@@ -786,7 +935,7 @@ export const RouterSettingsPage: FC<{
    * Used by the per-level checkboxes in the Reasoning column.
    */
   const toggleReasoningCombo = useCallback(
-    (modelId: string, reasoningLevel: ReasoningLevel, enabled: boolean) => {
+    (modelId: string, reasoningLevel: string, enabled: boolean) => {
       setForm((prev) => {
         if (!prev) return prev;
         const next = new Set(prev.allowedComboKeys);
@@ -798,6 +947,126 @@ export const RouterSettingsPage: FC<{
     },
     [],
   );
+
+  /**
+   * Set of modelIds that the recommender can possibly recommend. This
+   * is the registry filtered to enabled + non-Codex + configured-or-
+   * env-static entries. Used by the recommender-column Switches in the
+   * registry table and by the bulk "Allow all enabled" / "Block all"
+   * buttons in Section C.
+   */
+  const recommenderEligibleModelIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of registryEntries) {
+      if (!entry.available) continue;
+      if (!entry.configured) continue;
+      ids.add(entry.modelId);
+    }
+    return ids;
+  }, [registryEntries]);
+
+  /**
+   * Computes the visual `checked` state of the Recommender column for
+   * a given registry entry. Mirrors the underlying form semantics:
+   *   - `null` allowlist → every eligible model is implicitly allowed.
+   *   - non-null Set → only ids in the Set are allowed.
+   */
+  const recommenderCheckedFor = useCallback(
+    (modelId: string): boolean => {
+      if (!form) return false;
+      const allowlist = form.normalChatRecommenderAllowedModels;
+      if (allowlist === null) return true;
+      return allowlist.has(modelId);
+    },
+    [form],
+  );
+
+  /**
+   * Toggle a single model id in the recommender allowlist. When the
+   * form is currently `null` ("all allowed"), unchecking a box flips
+   * it to an explicit Set containing every eligible model minus the
+   * unchecked one. When the form is already a Set, we add or remove
+   * the id. If the resulting Set covers every eligible model, we
+   * snap back to `null` so the persisted payload stays clean.
+   */
+  const toggleRecommenderForModel = useCallback(
+    (modelId: string, enabled: boolean) => {
+      setForm((prev) => {
+        if (!prev) return prev;
+        const current = prev.normalChatRecommenderAllowedModels;
+        const eligible = recommenderEligibleModelIds;
+        let next: Set<string> | null;
+        if (current === null) {
+          if (enabled) {
+            // Already in the implicit "all allowed" state — nothing to
+            // do. Snap back to null in case the previous flip flipped
+            // to a Set and we want to converge back.
+            next = null;
+          } else {
+            // Switch from implicit "all allowed" to an explicit Set
+            // containing every eligible model except the one we just
+            // turned off.
+            next = new Set<string>();
+            for (const id of eligible) {
+              if (id !== modelId) next.add(id);
+            }
+          }
+        } else {
+          next = new Set(current);
+          if (enabled) next.add(modelId);
+          else next.delete(modelId);
+          // Snap back to null when every eligible model is in the Set,
+          // so the persisted payload reads "no restriction" rather
+          // than "explicitly allow these N models".
+          let allIn = next.size >= eligible.size;
+          if (allIn) {
+            for (const id of eligible) {
+              if (!next.has(id)) {
+                allIn = false;
+                break;
+              }
+            }
+          }
+          if (allIn) next = null;
+        }
+        return { ...prev, normalChatRecommenderAllowedModels: next };
+      });
+    },
+    [recommenderEligibleModelIds],
+  );
+
+  /**
+   * Bulk action: set the allowlist to `null` so every eligible model
+   * is implicitly allowed.
+   */
+  const allowAllRecommenderModels = useCallback(() => {
+    setForm((prev) => (prev ? { ...prev, normalChatRecommenderAllowedModels: null } : prev));
+  }, []);
+
+  /**
+   * Bulk action: set the allowlist to an empty Set so no models are
+   * allowed. The recommender will fail loud with a clear "no models
+   * enabled" message.
+   */
+  const blockAllRecommenderModels = useCallback(() => {
+    setForm((prev) => (prev ? { ...prev, normalChatRecommenderAllowedModels: new Set() } : prev));
+  }, []);
+
+  /**
+   * Human-readable summary of the current recommender allowlist, used
+   * under the Normal-chat recommender model dropdown in Section C.
+   */
+  const recommenderAllowlistSummary = useMemo(() => {
+    if (!form) return "Loading…";
+    const allowlist = form.normalChatRecommenderAllowedModels;
+    if (allowlist === null) {
+      return `All enabled models (${recommenderEligibleModelIds.size}) may be recommended by the recommender.`;
+    }
+    if (allowlist.size === 0) {
+      return "No models are currently allowed for the recommender.";
+    }
+    return `${allowlist.size} of ${recommenderEligibleModelIds.size} enabled models may be recommended.`;
+  }, [form, recommenderEligibleModelIds]);
 
   const onResetDefaults = useCallback(() => {
     if (!dto) return;
@@ -815,7 +1084,7 @@ export const RouterSettingsPage: FC<{
 
   const onSave = useCallback(async () => {
     if (!form || !dto) return;
-    const { payload, clientErrors } = formToPayload(form, registry);
+    const { payload, clientErrors } = formToPayload(form);
     if (clientErrors.length > 0) {
       setServerErrors(clientErrors);
       setSaveStatus({ kind: "error", message: "Please fix the highlighted fields." });
@@ -1012,6 +1281,7 @@ export const RouterSettingsPage: FC<{
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <ThemeToggle className="mr-1" />
           <Button
             variant="outline"
             size="sm"
@@ -1385,7 +1655,7 @@ export const RouterSettingsPage: FC<{
               errorsByField.has("allowedCombos") && "border-destructive/60",
             )}
           >
-            <table className="w-full min-w-[960px] text-sm">
+            <table className="w-full min-w-[1040px] text-sm">
               <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground/70">
                 <tr>
                   <th scope="col" className="px-3 py-2 text-left font-medium" data-label="Model">
@@ -1410,6 +1680,13 @@ export const RouterSettingsPage: FC<{
                   <th
                     scope="col"
                     className="px-3 py-2 text-center font-medium"
+                    data-label="Recommender"
+                  >
+                    Recommender
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-3 py-2 text-center font-medium"
                     data-label="Reasoning"
                   >
                     Reasoning
@@ -1430,7 +1707,7 @@ export const RouterSettingsPage: FC<{
                 {visibleRegistryEntries.length === 0 && (
                   <tr>
                     <td
-                      colSpan={8}
+                      colSpan={9}
                       className="px-3 py-6 text-center text-xs text-muted-foreground/60"
                     >
                       No models match the current filter / search.
@@ -1442,7 +1719,7 @@ export const RouterSettingsPage: FC<{
                   return (
                     <Fragment key={group.providerId}>
                       <tr className="bg-muted/30">
-                        <td colSpan={8} className="px-3 py-2">
+                        <td colSpan={9} className="px-3 py-2">
                           <button
                             type="button"
                             onClick={() => toggleProviderGroup(group.providerId)}
@@ -1486,7 +1763,12 @@ export const RouterSettingsPage: FC<{
                             manualVisible &&
                             !entry.configured &&
                             !warningDismissedFor[entry.modelId];
-                          const manualToggleDisabled = saving || entry.providerId !== "openai";
+                          // The Manual toggle controls whether the model appears in the chat
+                          // picker (`/api/models`). OpenAI rows are gated on API key + provider
+                          // access at runtime, Codex + MiniMax rows are gated on their own
+                          // provider access flags; the Settings toggle simply removes the model
+                          // from the chat picker regardless of provider.
+                          const manualToggleDisabled = saving;
                           const routerLocked =
                             entry.providerId !== "openai" ||
                             !entry.configured ||
@@ -1691,6 +1973,63 @@ export const RouterSettingsPage: FC<{
                                 </TooltipProvider>
                               </td>
 
+                              {/* Recommender toggle column */}
+                              <td className="px-3 py-2 text-center" data-label="Recommender">
+                                <TooltipProvider delayDuration={150}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span
+                                        className="inline-flex"
+                                        data-testid={`registry-recommender-locked-${entry.modelId}`}
+                                      >
+                                        {(() => {
+                                          // Lock rules: the recommender
+                                          // can't surface unconfigured /
+                                          // unavailable models. Codex is
+                                          // eligible — the chat composer
+                                          // uses the Codex chat pane for
+                                          // `providerId === "codex"`, so
+                                          // recommending a Codex model is
+                                          // a normal flow.
+                                          const recommenderLocked =
+                                            !entry.configured || !entry.available;
+                                          if (recommenderLocked) {
+                                            return (
+                                              <span
+                                                className="inline-flex items-center gap-1 rounded-md border border-zinc-500/40 bg-zinc-500/10 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-700 dark:text-zinc-300"
+                                                aria-label="Recommender toggle locked"
+                                              >
+                                                <Lock className="size-3" />
+                                                Disabled
+                                              </span>
+                                            );
+                                          }
+                                          return (
+                                            <Switch
+                                              checked={recommenderCheckedFor(entry.modelId)}
+                                              onCheckedChange={(v) =>
+                                                toggleRecommenderForModel(entry.modelId, v)
+                                              }
+                                              aria-label={`Allow recommender to suggest ${entry.displayLabel}`}
+                                              data-testid={`registry-recommender-toggle-${entry.modelId}`}
+                                            />
+                                          );
+                                        })()}
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      {!entry.configured
+                                        ? "This model is not configured in Control Room and cannot be recommended."
+                                        : !entry.available
+                                          ? "This model is not currently available and cannot be recommended."
+                                          : recommenderCheckedFor(entry.modelId)
+                                            ? "The recommender may suggest this model. Uncheck to remove it from the recommender allowlist."
+                                            : "The recommender will not suggest this model. Toggle on to add it to the recommender allowlist."}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </td>
+
                               {/* Reasoning column */}
                               <td className="px-3 py-2 text-center" data-label="Reasoning">
                                 <div className="flex items-center justify-center gap-2">
@@ -1836,6 +2175,169 @@ export const RouterSettingsPage: FC<{
                 {errorsByField.get("routerModelId")?.[0]?.message}
               </p>
             )}
+          </div>
+
+          <div className="mt-4 rounded-md border border-border/60 px-3 py-3">
+            <Label htmlFor="normal-chat-recommender-model">Normal-chat recommender model</Label>
+            <p
+              id="normal-chat-recommender-model-description"
+              className="mt-1 text-xs text-muted-foreground"
+            >
+              Cheap model used by the &ldquo;Recommend model&rdquo; toggle in the chat composer.
+              Separate from the A/B recommender model above and from the manual chat model. Defaults
+              to a Codex subscription id so a fresh deploy never burns paid OpenAI API budget. The
+              runtime walks configured → Codex → MiniMax → OpenAI API (only when{" "}
+              <em>Allow OpenAI API router use</em> is on) when this model fails.
+            </p>
+            <div className="mt-3">
+              <RecommenderModelSelector
+                id="normal-chat-recommender-model"
+                testId="router-settings-normal-chat-recommender-model"
+                options={normalChatRecommenderModelOptions as ReadonlyArray<RecommenderModelOption>}
+                value={form.normalChatRecommenderModelId}
+                onChange={(modelId) => update({ normalChatRecommenderModelId: modelId })}
+                invalid={errorsByField.has("normalChatRecommenderModelId")}
+                ariaDescribedBy="normal-chat-recommender-model-description"
+              />
+            </div>
+            <div
+              className="mt-2 flex flex-wrap items-center gap-2 text-xs"
+              data-testid="router-settings-normal-chat-recommender-reasoning-row"
+            >
+              <label htmlFor="normal-chat-recommender-reasoning" className="text-muted-foreground">
+                Reasoning effort for the recommender
+              </label>
+              <select
+                id="normal-chat-recommender-reasoning"
+                data-testid="router-settings-normal-chat-recommender-reasoning"
+                value={form.normalChatRecommenderReasoningLevel}
+                onChange={(e) =>
+                  update({
+                    normalChatRecommenderReasoningLevel: e.target.value as ReasoningLevel,
+                  })
+                }
+                aria-invalid={errorsByField.has("normalChatRecommenderReasoningLevel")}
+                className="border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 flex h-7 rounded-md border px-2 text-xs shadow-xs outline-none focus-visible:ring-[3px]"
+              >
+                <option value="low">Low (cheap, fast)</option>
+                <option value="medium">Medium</option>
+                <option value="high">High (deeper thinking)</option>
+              </select>
+              <span className="text-[10px] text-muted-foreground/70">
+                Only honored when the recommender model is an OpenAI API model. Codex and MiniMax
+                ignore reasoning controls.
+              </span>
+              {errorsByField.has("normalChatRecommenderReasoningLevel") && (
+                <p
+                  role="alert"
+                  className="text-xs text-destructive"
+                  data-testid="router-settings-error-normal-chat-recommender-reasoning"
+                >
+                  {errorsByField.get("normalChatRecommenderReasoningLevel")?.[0]?.message}
+                </p>
+              )}
+            </div>
+            {errorsByField.has("normalChatRecommenderModelId") && (
+              <p
+                role="alert"
+                className="mt-2 text-xs text-destructive"
+                data-testid="router-settings-error-normal-chat-recommender"
+              >
+                {errorsByField.get("normalChatRecommenderModelId")?.[0]?.message}
+              </p>
+            )}
+
+            {normalChatRecommenderPrompt ? (
+              <details
+                className="mt-3 rounded-md border border-border/60 bg-muted/20"
+                data-testid="router-settings-normal-chat-recommender-prompt"
+              >
+                <summary className="cursor-pointer list-none px-3 py-2 text-xs font-medium">
+                  Show prompt sent to the recommender
+                </summary>
+                <div className="space-y-3 border-t border-border/60 px-3 py-3 text-xs">
+                  <div>
+                    <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                      System prompt
+                    </div>
+                    <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 font-mono text-[11px] leading-relaxed text-foreground/80">
+                      {normalChatRecommenderPrompt.system}
+                    </pre>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                      User prompt (example payload)
+                    </div>
+                    <p className="mt-1 text-[10px] text-muted-foreground/70">
+                      The user-prompt body is dynamic per send. The example below uses a
+                      representative message and the live registry so you can see the exact shape
+                      that goes to the model.
+                    </p>
+                    <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-background p-2 font-mono text-[11px] leading-relaxed text-foreground/80">
+                      {formatJsonExample(normalChatRecommenderPrompt.userJsonExample)}
+                    </pre>
+                  </div>
+                </div>
+              </details>
+            ) : null}
+
+            {/* Recommender allowlist subsection. The actual per-row
+                Switches live in the Model Registry above; this panel
+                is just a summary + bulk action buttons so the user
+                doesn't have to scroll all the way back to Section B. */}
+            <div
+              className="mt-3 rounded-md border border-border/60 bg-muted/10 px-3 py-3"
+              data-testid="router-settings-recommender-allowlist"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium">Models the recommender can recommend</div>
+                  <p
+                    className="mt-1 text-xs text-muted-foreground"
+                    data-testid="router-settings-recommender-allowlist-summary"
+                  >
+                    {recommenderAllowlistSummary}
+                  </p>
+                  <p className="mt-1 text-[10px] text-muted-foreground/70">
+                    Toggle individual models in the Model Registry above (the
+                    <strong> Recommender </strong>
+                    column). An empty allowlist means the recommender will fail loud and keep the
+                    current chat model.
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={allowAllRecommenderModels}
+                    data-testid="router-settings-recommender-allowlist-allow-all"
+                    aria-label="Allow all enabled models for the recommender"
+                  >
+                    Allow all enabled
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={blockAllRecommenderModels}
+                    data-testid="router-settings-recommender-allowlist-block-all"
+                    aria-label="Block all models for the recommender"
+                  >
+                    Block all
+                  </Button>
+                </div>
+              </div>
+              {errorsByField.has("normalChatRecommenderAllowedModels") && (
+                <p
+                  role="alert"
+                  className="mt-2 text-xs text-destructive"
+                  data-testid="router-settings-error-recommender-allowlist"
+                >
+                  {errorsByField.get("normalChatRecommenderAllowedModels")?.[0]?.message}
+                </p>
+              )}
+            </div>
           </div>
 
           <div className="mt-4 rounded-md border border-border/60 px-3 py-3">

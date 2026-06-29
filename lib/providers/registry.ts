@@ -14,9 +14,20 @@ import type { DiscoverySnapshot } from "@/lib/repo/openai-models-discovery-types
 
 import type { SelectorPreferences } from "@/lib/repo/model-selector-prefs-types";
 
-import type { ModelOption, ModelTier as LegacyModelTier, ReasoningLevel } from "./types";
+import type { ModelOption, ModelTier as LegacyModelTier } from "./types";
+import type { ReasoningCapability } from "./capability";
+import {
+  getEffectiveReasoningLevels,
+  hasReasoningControls,
+  UNKNOWN_REASONING_CAPABILITY,
+} from "./capability";
+import {
+  refreshCodexReasoningCapability,
+  refreshMiniMaxReasoningCapability,
+  refreshOpenAIReasoningCapability,
+} from "./reasoning-refresh";
 import { DEFAULT_REASONING_LEVEL } from "./openai";
-import { getDiscoveredMiniMaxModels } from "./minimax";
+import { MINIMAX_M3_CAPABILITY, getDiscoveredMiniMaxModels } from "./minimax";
 import { CODEX_CATALOG_MODELS } from "./codex-catalog";
 import { FAKE_OPENAI_MODEL_IDS, isFakeOpenAIModelsEnabled } from "./openai-models-fake";
 import { getProviderAccessSettings } from "./access-control";
@@ -65,10 +76,10 @@ import {
  * model ids do not flake on iteration order.
  */
 
-export type EffectiveModelTier = "standard" | "expensive" | "unknown";
+export type EffectiveModelTier = "standard" | "expensive" | "unknown" | "cheap";
 
 export type EffectiveModelEntry = {
-  providerId: "openai";
+  providerId: "openai" | "codex" | "minimax";
   modelId: string;
   displayLabel: string;
   /**
@@ -91,8 +102,25 @@ export type EffectiveModelEntry = {
   stale: boolean;
   /** Local metadata advertises at least one reasoning level. */
   supportsReasoning: boolean;
-  /** The reasoning levels the local metadata lists for this model. */
-  supportedReasoningLevels: ReadonlyArray<ReasoningLevel>;
+  /**
+   * Canonical reasoning / thinking capability for this model.
+   * Surfaced as-is from the provider static metadata (OpenAI alias map,
+   * Codex catalog, MiniMax M3 capability), possibly upgraded by
+   * `lib/providers/reasoning-refresh.ts`, or as `kind: "unknown"` for
+   * discovered-only / unconfigured entries. The UI must consult this
+   * field to decide which control surface to render — never the
+   * derived `supportedReasoningLevels` alone.
+   */
+  reasoningCapability: ReasoningCapability;
+  /**
+   * Derived legacy field — concrete list of provider-native option
+   * values, derived from `reasoningCapability` via
+   * `getEffectiveReasoningLevels`. Empty for thinking-budget, none,
+   * and unknown capabilities. Values are provider-native strings,
+   * NOT the narrow `ReasoningLevel` enum — Codex `xhigh` or MiniMax
+   * `adaptive` flow through unchanged.
+   */
+  supportedReasoningLevels: ReadonlyArray<string>;
   /** Tier, derived from local metadata or "unknown" for discovered-only. */
   tier: EffectiveModelTier;
   /**
@@ -160,14 +188,15 @@ export type EffectiveModelEntry = {
    * Provenance marker so the UI can render a "fake / known / unknown"
    * badge without re-deriving the rule. Stable across calls.
    */
-  provenance: "local_meta" | "discovered_only" | "fake" | "stale";
+  provenance: "local_meta" | "discovered_only" | "fake" | "stale" | "env_static";
 };
 
 export type EffectiveRegistry = {
   models: ReadonlyArray<EffectiveModelEntry>;
   defaults: {
     manualModelId: string | null;
-    reasoningLevel: ReasoningLevel;
+    /** Provider-native default reasoning-effort value. */
+    reasoningLevel: string;
   };
   discovery: DiscoverySnapshot;
   selectorPrefs: SelectorPreferences;
@@ -188,6 +217,16 @@ export type EffectiveRegistry = {
     routerEligible: number;
   };
   fakeMode: boolean;
+  /**
+   * Map from model id to the refreshed reasoning capability. Set
+   * only by the async `getEffectiveModelsRegistry` path; the sync
+   * `buildEffectiveRegistry` returns an empty map. Covers OpenAI,
+   * Codex (`codex:<id>`), and MiniMax (`MiniMax-M3`) ids so the
+   * chat-picker DTO can apply the refreshed metadata to rows that
+   * are not part of the sync registry (Codex / MiniMax are appended
+   * separately in `getEffectiveModelsResponse`).
+   */
+  refreshedCapabilitiesById?: ReadonlyMap<string, ReasoningCapability>;
 };
 
 function legacyTier(tier: EffectiveModelTier): LegacyModelTier {
@@ -212,7 +251,7 @@ export type BuildRegistryInput = {
   staticAliasResolver?: (modelId: string) => {
     label: string;
     tier: "cheap" | "expensive";
-    reasoningLevels: ReadonlyArray<ReasoningLevel>;
+    reasoningCapability: ReasoningCapability;
   } | null;
   /** Optional override for "is this id a known static model?". */
   isKnownOverride?: (modelId: string) => boolean;
@@ -223,13 +262,22 @@ export type BuildRegistryInput = {
       {
         label: string;
         tier: "cheap" | "expensive";
-        reasoningLevels: ReadonlyArray<ReasoningLevel>;
+        reasoningCapability: ReasoningCapability;
       },
     ]
   >;
 };
 
-const DEFAULT_REASONING_LEVELS: ReadonlyArray<ReasoningLevel> = ["low"];
+/**
+ * Capability for a model id the registry has no static metadata for.
+ *
+ * Historically this was `["low"]`, which lied about capability and
+ * forced the runtime to ship a fake `reasoningEffort: "low"` parameter.
+ * The honest answer for an unknown OpenAI model is `kind: "unknown",
+ * control: "unknown"` — the UI shows "Reasoning capability unknown"
+ * and the runtime omits any reasoning params.
+ */
+const UNKNOWN_DISCOVERED_CAPABILITY: ReasoningCapability = UNKNOWN_REASONING_CAPABILITY;
 
 function defaultStaticAliasResolver(modelId: string) {
   return getStaticOpenAIModelAlias(modelId);
@@ -321,8 +369,27 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
         ? "expensive"
         : "standard"
       : "unknown";
-    const supportedReasoningLevels = alias?.reasoningLevels ?? DEFAULT_REASONING_LEVELS;
-    const supportsReasoning = supportedReasoningLevels.length > 0;
+    // Stamp `source: "static"` on the sync build path too so
+    // callers that only exercise `buildEffectiveRegistry` (unit
+    // tests, future direct callers) still see a `source` value.
+    // The async refresh path can later upgrade this to
+    // `"provider_refresh"`.
+    const reasoningCapability: ReasoningCapability = alias?.reasoningCapability
+      ? (alias.reasoningCapability.kind === "effort_levels" ||
+          alias.reasoningCapability.kind === "thinking_budget") &&
+        !alias.reasoningCapability.source
+        ? { ...alias.reasoningCapability, source: "static" as const }
+        : alias.reasoningCapability
+      : UNKNOWN_DISCOVERED_CAPABILITY;
+    const supportedReasoningLevels = getEffectiveReasoningLevels(reasoningCapability);
+    // `supportsReasoning` is true when the capability advertises any
+    // reasoning surface at all (supported / model_dependent). It is
+    // false for `kind: "none"` and `kind: "unknown"`. Note: this is
+    // NOT just `supportedReasoningLevels.length > 0` — a thinking-
+    // budget model has zero effort levels but does support reasoning,
+    // so the registry still considers it router-eligible when its
+    // underlying capability says so.
+    const supportsReasoning = hasReasoningControls(reasoningCapability);
 
     // `usableForChat` is the strict "can Control Room actually drive
     // a chat call" signal. Unconfigured models are never `usableForChat`
@@ -393,6 +460,7 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
       available,
       stale,
       supportsReasoning,
+      reasoningCapability,
       supportedReasoningLevels,
       tier,
       usableForChat,
@@ -457,11 +525,101 @@ export async function getEffectiveModelsRegistry(): Promise<EffectiveRegistry> {
     getDiscoverySnapshotAsync(),
     getSelectorPreferencesAsync(),
   ]);
-  return buildEffectiveRegistry({
+  const base = buildEffectiveRegistry({
     discovery,
     selectorPrefs,
     openaiKeySet: Boolean(process.env.OPENAI_API_KEY?.trim()),
   });
+  // Refresh reasoning capability metadata. The refresh path lives in
+  // `lib/providers/reasoning-refresh.ts` and stamps `refreshedAt` /
+  // upgrades `source` to `"provider_refresh"` when a real provider
+  // discovery is wired in. Today the refresh is a no-op that returns
+  // the static metadata, but the registry merge still records the
+  // timestamp so the UI can show "Refreshed Xm ago".
+  const { refreshed, byId } = await refreshAllCapabilities(base);
+  // Stash the refreshed Codex + MiniMax capabilities on the base
+  // registry object so `getEffectiveModelsResponse` can apply them
+  // when it builds the chat-picker payload. The base sync registry
+  // does not include Codex/MiniMax entries, so the refresh loop
+  // can't reach them — this field is the bridge.
+  return {
+    ...refreshed,
+    refreshedCapabilitiesById: byId,
+  };
+}
+
+/**
+ * Run the per-provider refresh path for every model in `registry`
+ * and return a new registry whose `reasoningCapability` carries the
+ * latest `source` / `refreshedAt` values. Failures fall back to the
+ * static metadata so a transient refresh error never strips
+ * reasoning options from a model that genuinely supports them.
+ */
+async function refreshAllCapabilities(
+  registry: EffectiveRegistry,
+): Promise<{ refreshed: EffectiveRegistry; byId: ReadonlyMap<string, ReasoningCapability> }> {
+  // Build the list of (modelId, static fallback) pairs we want to
+  // refresh. Codex catalog + MiniMax-M3 + every OpenAI static alias
+  // map to a refresh call. Discovered-only / unconfigured models
+  // keep their `kind: "unknown"` capability and do not need a
+  // refresh.
+  const refreshTargets: Array<{
+    modelId: string;
+    fallback: ReasoningCapability;
+    refresh: () => Promise<
+      { ok: true; capability: ReasoningCapability } | { ok: false; reason: string }
+    >;
+  }> = [];
+  for (const model of registry.models) {
+    if (!model.configured) continue;
+    if (model.providerId !== "openai") continue;
+    refreshTargets.push({
+      modelId: model.modelId,
+      fallback: model.reasoningCapability,
+      refresh: () => refreshOpenAIReasoningCapability(model.modelId, model.reasoningCapability),
+    });
+  }
+  for (const codex of CODEX_CATALOG_MODELS) {
+    refreshTargets.push({
+      modelId: `codex:${codex.id}`,
+      fallback: codex.reasoningCapability,
+      refresh: () => refreshCodexReasoningCapability(codex.id, codex.reasoningCapability),
+    });
+  }
+  refreshTargets.push({
+    modelId: "MiniMax-M3",
+    fallback: MINIMAX_M3_CAPABILITY,
+    refresh: () => refreshMiniMaxReasoningCapability("MiniMax-M3", MINIMAX_M3_CAPABILITY),
+  });
+
+  const results = await Promise.all(
+    refreshTargets.map(async (t) => {
+      try {
+        const result = await t.refresh();
+        // The refresh path always returns the capability (even on
+        // The refresh path returns the refreshed capability on
+        // `ok: true` and a `reason` on `ok: false`. The static
+        // fallback is what we surface when refresh fails (so the
+        // registry merge layer can stamp `refreshedAt` and keep the
+        // chat picker functional).
+        const capability = result.ok ? result.capability : t.fallback;
+        return { modelId: t.modelId, capability };
+      } catch {
+        return { modelId: t.modelId, capability: t.fallback };
+      }
+    }),
+  );
+  const byId = new Map(results.map((r) => [r.modelId, r.capability] as const));
+  const refreshedModels = registry.models.map((m) => {
+    const next = byId.get(m.modelId);
+    if (!next || next === m.reasoningCapability) return m;
+    return {
+      ...m,
+      reasoningCapability: next,
+      supportedReasoningLevels: getEffectiveReasoningLevels(next),
+    };
+  });
+  return { refreshed: { ...registry, models: refreshedModels }, byId };
 }
 
 /**
@@ -488,15 +646,30 @@ export async function getEffectiveModelsRegistry(): Promise<EffectiveRegistry> {
 export async function getEffectiveModelsResponse(): Promise<{
   models: ReadonlyArray<ModelOption>;
   defaultModelId: string | null;
-  defaultReasoningLevel: ReasoningLevel;
+  defaultReasoningLevel: string;
 }> {
-  const [registry, access] = await Promise.all([
+  const [registry, access, selectorPrefs] = await Promise.all([
     getEffectiveModelsRegistry(),
     getProviderAccessSettings(),
+    import("@/lib/repo/model-selector-prefs").then((m) => m.getSelectorPreferences()),
   ]);
   const openaiAccess = access.find((p) => p.provider_id === "openai_api");
   const minimaxAccess = access.find((p) => p.provider_id === "minimax_api");
   const codexAccess = access.find((p) => p.provider_id === "codex_subscription");
+
+  /**
+   * Honor the user-curated `selectorPrefs` for every chat-picker
+   * entry. OpenAI rows use it via `manualSelectorVisible` on the
+   * registry, but Codex + MiniMax rows are appended here directly,
+   * so we have to apply the same filter here. Missing pref = default
+   * visible (the persisted pref is opt-in user customization, never
+   * a hide-by-default).
+   */
+  const isPrefVisible = (modelId: string): boolean => {
+    const pref = selectorPrefs[modelId];
+    return pref ? pref.visible : true;
+  };
+
   const filtered = registry.models.filter((m) => m.manualSelectorVisible);
   const models: ModelOption[] = filtered.map((m) => {
     const canCallNow =
@@ -517,6 +690,7 @@ export async function getEffectiveModelsResponse(): Promise<{
       capabilityKind: "model_provider",
       description:
         "Access: OpenAI API key · API billed. Direct OpenAI API call; not subscription-backed.",
+      reasoningCapability: m.reasoningCapability,
       reasoningLevels: m.supportedReasoningLevels,
       tier: legacyTier(m.tier),
     };
@@ -543,32 +717,67 @@ export async function getEffectiveModelsResponse(): Promise<{
     return option;
   });
   const codexEnabled = Boolean(codexAccess?.enabled && codexAccess.allow_manual);
-  const codexModels: ModelOption[] = CODEX_CATALOG_MODELS.map((m) => ({
-    providerId: "codex",
-    providerLabel: "Codex CLI / ChatGPT login",
-    modelId: `codex:${m.id}`,
-    modelLabel: `Codex · ${m.label} · included`,
-    enabled: codexEnabled,
-    accessPath: "codex_chatgpt",
-    billingLabel: "ChatGPT subscription",
-    capabilityKind: "agent_backend",
-    description: `Access: Codex CLI / ChatGPT login. Source: Official Codex catalog.${
-      m.mayBePlanGated ? " May require Pro." : ""
-    } Does not use OPENAI_API_KEY.`,
-    reasoningLevels: [],
-    tier: m.tier,
-    ...(codexEnabled ? {} : { reason: "Codex subscription manual chat is disabled in Settings." }),
-  }));
-  const minimaxModels = (await getDiscoveredMiniMaxModels()).map((m) => ({
-    ...m,
-    modelLabel: `${m.modelLabel} · token plan`,
-    enabled: Boolean(m.enabled && minimaxAccess?.enabled && minimaxAccess.allow_manual),
-    reason: !minimaxAccess?.enabled
-      ? "MiniMax API key provider is disabled in Settings."
-      : !minimaxAccess.allow_manual
-        ? "MiniMax manual chat is disabled in Settings."
-        : m.reason,
-  }));
+  const codexModels: ModelOption[] = CODEX_CATALOG_MODELS.filter((m) =>
+    isPrefVisible(`codex:${m.id}`),
+  ).map((m) => {
+    // Apply the refreshed capability when the async refresh path
+    // produced one. The sync catalog entry carries
+    // `source: "static"` + no `refreshedAt`; the async path
+    // upgrades both fields. The `byId` lookup is by the prefixed
+    // id (`codex:<id>`) since that is the id the chat composer
+    // uses to address the row.
+    const refreshed = registry.refreshedCapabilitiesById?.get(`codex:${m.id}`);
+    const capability = refreshed ?? m.reasoningCapability;
+    return {
+      providerId: "codex",
+      providerLabel: "Codex CLI / ChatGPT login",
+      modelId: `codex:${m.id}`,
+      modelLabel: `Codex · ${m.label} · included`,
+      enabled: codexEnabled,
+      accessPath: "codex_chatgpt",
+      billingLabel: "ChatGPT subscription",
+      capabilityKind: "agent_backend",
+      description: `Access: Codex CLI / ChatGPT login. Source: Official Codex catalog.${
+        m.mayBePlanGated ? " May require Pro." : ""
+      } Does not use OPENAI_API_KEY.`,
+      // Honest per-model capability — the Codex CLI / config / IDE
+      // surfaces `reasoning_effort` when the underlying model
+      // supports it. We mirror the documented set for known models
+      // and use `model_dependent` for the research-preview
+      // `gpt-5.3-codex-spark`. The legacy `reasoningLevels` is
+      // derived from this so the registry UI renders the real
+      // per-model checkboxes.
+      reasoningCapability: capability,
+      reasoningLevels: getEffectiveReasoningLevels(capability),
+      tier: m.tier,
+      ...(codexEnabled ? {} : { reason: "Codex subscription manual chat is disabled in Settings." }),
+    };
+  });
+  const minimaxModels = (await getDiscoveredMiniMaxModels())
+    .filter((m) => isPrefVisible(m.modelId))
+    .map((m) => {
+      // Apply the refreshed capability when the async refresh
+      // path produced one for this MiniMax model id. The M3
+      // entry's refresh target is `MiniMax-M3`; discovered-only
+      // MiniMax ids (M2, M2.1, …) have no refresh target today
+      // and keep their static `thinking_budget + unknown`
+      // capability.
+      const refreshed = registry.refreshedCapabilitiesById?.get(m.modelId);
+      const baseCapability = m.reasoningCapability;
+      const capability = refreshed ?? baseCapability;
+      return {
+        ...m,
+        modelLabel: `${m.modelLabel} · token plan`,
+        reasoningCapability: capability,
+        reasoningLevels: getEffectiveReasoningLevels(capability),
+        enabled: Boolean(m.enabled && minimaxAccess?.enabled && minimaxAccess.allow_manual),
+        reason: !minimaxAccess?.enabled
+          ? "MiniMax API key provider is disabled in Settings."
+          : !minimaxAccess.allow_manual
+            ? "MiniMax manual chat is disabled in Settings."
+            : m.reason,
+      };
+    });
   const allModels = [...models, ...minimaxModels, ...codexModels];
   const defaultModelId =
     registry.defaults.manualModelId &&
@@ -592,7 +801,7 @@ export async function getEffectiveModelsResponse(): Promise<{
 export function registryToRouterAllowlist(registry: EffectiveRegistry): ReadonlyArray<{
   modelId: string;
   modelLabel: string;
-  reasoningLevel: ReasoningLevel;
+  reasoningLevel: string;
   tier: LegacyModelTier;
   configured: boolean;
   available: boolean;
@@ -601,7 +810,8 @@ export function registryToRouterAllowlist(registry: EffectiveRegistry): Readonly
   const out: Array<{
     modelId: string;
     modelLabel: string;
-    reasoningLevel: ReasoningLevel;
+    /** Provider-native reasoning-effort value (e.g. "low", "xhigh"). */
+    reasoningLevel: string;
     tier: LegacyModelTier;
     configured: boolean;
     available: boolean;

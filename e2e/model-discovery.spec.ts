@@ -172,6 +172,15 @@ test.describe("Model discovery + unified Model Registry", () => {
     page,
     request,
   }) => {
+    // In fake mode without OPENAI_API_KEY, the chat picker hides
+    // OpenAI models by default (manualSelectorVisible defaults to
+    // false when usableForChat=false). To exercise the toggle end-to-end,
+    // explicitly opt the model in via the prefs API so we start from a
+    // known-visible baseline.
+    await request.put("/api/model-selector-prefs", {
+      data: { preferences: { "gpt-5.4-mini": { visible: true } } },
+    });
+
     await page.goto("/settings/router");
     await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
       timeout: 15_000,
@@ -187,13 +196,45 @@ test.describe("Model discovery + unified Model Registry", () => {
 
     const toggle = page.getByTestId("registry-manual-toggle-gpt-5.4-mini");
     await expect(toggle).toBeVisible();
+    // The Manual toggle triggers an async PUT to
+    // /api/model-selector-prefs. Wait for the PUT response so the
+    // assertion below doesn't race the persistence.
+    const putPromise = page.waitForResponse(
+      (r) => r.url().endsWith("/api/model-selector-prefs") && r.request().method() === "PUT",
+    );
     await toggle.click();
+    const putRes = await putPromise;
+    expect(putRes.ok()).toBeTruthy();
 
     const after = await request.get("/api/models");
     expect(after.status()).toBe(200);
     const afterBody = await after.json();
     const afterIds = (afterBody.models ?? []).map((m: { modelId: string }) => m.modelId);
     expect(afterIds).not.toContain("gpt-5.4-mini");
+
+    // The toggled-off model must remain visible in the Settings
+    // registry so the user can re-enable it.
+    await expect(page.getByTestId("registry-row-gpt-5.4-mini")).toBeVisible();
+    // And in the registry DTO returned by /api/router-settings.
+    const regR = await request.get("/api/router-settings");
+    const regBody = await regR.json();
+    const regIds = (regBody.effectiveRegistry?.models ?? []).map(
+      (m: { modelId: string }) => m.modelId,
+    );
+    expect(regIds).toContain("gpt-5.4-mini");
+
+    // Re-enable — model returns to /api/models.
+    const reEnablePutPromise = page.waitForResponse(
+      (r) => r.url().endsWith("/api/model-selector-prefs") && r.request().method() === "PUT",
+    );
+    await toggle.click();
+    const reEnablePutRes = await reEnablePutPromise;
+    expect(reEnablePutRes.ok()).toBeTruthy();
+    const restored = await request.get("/api/models");
+    const restoredIds = (await restored.json()).models.map(
+      (m: { modelId: string }) => m.modelId,
+    );
+    expect(restoredIds).toContain("gpt-5.4-mini");
   });
 
   test("Unknown / unclassified fake model cannot enter the router pool via PUT", async ({
@@ -438,5 +479,43 @@ test.describe("Model discovery + unified Model Registry", () => {
     await expect(lowCheckbox).toHaveAttribute("data-state", "checked");
     await expect(mediumCheckbox).toHaveAttribute("data-state", "unchecked");
     await expect(page.getByTestId("registry-badge-partial-gpt-5.4-mini")).toBeVisible();
+  });
+
+  test("Registry: capability badges surface honest per-model reasoning surface (Codex + unknown)", async ({
+    page,
+  }) => {
+    // Regression for the brief:
+    //   - Codex models must NOT be hardcoded to `["low"]`; they should
+    //     advertise the per-model set (gpt-5.5/gpt-5.4 → all three,
+    //     gpt-5.4-mini → low/medium, gpt-5.3-codex-spark → low only).
+    //   - Discovered-only OpenAI models must NOT pretend to support
+    //     only `low`; their reasoning column must show "unknown".
+    //   - MiniMax models must NOT show the effort-level picker; their
+    //     capability is `thinking_budget`.
+    await page.goto("/settings/router");
+    await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // gpt-5.4-mini Codex variant surfaces all three per-model levels:
+    // cheap tier → low + medium, NO high.
+    await expect(page.getByTestId("registry-reasoning-codex:gpt-5.4-mini-low")).toBeVisible();
+    await expect(page.getByTestId("registry-reasoning-codex:gpt-5.4-mini-medium")).toBeVisible();
+    await expect(page.getByTestId("registry-reasoning-codex:gpt-5.4-mini-high")).toHaveCount(0);
+
+    // gpt-5.5 Codex variant is expensive-tier and advertises all three.
+    await expect(page.getByTestId("registry-reasoning-codex:gpt-5.5-low")).toBeVisible();
+    await expect(page.getByTestId("registry-reasoning-codex:gpt-5.5-medium")).toBeVisible();
+    await expect(page.getByTestId("registry-reasoning-codex:gpt-5.5-high")).toBeVisible();
+
+    // Discovered-only OpenAI models get the "unknown" capability, NOT
+    // a faked `low` checkbox. The Reasoning column shows "Not supported"
+    // (or an explicit "unknown" notice — see
+    // `components/settings/router-settings-page.tsx`); the registry
+    // MUST NOT render a `registry-reasoning-gpt-fake-unknown-xyz-*`
+    // checkbox because that would be the lie this refactor removed.
+    await expect(page.getByTestId("registry-reasoning-gpt-fake-unknown-xyz-low")).toHaveCount(0);
+    await expect(page.getByTestId("registry-reasoning-gpt-fake-unknown-xyz-medium")).toHaveCount(0);
+    await expect(page.getByTestId("registry-reasoning-gpt-fake-unknown-xyz-high")).toHaveCount(0);
   });
 });
