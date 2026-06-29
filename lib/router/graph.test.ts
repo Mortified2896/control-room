@@ -9,11 +9,31 @@ function stubRecommend(behavior: RecommendImpl): void {
   setRecommendImpl(behavior);
 }
 
+// Tests in this file exercise the OpenAI allowlist path (cheap +
+// expensive tier, budget guards, recommendation validation). Pin an
+// explicit allowlist that includes the OpenAI combos we want to test;
+// the shipped defaults are subscription-safe codex-only and require
+// `allowOpenAiApiRouter` to admit OpenAI API entries.
+const TEST_SETTINGS = {
+  ...DEFAULT_ROUTER_SETTINGS,
+  allowOpenAiApiRouter: true,
+  routerModelId: "gpt-5.4-mini",
+  allowedCombos: [
+    { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const },
+    { modelId: "gpt-5.4-mini", reasoningLevel: "medium" as const },
+    { modelId: "gpt-5.4-mini", reasoningLevel: "high" as const },
+    { modelId: "gpt-5.5", reasoningLevel: "low" as const },
+    { modelId: "gpt-5.5", reasoningLevel: "medium" as const },
+    { modelId: "gpt-5.5", reasoningLevel: "high" as const },
+  ],
+};
+
 const baseInput = {
   latestUserText: "Explain what a Postgres `gen_random_uuid()` does.",
   recentTurns: [],
   sideA: { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const },
   recentChars: 100,
+  settingsOverride: TEST_SETTINGS,
 };
 
 test("graph returns a valid recommendation when the LLM output is well-formed", async () => {
@@ -72,7 +92,7 @@ test("suggest_alternative suggests but does not run when the LLM call fails", as
   stubRecommend(async () => ({ ok: false, reason: "openai 503" }));
   const out = await runRouterGraph({
     ...baseInput,
-    settingsOverride: { ...DEFAULT_ROUTER_SETTINGS, failureBehavior: "suggest_alternative" },
+    settingsOverride: { ...TEST_SETTINGS, failureBehavior: "suggest_alternative" },
   });
   assert.equal(out.usedFallback, false);
   assert.equal(out.fallbackReason, "openai 503");
@@ -103,7 +123,7 @@ test("graph skips Side B when the budget guard rejects it", async () => {
     ...baseInput,
     // Force the recommendation itself above the cap.
     settingsOverride: {
-      ...DEFAULT_ROUTER_SETTINGS,
+      ...TEST_SETTINGS,
       maxCostPerRecommendationUsd: 0.0001,
     },
   });
@@ -132,7 +152,7 @@ test("graph skips Side B when the A/B budget is too tight", async () => {
   const out = await runRouterGraph({
     ...baseInput,
     settingsOverride: {
-      ...DEFAULT_ROUTER_SETTINGS,
+      ...TEST_SETTINGS,
       maxCostPerAbRunUsd: 0.0001,
     },
   });
@@ -161,13 +181,13 @@ test("graph respects allowExpensiveModels=true by enabling expensive picks", asy
   const out = await runRouterGraph({
     ...baseInput,
     settingsOverride: {
-      ...DEFAULT_ROUTER_SETTINGS,
+      ...TEST_SETTINGS,
       allowExpensiveModels: true,
       // The Settings UI is the source of truth for which combos the user
       // has authorized; for this test we authorize the expensive combo
       // we want the LLM to recommend.
       allowedCombos: [
-        ...DEFAULT_ROUTER_SETTINGS.allowedCombos,
+        ...TEST_SETTINGS.allowedCombos,
         { modelId: "gpt-5.5", reasoningLevel: "low" as const },
         { modelId: "gpt-5.5", reasoningLevel: "medium" as const },
         { modelId: "gpt-5.5", reasoningLevel: "high" as const },
@@ -186,7 +206,7 @@ test("graph returns skipReason when settings.abEnabled=false", async () => {
   const out = await runRouterGraph({
     ...baseInput,
     settingsOverride: {
-      ...DEFAULT_ROUTER_SETTINGS,
+      ...TEST_SETTINGS,
       abEnabled: false,
     },
   });
@@ -218,7 +238,7 @@ test("expensive model disabled on long prompt gives a clear blocked reason", asy
     ...baseInput,
     recentChars: DEFAULT_ROUTER_SETTINGS.longPromptThresholdChars + 10,
     settingsOverride: {
-      ...DEFAULT_ROUTER_SETTINGS,
+      ...TEST_SETTINGS,
       allowExpensiveModels: true,
       maxCostPerRecommendationUsd: 1.0,
       maxCostPerAbRunUsd: 1.0,

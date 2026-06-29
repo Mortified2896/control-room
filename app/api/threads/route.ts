@@ -166,7 +166,13 @@ export async function POST(req: Request) {
   }
 
   try {
-    const thread = await createThread({ title: titleRaw.trim(), modelId, projectId, threadMode, harness });
+    const thread = await createThread({
+      title: titleRaw.trim(),
+      modelId,
+      projectId,
+      threadMode,
+      harness,
+    });
     if (firstMessage) {
       await createMessage({ threadId: thread.id, role: "user", content: firstMessage, modelId });
     }

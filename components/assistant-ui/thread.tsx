@@ -74,6 +74,13 @@ type ModelRecommendation = {
   recommendedProvider: string;
   recommendedReasoningLevel: ReasoningLevel | null;
   reasoning: string;
+  proposedSubscriptionFallbacks?: Array<{
+    toModelId: string;
+    toProviderId: string;
+    displayLabel: string;
+    reason: string;
+  }>;
+  loudFailure?: boolean;
   diagnostics?: { fallback?: boolean; fallbackReason?: string | null; recommenderModelId?: string };
 };
 
@@ -467,22 +474,39 @@ const ComposerAction: FC<{
           {recommendation ? (
             <>
               <div className="font-medium text-foreground">
-                Recommended: {recommendation.recommendedModelId}
+                {recommendation.loudFailure ? "Recommendation blocked" : "Recommended:"}{" "}
+                {recommendation.recommendedModelId}
                 {recommendation.recommendedReasoningLevel
                   ? ` · ${recommendation.recommendedReasoningLevel}`
                   : ""}
               </div>
               <div className="mt-0.5 text-muted-foreground">Reason: {recommendation.reasoning}</div>
+              {recommendation.loudFailure &&
+              recommendation.proposedSubscriptionFallbacks?.length ? (
+                <div className="mt-1 text-muted-foreground">
+                  Suggested subscription alternatives:{" "}
+                  {recommendation.proposedSubscriptionFallbacks
+                    .map((p) => p.displayLabel)
+                    .join(", ")}
+                </div>
+              ) : null}
               <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-7 rounded-full px-3"
-                  data-testid="recommender-accept"
-                  onClick={handleAcceptRecommendation}
-                >
-                  {recommenderEnabled ? "Accept & send" : "Use recommendation"}
-                </Button>
+                {!recommendation.loudFailure ||
+                recommendation.proposedSubscriptionFallbacks?.length ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 rounded-full px-3"
+                    data-testid="recommender-accept"
+                    onClick={handleAcceptRecommendation}
+                  >
+                    {recommendation.loudFailure
+                      ? `Switch to ${recommendation.proposedSubscriptionFallbacks?.[0]?.displayLabel ?? "suggested subscription"}`
+                      : recommenderEnabled
+                        ? "Accept & send"
+                        : "Use recommendation"}
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   variant="outline"
@@ -491,7 +515,11 @@ const ComposerAction: FC<{
                   data-testid="recommender-decline"
                   onClick={handleDeclineRecommendation}
                 >
-                  {recommenderEnabled ? "Decline & send" : "Keep current"}
+                  {recommendation.loudFailure
+                    ? "Keep current"
+                    : recommenderEnabled
+                      ? "Decline & send"
+                      : "Keep current"}
                 </Button>
               </div>
             </>
@@ -599,7 +627,12 @@ const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root border-destructive bg-destructive/10 text-destructive dark:bg-destructive/5 mt-2 rounded-md border p-3 text-sm dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
+        <div className="mb-1 font-medium">Send blocked</div>
+        <ErrorPrimitive.Message className="aui-message-error-message whitespace-pre-wrap" />
+        <div className="mt-2 text-xs text-destructive/80 dark:text-red-200/80">
+          Control Room will not auto-switch models or use API-billed fallback. Re-enable the model
+          in Settings or choose another model explicitly.
+        </div>
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );

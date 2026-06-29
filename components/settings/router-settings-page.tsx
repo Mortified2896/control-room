@@ -1877,10 +1877,10 @@ export const RouterSettingsPage: FC<{
                                   />
                                   <span className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                                     {entry.providerId === "openai"
-                                      ? "API billed"
+                                      ? "OpenAI API billing"
                                       : entry.providerId === "codex"
-                                        ? "Codex CLI · ChatGPT login"
-                                        : "MiniMax key · token plan"}
+                                        ? "Codex subscription"
+                                        : "MiniMax subscription"}
                                   </span>
                                   {entry.available ? (
                                     <Eye className="size-3 text-emerald-600/60 dark:text-emerald-400/60" />

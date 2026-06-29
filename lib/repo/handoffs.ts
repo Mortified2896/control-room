@@ -6,7 +6,14 @@ import { listMessages } from "./threads";
 import type { MessageRow } from "./types";
 
 export const HANDOFF_WORKERS = ["pi", "codex", "opencode"] as const;
-export const HANDOFF_TASK_TYPES = ["implement", "debug", "inspect", "refactor", "test", "review"] as const;
+export const HANDOFF_TASK_TYPES = [
+  "implement",
+  "debug",
+  "inspect",
+  "refactor",
+  "test",
+  "review",
+] as const;
 export const HANDOFF_STATUSES = ["draft", "copied", "discarded"] as const;
 
 export type HandoffWorker = (typeof HANDOFF_WORKERS)[number];

@@ -103,7 +103,13 @@ export function SettingsIndexPage() {
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col gap-5 px-4 py-6 sm:px-8">
       <header className="flex items-start justify-between gap-4 border-b border-border/60 pb-4">
         <div className="flex items-start gap-2">
-          <Button asChild variant="ghost" size="icon-sm" aria-label="Back to chat" className="mt-0.5">
+          <Button
+            asChild
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Back to chat"
+            className="mt-0.5"
+          >
             <Link href="/">
               <ArrowLeft className="size-4" />
             </Link>

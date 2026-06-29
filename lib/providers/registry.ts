@@ -689,7 +689,7 @@ export async function getEffectiveModelsResponse(): Promise<{
       billingLabel: "OpenAI API billing",
       capabilityKind: "model_provider",
       description:
-        "Access: OpenAI API key · API billed. Direct OpenAI API call; not subscription-backed.",
+        "Access: OpenAI API key · OpenAI API billing. Direct OpenAI API call; not subscription-backed. This provider is API-billed per token and is never a silent fallback under the no-API-billing-fallback policy.",
       reasoningCapability: m.reasoningCapability,
       reasoningLevels: m.supportedReasoningLevels,
       tier: legacyTier(m.tier),

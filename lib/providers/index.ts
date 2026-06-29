@@ -15,7 +15,6 @@ import {
 import { isCodexCatalogModelId } from "./codex-catalog";
 import { getBillingSourceForProvider } from "./billing-source";
 import type {
-  BillingSource,
   ModelMeta,
   ModelOption,
   ModelsResponse,

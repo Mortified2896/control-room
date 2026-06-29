@@ -170,22 +170,28 @@ Docs-only change:
 
 ```md
 Changed:
+
 - `docs/production-debugging.md`
 - `AGENTS.md`
 
 Validation:
+
 - `npm run typecheck` ✅
 
 Production restart:
+
 - no — docs-only change; not needed
 
 API smoke:
+
 - not needed — no API/server/schema/env changes
 
 Rendered UI check:
+
 - not needed — no client UI change
 
 Caveats:
+
 - none
 ```
 
@@ -193,22 +199,28 @@ Client UI change not restarted yet:
 
 ```md
 Changed:
+
 - `components/assistant-ui/sidebar.tsx`
 
 Validation:
+
 - `npm run typecheck` ✅
 - `npm run build` ✅
 
 Production restart:
+
 - no — not performed because this agent is running inside a Control Room-hosted chat/session; user or an external Pi/OpenCode/Codex/SSH/tmux session must run `scripts/restart-prod.sh`
 
 API smoke:
+
 - not needed — no API/server/schema/env changes
 
 Rendered UI check:
+
 - fail/not performed — production was not restarted and browser was not refreshed/cache-busted; do not claim live UI is fixed
 
 Caveats:
+
 - live browser may still show the old client bundle until rebuild/restart/refresh is completed
 - if running from an external Pi/OpenCode/Codex/SSH/tmux session, do not use “active Control Room session” as the reason to skip restart; perform the deploy sequence or state the actual blocker
 ```
@@ -217,24 +229,30 @@ API/server change after restart:
 
 ```md
 Changed:
+
 - `app/api/threads/route.ts`
 - `lib/repo/threads.ts`
 
 Validation:
+
 - `npm run typecheck` ✅
 - `npm test` ✅
 - `npm run build` ✅
 
 Production restart:
+
 - yes — used `scripts/restart-prod.sh` from an external shell
 
 API smoke:
+
 - pass — `scripts/smoke-prod.sh` checked `/api/projects` and `/api/threads?projectId=null`
 
 Rendered UI check:
+
 - not needed — no client UI change
 
 Caveats:
+
 - none
 ```
 

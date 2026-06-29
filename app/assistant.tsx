@@ -68,6 +68,12 @@ function triggerTarget(target: ShortcutTarget) {
  */
 type ReasoningLevel = string;
 type ModelTier = "cheap" | "expensive";
+type SelectionSource =
+  | "user_explicit"
+  | "user_accepted"
+  | "project_default"
+  | "registry_default"
+  | "system_fallback";
 
 type ModelOption = {
   providerId: string;
@@ -77,7 +83,7 @@ type ModelOption = {
   enabled: boolean;
   reason?: string;
   accessPath?: "openai_api" | "minimax_api" | "codex_chatgpt";
-  billingLabel?: "API billed" | "MiniMax token plan" | "ChatGPT subscription";
+  billingLabel?: "OpenAI API billing" | "MiniMax subscription" | "Codex subscription";
   capabilityKind?: "model_provider" | "agent_backend";
   description?: string;
   /**
@@ -99,12 +105,12 @@ type ModelOption = {
 function selectedAccessExplanation(model: ModelOption | undefined): string {
   if (!model) return "";
   if (model.accessPath === "minimax_api") {
-    return "Access: MiniMax API key · MiniMax token plan/subscription";
+    return "Access: MiniMax subscription";
   }
   if (model.accessPath === "codex_chatgpt") {
-    return "Access: Codex CLI · ChatGPT subscription";
+    return "Access: Codex subscription";
   }
-  return "Access: OpenAI API key · API billed";
+  return "Access: OpenAI API billing";
 }
 
 type ModelsResponse = {
@@ -129,6 +135,13 @@ type ModelRecommendation = {
     recommendedReasoningLevel: string | null;
     reason: string;
   }>;
+  proposedSubscriptionFallbacks?: Array<{
+    toModelId: string;
+    toProviderId: string;
+    displayLabel: string;
+    reason: string;
+  }>;
+  loudFailure?: boolean;
   diagnostics: {
     recommenderProvider?: string;
     recommenderModelId: string;
@@ -330,6 +343,7 @@ const ChatPane: FC<{
   routerAbOn: boolean;
   reasoningLevel: string;
   thinkingMode: ThinkingMode;
+  selectionSource: SelectionSource;
   models: ModelOption[];
   activeProjectId: string | null;
   threadMode?: ThreadMode;
@@ -350,6 +364,7 @@ const ChatPane: FC<{
   routerAbOn,
   reasoningLevel,
   thinkingMode,
+  selectionSource,
   models,
   activeProjectId,
   threadMode,
@@ -402,11 +417,12 @@ const ChatPane: FC<{
             // before forwarding to the runtime adapter.
             reasoningOption: reasoningLevel,
             thinkingMode,
+            selectionSource,
             routerAb: effectiveRouterAbOn,
           },
         }),
       }),
-    [modelId, threadId, reasoningLevel, thinkingMode, effectiveRouterAbOn],
+    [modelId, threadId, reasoningLevel, thinkingMode, selectionSource, effectiveRouterAbOn],
   );
 
   const runtime = useChatRuntime({
@@ -997,6 +1013,8 @@ export const Assistant = () => {
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [selectedModelSelectionSource, setSelectedModelSelectionSource] =
+    useState<SelectionSource>("registry_default");
   const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<string>("low");
   const [selectedThinkingMode, setSelectedThinkingMode] =
     useState<ThinkingMode>("provider_default");
@@ -1091,11 +1109,11 @@ export const Assistant = () => {
         const data: ModelsResponse = await res.json();
         if (cancelled) return;
         setModels(data.models);
-        setSelectedModelId((prev) =>
-          prev && data.models.some((m) => m.modelId === prev && m.enabled)
-            ? prev
-            : data.defaultModelId,
-        );
+        setSelectedModelId((prev) => {
+          if (prev && data.models.some((m) => m.modelId === prev && m.enabled)) return prev;
+          setSelectedModelSelectionSource("registry_default");
+          return data.defaultModelId;
+        });
         setSelectedReasoningLevel((prev) =>
           prev && data.defaultReasoningLevel ? prev : data.defaultReasoningLevel,
         );
@@ -1246,6 +1264,7 @@ export const Assistant = () => {
               // models is read via closure; the effect deps include
               // `models` so this re-runs whenever they change.
               if (models.some((m) => m.modelId === thread.modelId && m.enabled)) {
+                setSelectedModelSelectionSource("project_default");
                 return thread.modelId ?? null;
               }
               return prev;
@@ -1407,7 +1426,10 @@ export const Assistant = () => {
           recommendedModelId: selectedModelId ?? "gpt-5.4-mini",
           recommendedProvider: selected?.providerId ?? "openai",
           recommendedReasoningLevel: selectedReasoningLevel,
-          reasoning: "Keeping the current selection because recommendation failed.",
+          reasoning:
+            "The recommender request failed. Control Room will not auto-substitute a different model.",
+          loudFailure: true,
+          proposedSubscriptionFallbacks: [],
           diagnostics: {
             recommenderProvider: "unknown",
             recommenderModelId: "unknown",
@@ -1425,8 +1447,12 @@ export const Assistant = () => {
 
   const handleUseRecommendation = useCallback(() => {
     if (!recommendation) return;
-    setSelectedModelId(recommendation.recommendedModelId);
-    if (recommendation.recommendedReasoningLevel) {
+    const proposed = recommendation.loudFailure
+      ? (recommendation.proposedSubscriptionFallbacks?.[0] ?? null)
+      : null;
+    setSelectedModelId(proposed?.toModelId ?? recommendation.recommendedModelId);
+    setSelectedModelSelectionSource("user_accepted");
+    if (!proposed && recommendation.recommendedReasoningLevel) {
       setSelectedReasoningLevel(recommendation.recommendedReasoningLevel);
     }
     // TODO: persist accepted recommendation history in run/message metadata.
@@ -1527,7 +1553,10 @@ export const Assistant = () => {
         <ModelSelector
           models={models}
           selectedModelId={selectedModelId}
-          onModelChange={setSelectedModelId}
+          onModelChange={(next) => {
+            setSelectedModelId(next);
+            setSelectedModelSelectionSource("user_explicit");
+          }}
           loading={modelsLoading}
         />
 
@@ -1589,6 +1618,7 @@ export const Assistant = () => {
               routerAbOn={routerAbOn}
               reasoningLevel={selectedReasoningLevel}
               thinkingMode={selectedThinkingMode}
+              selectionSource={selectedModelSelectionSource}
               models={models}
               activeProjectId={activeProjectId}
               threadMode={activeThread?.threadMode ?? "chat"}

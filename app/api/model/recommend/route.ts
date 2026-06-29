@@ -14,8 +14,8 @@ import {
 
 import { UNKNOWN_REASONING_CAPABILITY } from "@/lib/providers/capability";
 import {
-  proposeSubscriptionFallbacks,
-  type ProposedSubscriptionFallback,
+  enforceNoApiBillingFallback,
+  NoApiBillingFallbackErrorClass,
 } from "@/lib/policy/no-api-billing-fallback";
 
 export const dynamic = "force-dynamic";
@@ -132,7 +132,8 @@ function fallbackResponse(
     recommendedModelId: input.currentModelId ?? "gpt-5.4-mini",
     recommendedProvider: input.currentProvider ?? "openai",
     recommendedReasoningLevel: input.currentReasoningLevel ?? null,
-    reasoning: "The recommender could not run. Control Room will not auto-substitute a different model.",
+    reasoning:
+      "The recommender could not run. Control Room will not auto-substitute a different model.",
     loudFailure: true,
     proposedSubscriptionFallbacks: [],
     diagnostics: {
@@ -395,21 +396,18 @@ export async function POST(request: Request) {
       attemptedCandidateModel,
       reason: err instanceof Error ? err.message : String(err),
     });
-    // Loud failure under the NO_API_BILLING_FALLBACK policy. We
-    // never auto-substitute — the response surfaces subscription
-    // proposals the user can explicitly opt into, plus a clear
-    // reason. Codex is preferred as a proposal when Codex is
-    // available (subscription-only chain), otherwise MiniMax.
-    const requested = input.currentModelId ?? "gpt-5.4-mini";
-    const requestedProvider = (input.currentProvider ?? "openai") as
-      | "openai"
-      | "minimax"
-      | "codex";
-    const requestedBillingSource: import("@/lib/providers/types").BillingSource =
-      requestedProvider === "openai" ? "api_billing" : "subscription";
-    const proposals: ProposedSubscriptionFallback[] = proposeSubscriptionFallbacks({
-      requestedModelId: requested,
-      requestedProviderId: requestedProvider,
+
+    const policy = enforceNoApiBillingFallback({
+      requested: {
+        modelId: input.currentModelId ?? "gpt-5.4-mini",
+        providerId: (input.currentProvider ?? "openai") as "openai" | "minimax" | "codex",
+        billingSource:
+          (input.currentProvider ?? "openai") === "openai" ? "api_billing" : "subscription",
+        selectionSource: "user_accepted",
+      },
+      kind: "recommender_runner_failed",
+      reason:
+        "The recommender runner could not produce a recommendation. Control Room will not silently switch to an API-billed model.",
       candidates: [
         {
           providerId: "codex",
@@ -431,13 +429,25 @@ export async function POST(request: Request) {
         },
       ],
       registry: [
-        { modelId: "codex:gpt-5.4-mini", displayLabel: "Codex · GPT-5.4 Mini · Codex subscription" },
+        {
+          modelId: "codex:gpt-5.4-mini",
+          displayLabel: "Codex · GPT-5.4 Mini · Codex subscription",
+        },
         { modelId: "MiniMax-M3", displayLabel: "MiniMax-M3 · MiniMax subscription" },
       ],
-      reason:
-        "The recommender runner could not produce a recommendation. " +
-        "Control Room will not silently switch to an API-billed model.",
     });
+
+    let proposals = policy.proposals;
+    try {
+      policy.throw();
+    } catch (policyErr) {
+      if (policyErr instanceof NoApiBillingFallbackErrorClass) {
+        proposals = [...policyErr.payload.proposedSubscriptionFallbacks];
+      } else {
+        throw policyErr;
+      }
+    }
+
     const response = fallbackResponse(
       input,
       activeRecommender ?? { provider: "codex", modelId: "codex:gpt-5.4-mini" },

@@ -79,7 +79,8 @@ export const Sidebar: FC<SidebarProps> = ({
         const data: { folders: BrowseFolder[] } = await res.json();
         if (!cancelled) setFolders(data.folders);
       } catch (err) {
-        if (!cancelled) setFoldersError(err instanceof Error ? err.message : "Failed to load folders");
+        if (!cancelled)
+          setFoldersError(err instanceof Error ? err.message : "Failed to load folders");
       } finally {
         if (!cancelled) setFoldersLoading(false);
       }
@@ -189,17 +190,32 @@ export const Sidebar: FC<SidebarProps> = ({
                 </DialogPrimitive.Description>
               </div>
               <DialogPrimitive.Close asChild>
-                <Button type="button" variant="ghost" size="icon-sm" aria-label="Close folder picker">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Close folder picker"
+                >
                   <X className="size-4" />
                 </Button>
               </DialogPrimitive.Close>
             </div>
 
             <div className="max-h-[55dvh] overflow-y-auto p-3">
-              {foldersLoading && <div className="px-3 py-8 text-center text-sm text-muted-foreground">Loading folders…</div>}
-              {foldersError && <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{foldersError}</div>}
+              {foldersLoading && (
+                <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                  Loading folders…
+                </div>
+              )}
+              {foldersError && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {foldersError}
+                </div>
+              )}
               {!foldersLoading && !foldersError && folders.length === 0 && (
-                <div className="px-3 py-8 text-center text-sm text-muted-foreground">No folders found.</div>
+                <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                  No folders found.
+                </div>
               )}
               <div className="space-y-1">
                 {folders.map((folder) => (
@@ -211,10 +227,18 @@ export const Sidebar: FC<SidebarProps> = ({
                     onClick={() => void openProjectPath(folder.localPath)}
                     className="flex w-full items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-left transition-colors enabled:hover:border-border enabled:hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-55"
                   >
-                    {folder.isGitRepo ? <FolderGit2 className="size-5 shrink-0 text-primary" /> : <Folder className="size-5 shrink-0 text-muted-foreground" />}
+                    {folder.isGitRepo ? (
+                      <FolderGit2 className="size-5 shrink-0 text-primary" />
+                    ) : (
+                      <Folder className="size-5 shrink-0 text-muted-foreground" />
+                    )}
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-foreground">{folder.name}</span>
-                      <span className="block truncate text-xs text-muted-foreground">{folder.localPath}</span>
+                      <span className="block truncate text-sm font-medium text-foreground">
+                        {folder.name}
+                      </span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {folder.localPath}
+                      </span>
                       {(folder.gitBranch || folder.gitRemoteUrl) && (
                         <span className="block truncate text-[11px] text-muted-foreground/80">
                           {[folder.gitBranch, folder.gitRemoteUrl].filter(Boolean).join(" · ")}
@@ -222,8 +246,21 @@ export const Sidebar: FC<SidebarProps> = ({
                       )}
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1 text-[10px]">
-                      {folder.isAlreadyProject && <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">Already opened</span>}
-                      <span className={cn("rounded-full px-2 py-0.5 font-medium", folder.isGitRepo ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground")}>{folder.isGitRepo ? "Git repo" : "Not a Git repo"}</span>
+                      {folder.isAlreadyProject && (
+                        <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+                          Already opened
+                        </span>
+                      )}
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 font-medium",
+                          folder.isGitRepo
+                            ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                            : "bg-muted text-muted-foreground",
+                        )}
+                      >
+                        {folder.isGitRepo ? "Git repo" : "Not a Git repo"}
+                      </span>
                     </span>
                   </button>
                 ))}
@@ -231,7 +268,11 @@ export const Sidebar: FC<SidebarProps> = ({
             </div>
 
             <div className="border-t border-border/50 px-5 py-3">
-              <button type="button" className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => setManualOpen((v) => !v)}>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                onClick={() => setManualOpen((v) => !v)}
+              >
                 Enter path manually
               </button>
               {manualOpen && (
@@ -251,7 +292,12 @@ export const Sidebar: FC<SidebarProps> = ({
                     aria-label="Open project folder manually"
                     className="min-w-0 flex-1 rounded-md border border-border/50 bg-muted/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
                   />
-                  <Button type="submit" variant="outline" size="sm" disabled={!folderPath.trim() || openingPath != null}>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    size="sm"
+                    disabled={!folderPath.trim() || openingPath != null}
+                  >
                     Open
                   </Button>
                 </form>

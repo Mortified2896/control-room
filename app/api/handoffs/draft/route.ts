@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server";
 import { isDbConfigured } from "@/lib/db";
-import {
-  createHandoffDraft,
-  isHandoffTaskType,
-  isHandoffWorker,
-} from "@/lib/repo/handoffs";
+import { createHandoffDraft, isHandoffTaskType, isHandoffWorker } from "@/lib/repo/handoffs";
 
 export const dynamic = "force-dynamic";
 

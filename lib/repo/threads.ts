@@ -2,7 +2,14 @@ import "server-only";
 
 import { tryDb, withClient, withTransaction } from "@/lib/db";
 import { titleFromUserMessage } from "@/lib/assistant-ui/thread-messages";
-import type { MessageRating, MessageRow, MessageRole, ThreadHarness, ThreadMode, ThreadRow } from "./types";
+import type {
+  MessageRating,
+  MessageRow,
+  MessageRole,
+  ThreadHarness,
+  ThreadMode,
+  ThreadRow,
+} from "./types";
 
 /**
  * Repo functions for persisted chat threads/messages.
@@ -11,7 +18,8 @@ import type { MessageRating, MessageRow, MessageRole, ThreadHarness, ThreadMode,
  * Write paths throw: callers should report/handle persistence failure explicitly.
  */
 
-const THREAD_COLUMNS = "id, title, project_id, COALESCE(thread_mode, 'chat') AS thread_mode, harness, created_at, updated_at";
+const THREAD_COLUMNS =
+  "id, title, project_id, COALESCE(thread_mode, 'chat') AS thread_mode, harness, model_id, created_at, updated_at";
 
 type RawThread = {
   id: string;
@@ -19,6 +27,7 @@ type RawThread = {
   project_id: string | null;
   thread_mode: ThreadMode | null;
   harness: ThreadHarness | null;
+  model_id: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -41,6 +50,7 @@ function toThreadRow(r: RawThread): ThreadRow {
     projectId: r.project_id,
     threadMode: r.thread_mode ?? "chat",
     harness: r.harness,
+    modelId: r.model_id,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
   };

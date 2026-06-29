@@ -8,7 +8,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export async function GET(req: Request) {
   if (!isDbConfigured()) {
-    return NextResponse.json({ drafts: [], configured: false }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      { drafts: [], configured: false },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   const url = new URL(req.url);
@@ -18,5 +21,8 @@ export async function GET(req: Request) {
   }
 
   const drafts = await listHandoffDrafts(threadId);
-  return NextResponse.json({ drafts, configured: true }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json(
+    { drafts, configured: true },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }
