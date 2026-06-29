@@ -18,6 +18,7 @@ import {
   NoApiBillingFallbackErrorClass,
 } from "@/lib/policy/no-api-billing-fallback";
 import { isCodexModelId, resolveCodexBinary, runCodexExec } from "@/lib/codex/runner";
+import { walkRecommenderChain } from "./recommender-chain";
 
 export const dynamic = "force-dynamic";
 
@@ -496,145 +497,112 @@ export async function POST(request: Request) {
       availableModels,
     });
 
-    // Walk the two-rung chain at the CALL level. At most two
-    // attempts: the configured primary, then the configured
-    // fallback (if any). No third attempt, no deterministic default
-    // rung, no OpenAI default. The Chat UI exposes exactly two
-    // recommender controls ("Recommender engine" + "Fallback
-    // engine (one)") and the backend must mirror that mental model
-    // exactly.
-    for (const rung of chain) {
-      const resolved = resolveModel(rung.modelId);
-      if (!resolved.ok) {
-        // Hard resolve failure (fabricated id, access policy
-        // denied, etc.). Record the rung as failed and stop —
-        // never try a third "default" model.
-        callAttempts.push({
-          source: rung.source,
-          modelId: rung.modelId,
-          reasoning: rung.reasoningLevel ?? "",
-          status: "failed",
-          reason: `resolve_failed:${resolved.error.kind}`,
-        });
+    // Walk the two-rung chain at the CALL level. The walker is
+    // extracted into `./recommender-chain` so the brief's product
+    // contract (first-rung fails → second rung attempted, no third
+    // default rung, `continue` not `break` on a disabled rung,
+    // `reasoningOverride` actually applied) is unit-testable in
+    // isolation. The walker itself is pure; the route injects the
+    // I/O (`runRung`) and the resolver (`resolveModel`). The
+    // walker returns either `success` (and the route shapes the
+    // success response) or `no_success` (and the route throws
+    // so the catch block can produce the loud-failure copy).
+    const chainWalkResult = await walkRecommenderChain({
+      chain,
+      resolveModel,
+      runRung: async ({ rung, resolved: resolvedForCall }) => {
+        // Track the most recently-resolved rung for diagnostics.
+        activeRecommender = {
+          provider: resolvedForCall.providerId,
+          modelId: resolvedForCall.modelId,
+        };
+        const rungReasoningLevel = rung.reasoningLevel;
+        const rungProviderOptions: ReturnType<typeof getRuntimeProviderOptions> = (() => {
+          if (rungReasoningLevel === undefined) return undefined;
+          const meta = getModelMeta(resolvedForCall.modelId);
+          const capability = meta?.reasoningCapability ?? UNKNOWN_REASONING_CAPABILITY;
+          return getRuntimeProviderOptions({
+            resolved: resolvedForCall,
+            capability,
+            reasoningOption: rungReasoningLevel,
+          });
+        })();
+
+        try {
+          const value =
+            resolvedForCall.providerId === "codex"
+              ? await runCodexRecommender({
+                  modelId: resolvedForCall.modelId,
+                  system: prompt.system,
+                  user: prompt.user,
+                })
+              : (
+                  await generateText({
+                    model: getRuntimeModel(resolvedForCall),
+                    system: prompt.system,
+                    prompt: prompt.user,
+                    output: Output.object({
+                      schema: outputSchema,
+                      name: "normal_chat_model_recommendation",
+                    }),
+                    stopWhen: stepCountIs(1),
+                    ...(rungProviderOptions ? { providerOptions: rungProviderOptions } : {}),
+                  })
+                ).output;
+          if (!value) {
+            // Walker records this as `empty_recommendation_output`.
+            throw new Error("empty_recommendation_output");
+          }
+          return value;
+        } catch (callErr) {
+          // Caller-level failure for this rung (Codex CLI crashed,
+          // AI SDK threw, empty output, etc.). The walker records
+          // the failure and continues to the next rung — the
+          // product contract is "primary → one fallback → blocked",
+          // so we never walk a third default rung after this.
+          const message = callErr instanceof Error ? callErr.message : String(callErr);
+          // eslint-disable-next-line no-console
+          console.error("[model/recommend] rung failed", {
+            source: rung.source,
+            modelId: rung.modelId,
+            reason: message,
+          });
+          throw callErr;
+        }
+      },
+      availableModels: availableModels.map((m) => ({
+        provider: m.provider,
+        modelId: m.modelId,
+        supportsReasoningControls: m.supportsReasoningControls,
+        allowedReasoningLevels: m.allowedReasoningLevels,
+      })),
+    });
+
+    callAttempts = [...chainWalkResult.callAttempts];
+
+    // Log resolve failures (the walker records them but doesn't
+    // log). This preserves the previous in-route log lines so
+    // observability dashboards keep working.
+    for (const attempt of callAttempts) {
+      if (attempt.status === "failed" && attempt.reason.startsWith("resolve_failed:")) {
         // eslint-disable-next-line no-console
         console.error("[model/recommend] rung failed to resolve", {
-          source: rung.source,
-          modelId: rung.modelId,
-          reason: resolved.error.kind,
+          source: attempt.source,
+          modelId: attempt.modelId,
+          reason: attempt.reason.slice("resolve_failed:".length),
         });
-        continue;
       }
-      const resolvedForCall = resolved.resolved;
-      activeRecommender = {
-        provider: resolvedForCall.providerId,
-        modelId: resolvedForCall.modelId,
-      };
-      const rungReasoningLevel = rung.reasoningLevel;
-      const rungProviderOptions: ReturnType<typeof getRuntimeProviderOptions> = (() => {
-        if (rungReasoningLevel === undefined) return undefined;
-        const meta = getModelMeta(resolvedForCall.modelId);
-        const capability = meta?.reasoningCapability ?? UNKNOWN_REASONING_CAPABILITY;
-        return getRuntimeProviderOptions({
-          resolved: resolvedForCall,
-          capability,
-          reasoningOption: rungReasoningLevel,
-        });
-      })();
+    }
 
-      let value: RecommenderOutput | null = null;
-      let callFailureReason: string | null = null;
-      try {
-        value =
-          resolvedForCall.providerId === "codex"
-            ? await runCodexRecommender({
-                modelId: resolvedForCall.modelId,
-                system: prompt.system,
-                user: prompt.user,
-              })
-            : (
-                await generateText({
-                  model: getRuntimeModel(resolvedForCall),
-                  system: prompt.system,
-                  prompt: prompt.user,
-                  output: Output.object({
-                    schema: outputSchema,
-                    name: "normal_chat_model_recommendation",
-                  }),
-                  stopWhen: stepCountIs(1),
-                  ...(rungProviderOptions ? { providerOptions: rungProviderOptions } : {}),
-                })
-              ).output;
-      } catch (callErr) {
-        // Caller-level failure for this rung (Codex CLI crashed,
-        // AI SDK threw, etc.). Record the failure and stop — the
-        // product contract is "primary → one fallback → blocked",
-        // so we never walk a third default rung after this.
-        callFailureReason = callErr instanceof Error ? callErr.message : String(callErr);
-        // eslint-disable-next-line no-console
-        console.error("[model/recommend] rung failed", {
-          source: rung.source,
-          modelId: rung.modelId,
-          reason: callFailureReason,
-        });
-      }
-
-      if (callFailureReason !== null) {
-        callAttempts.push({
-          source: rung.source,
-          modelId: rung.modelId,
-          reasoning: rung.reasoningLevel ?? "",
-          status: "failed",
-          reason: callFailureReason,
-        });
-        continue;
-      }
-
-      if (!value) {
-        callAttempts.push({
-          source: rung.source,
-          modelId: rung.modelId,
-          reasoning: rung.reasoningLevel ?? "",
-          status: "failed",
-          reason: "empty_recommendation_output",
-        });
-        continue;
-      }
-
-      const picked = availableModels.find(
-        (m) => m.modelId === value!.recommendedModelId && m.provider === value!.recommendedProvider,
-      );
-      if (!picked) {
-        callAttempts.push({
-          source: rung.source,
-          modelId: rung.modelId,
-          reasoning: rung.reasoningLevel ?? "",
-          status: "failed",
-          reason: "invalid_recommendation",
-        });
-        continue;
-      }
-      const level = picked.supportsReasoningControls ? value.recommendedReasoningLevel : null;
-      if (level && !picked.allowedReasoningLevels.includes(level)) {
-        callAttempts.push({
-          source: rung.source,
-          modelId: rung.modelId,
-          reasoning: rung.reasoningLevel ?? "",
-          status: "failed",
-          reason: "invalid_reasoning_level",
-        });
-        continue;
-      }
-
+    if (chainWalkResult.kind === "success") {
+      const { rung, resolved: resolvedForSuccess, value, level } = chainWalkResult;
       // Success on this rung. Record the success and return the
       // recommendation. We do NOT walk any further rungs.
       attemptedCandidateModel = value.recommendedModelId;
-      callAttempts.push({
-        source: rung.source,
-        modelId: rung.modelId,
-        reasoning: rung.reasoningLevel ?? "",
-        status: "success",
-        reason: "ok",
-      });
+      activeRecommender = {
+        provider: resolvedForSuccess.providerId,
+        modelId: resolvedForSuccess.modelId,
+      };
       recommenderSource = rung.source;
       recommenderResolutionReason =
         rung.source === "configured_fallback"
