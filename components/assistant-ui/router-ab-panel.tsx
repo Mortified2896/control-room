@@ -36,6 +36,15 @@ export type RouterAbPanelPayload = {
   skipReason: string | null;
   sideBText: string | null;
   sideBLatencyMs: number | null;
+  expectedLatencyMs: number;
+  upperLatencyMs: number;
+  estimateQuality: "likely" | "uncertain" | "rough";
+  latencyPolicy: string;
+  latencyBasis: string;
+  historicalSampleCount: number;
+  startedAt: string;
+  completedAt: string | null;
+  actualLatencyMs: number | null;
   feedback: AbFeedbackRating | null;
 };
 
@@ -58,6 +67,12 @@ const FEEDBACK_OPTIONS: ReadonlyArray<{
 export const RouterAbPanel: FC<RouterAbPanelProps> = ({ initialPayload }) => {
   const [payload, setPayload] = useState<RouterAbPanelPayload | null>(initialPayload ?? null);
   const [submittingRating, setSubmittingRating] = useState<AbFeedbackRating | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Live data parts from the assistant-ui runtime state. The data-router-ab
   // and data-router-ab-side-b parts are attached to the assistant message
@@ -211,6 +226,9 @@ export const RouterAbPanel: FC<RouterAbPanelProps> = ({ initialPayload }) => {
 
   if (!payload) return null;
 
+  const sideBPending = !payload.sideBText && !payload.skipReason && Boolean(payload.sideB);
+  const sideBWaitingText = sideBPending ? routerWaitingText(payload, nowMs) : null;
+
   return (
     <div
       data-testid="router-ab-panel"
@@ -240,11 +258,7 @@ export const RouterAbPanel: FC<RouterAbPanelProps> = ({ initialPayload }) => {
             {payload.taskType}
           </span>
         )}
-        {typeof payload.confidence === "number" && (
-          <span className="text-[10px] text-muted-foreground">
-            conf {Math.round(payload.confidence * 100)}%
-          </span>
-        )}
+
       </header>
 
       <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -268,11 +282,11 @@ export const RouterAbPanel: FC<RouterAbPanelProps> = ({ initialPayload }) => {
           emptyText={
             payload.skipReason
               ? "Side B was skipped for this prompt."
-              : payload.sideB
-                ? "Router is generating Side B…"
+              : sideBWaitingText
+                ? sideBWaitingText
                 : "No Side B picked."
           }
-          pending={!payload.sideBText && !payload.skipReason && Boolean(payload.sideB)}
+          pending={sideBPending}
         />
       </div>
 
@@ -289,7 +303,7 @@ export const RouterAbPanel: FC<RouterAbPanelProps> = ({ initialPayload }) => {
         </div>
       )}
 
-      {payload.shortReason && (
+      {payload.shortReason && !sideBPending && (
         <p
           data-testid="router-ab-reason"
           className="mb-3 text-[11px] leading-relaxed text-muted-foreground"
@@ -401,6 +415,15 @@ export function buildPanelPayloadFromDataPart(data: unknown): RouterAbPanelPaylo
     usedFallback?: boolean;
     fallbackReason?: string | null;
     skipReason?: string | null;
+    expected_latency_ms?: number;
+    upper_latency_ms?: number;
+    estimate_quality?: "likely" | "uncertain" | "rough";
+    latency_policy?: string;
+    latency_basis?: string;
+    historical_sample_count?: number;
+    started_at?: string;
+    completed_at?: string | null;
+    actual_latency_ms?: number | null;
   };
   if (
     typeof d.sessionId !== "string" ||
@@ -425,6 +448,16 @@ export function buildPanelPayloadFromDataPart(data: unknown): RouterAbPanelPaylo
     skipReason: d.skipReason ?? null,
     sideBText: null,
     sideBLatencyMs: null,
+    expectedLatencyMs: typeof d.expected_latency_ms === "number" ? d.expected_latency_ms : 10_000,
+    upperLatencyMs: typeof d.upper_latency_ms === "number" ? d.upper_latency_ms : 25_000,
+    estimateQuality: d.estimate_quality ?? "rough",
+    latencyPolicy: d.latency_policy ?? "unknown",
+    latencyBasis: d.latency_basis ?? "unknown",
+    historicalSampleCount:
+      typeof d.historical_sample_count === "number" ? d.historical_sample_count : 0,
+    startedAt: d.started_at ?? new Date().toISOString(),
+    completedAt: d.completed_at ?? null,
+    actualLatencyMs: typeof d.actual_latency_ms === "number" ? d.actual_latency_ms : null,
     feedback: null,
   };
 }
@@ -438,14 +471,38 @@ export function applySideBTextToPayload(
   data: unknown,
 ): RouterAbPanelPayload {
   if (data == null || typeof data !== "object") return payload;
-  const d = data as { sessionId?: string; sideBText?: string; sideBLatencyMs?: number };
+  const d = data as {
+    sessionId?: string;
+    sideBText?: string;
+    sideBLatencyMs?: number;
+    completed_at?: string;
+    actual_latency_ms?: number;
+  };
   if (typeof d.sessionId !== "string" || d.sessionId !== payload.sessionId) return payload;
   return {
     ...payload,
     sideBText: typeof d.sideBText === "string" ? d.sideBText : payload.sideBText,
     sideBLatencyMs:
       typeof d.sideBLatencyMs === "number" ? d.sideBLatencyMs : payload.sideBLatencyMs,
+    completedAt: typeof d.completed_at === "string" ? d.completed_at : payload.completedAt,
+    actualLatencyMs:
+      typeof d.actual_latency_ms === "number" ? d.actual_latency_ms : payload.actualLatencyMs,
   };
+}
+
+function routerWaitingText(payload: RouterAbPanelPayload, nowMs: number): string {
+  const started = Date.parse(payload.startedAt);
+  const elapsed = Number.isFinite(started) ? Math.max(0, nowMs - started) : 0;
+  if (elapsed >= payload.upperLatencyMs) return "Taking longer · unusual";
+  if (elapsed >= payload.expectedLatencyMs) return "Still waiting · late";
+  return `Expected in ${formatDuration(payload.expectedLatencyMs - elapsed)} · ${payload.estimateQuality}`;
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 /**
@@ -489,6 +546,15 @@ export function buildPanelPayloadFromSessionResponse(data: unknown): RouterAbPan
     skipReason: s.skipReason,
     sideBText: s.sideBText,
     sideBLatencyMs: typeof s.sideBLatencyMs === "number" ? s.sideBLatencyMs : null,
+    expectedLatencyMs: 10_000,
+    upperLatencyMs: 25_000,
+    estimateQuality: "rough",
+    latencyPolicy: "reload_fallback",
+    latencyBasis: "not_persisted",
+    historicalSampleCount: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    actualLatencyMs: typeof s.sideBLatencyMs === "number" ? s.sideBLatencyMs : null,
     feedback: d.feedback ?? null,
   };
 }

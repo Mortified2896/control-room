@@ -34,7 +34,12 @@ import {
   latestUserText,
   poolKeyHash,
 } from "@/lib/router/ab-session";
-import { attachSideBResult, createAbSession, recordSideBOutput } from "@/lib/repo/router-ab";
+import {
+  attachSideBResult,
+  createAbSession,
+  estimateSideBLatency,
+  recordSideBOutput,
+} from "@/lib/repo/router-ab";
 import type { AbTaskType } from "@/lib/repo/types";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -85,6 +90,15 @@ export type RouterAbDataParts = {
     shortReason: string | null;
     taskType: AbTaskType | null;
     confidence: number | null;
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    latency_policy: string;
+    latency_basis: string;
+    historical_sample_count: number;
+    started_at: string;
+    completed_at: string | null;
+    actual_latency_ms: number | null;
     diagnostics: {
       routerModelId: string;
       mainModelId: string;
@@ -95,6 +109,8 @@ export type RouterAbDataParts = {
     sessionId: string;
     sideBText: string;
     sideBLatencyMs: number;
+    completed_at: string;
+    actual_latency_ms: number;
   };
 };
 
@@ -341,6 +357,25 @@ export async function POST(req: Request) {
   // here; the second pass (when Side B resolves or is skipped) updates
   // them via `attachSideBResult`.
   let sessionId: string | null = null;
+  const latencyStartedAt = new Date().toISOString();
+  let latencyEstimate: Awaited<ReturnType<typeof estimateSideBLatency>> = {
+    expectedLatencyMs: recentChars > 12_000 ? 30_000 : recentChars > 4_000 ? 18_000 : 10_000,
+    upperLatencyMs: recentChars > 12_000 ? 75_000 : recentChars > 4_000 ? 45_000 : 25_000,
+    estimateQuality: "rough",
+    latencyPolicy: "cold_start_fallback_v1",
+    latencyBasis: "not_computed",
+    historicalSampleCount: 0,
+  };
+  if (routerAbEnabled && settings.abEnabled && routerOutput?.sideB && !routerOutput.skipReason) {
+    try {
+      latencyEstimate = await estimateSideBLatency({
+        sideBModelId: routerOutput.sideB.modelId,
+        recentChars,
+      });
+    } catch (err: unknown) {
+      console.error("[api/chat] failed to estimate Side B latency:", err instanceof Error ? err.message : err);
+    }
+  }
   if (routerAbEnabled && settings.abEnabled && threadId) {
     try {
       const hash = await poolKeyHash(
@@ -436,6 +471,15 @@ export async function POST(req: Request) {
             shortReason: routerOutput?.recommendation?.shortReason ?? null,
             taskType: routerOutput?.recommendation?.taskType ?? null,
             confidence: routerOutput?.recommendation?.confidence ?? null,
+            expected_latency_ms: latencyEstimate.expectedLatencyMs,
+            upper_latency_ms: latencyEstimate.upperLatencyMs,
+            estimate_quality: latencyEstimate.estimateQuality,
+            latency_policy: latencyEstimate.latencyPolicy,
+            latency_basis: latencyEstimate.latencyBasis,
+            historical_sample_count: latencyEstimate.historicalSampleCount,
+            started_at: latencyStartedAt,
+            completed_at: null,
+            actual_latency_ms: null,
             diagnostics: {
               routerModelId: routerModelIdUsed,
               mainModelId: result.resolved.modelId,
@@ -482,6 +526,7 @@ export async function POST(req: Request) {
             sideBText = sideBResult.text;
           }
           const sideBLatencyMs = Date.now() - sideBStart;
+          const sideBCompletedAt = new Date().toISOString();
           // `sideBText` is now bound from either the fake or the real path.
           // Persist Side B text + latency immediately so the panel can
           // re-hydrate on page reload. The `assistant_message_id` link is
@@ -501,7 +546,13 @@ export async function POST(req: Request) {
           }
           writer.write({
             type: "data-router-ab-side-b",
-            data: { sessionId: sessionId ?? "ad-hoc", sideBText, sideBLatencyMs },
+            data: {
+              sessionId: sessionId ?? "ad-hoc",
+              sideBText,
+              sideBLatencyMs,
+              completed_at: sideBCompletedAt,
+              actual_latency_ms: sideBLatencyMs,
+            },
           });
         } catch (err: unknown) {
           console.error("[api/chat] Side B failed:", err instanceof Error ? err.message : err);

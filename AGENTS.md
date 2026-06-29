@@ -102,6 +102,58 @@ the correct env, and verify the rendered browser UI after refresh/cache-bust. If
 the screenshot still shows the old UI, assume stale runtime or stale browser
 bundle before debugging React code.
 
+## Live production deploy safety
+
+Most website breakages happen when an agent runs `npm run build` in the live
+serving repo. That mutates `.next`, while the already-running `next start`
+production process may continue running against mismatched build output. A
+successful build is therefore not enough; production must be restarted and
+smoke-checked.
+
+If an agent runs `npm run build` in this repo, it must immediately either:
+
+1. run `scripts/restart-prod.sh` and then smoke-check production, or
+2. stop and explicitly tell the user production may now be stale/broken, and
+   provide the recovery command `scripts/restart-prod.sh`.
+
+Agents must not run `npm run build` in the live serving directory and then leave
+without restart + smoke checks or a clear warning.
+
+For changes to `app/**`, `components/**`, `lib/**` used by routes/UI,
+`next.config.*`, package/dependency/build config, API routes, or server/runtime
+config, the required sequence is:
+
+```bash
+npm run typecheck
+npm run build
+scripts/restart-prod.sh
+```
+
+Then run smoke/render verification as applicable.
+
+If `npm run build` was run but `scripts/restart-prod.sh` was not run, the final
+report must include:
+
+> Production state: potentially stale/broken — npm run build mutated .next, but
+> production was not restarted
+
+and include the recovery command:
+
+```bash
+scripts/restart-prod.sh
+```
+
+The final report must not say “done”, “deployed”, or “working” unless this
+production state risk is clearly stated.
+
+Emergency recovery rule: if the public site does not load after agent changes,
+first run `scripts/restart-prod.sh` before debugging React, Next.js routing, API
+code, database state, or provider config.
+
+Optional safer-build rule: prefer building in an isolated worktree for
+validation-only builds. Only build in the live repo when prepared to immediately
+restart production.
+
 ## Required change report format
 
 For every code/docs/config change, final reports must include:

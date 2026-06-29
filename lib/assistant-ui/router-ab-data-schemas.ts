@@ -36,12 +36,23 @@ const routerAbSchema = z.object({
   shortReason: z.string().nullable(),
   taskType: z.string().nullable(),
   confidence: z.number().min(0).max(1).nullable(),
+  expected_latency_ms: z.number().int().nonnegative(),
+  upper_latency_ms: z.number().int().nonnegative(),
+  estimate_quality: z.enum(["likely", "uncertain", "rough"]),
+  latency_policy: z.string(),
+  latency_basis: z.string(),
+  historical_sample_count: z.number().int().nonnegative(),
+  started_at: z.string(),
+  completed_at: z.string().nullable(),
+  actual_latency_ms: z.number().int().nonnegative().nullable(),
 });
 
 const routerAbSideBSchema = z.object({
   sessionId: z.string(),
   sideBText: z.string(),
   sideBLatencyMs: z.number().int().nonnegative(),
+  completed_at: z.string(),
+  actual_latency_ms: z.number().int().nonnegative(),
 });
 
 export const routerAbDataSchemas: {

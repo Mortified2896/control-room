@@ -315,3 +315,79 @@ export async function getAbFeedback(abSessionId: string): Promise<AbFeedbackRow 
     return rows[0] ? toAbFeedbackRow(rows[0]) : null;
   });
 }
+
+export type RouterLatencyEstimate = {
+  expectedLatencyMs: number;
+  upperLatencyMs: number;
+  estimateQuality: "likely" | "uncertain" | "rough";
+  latencyPolicy: string;
+  latencyBasis: string;
+  historicalSampleCount: number;
+};
+
+export async function estimateSideBLatency(input: {
+  sideBModelId: string | null;
+  recentChars: number;
+}): Promise<RouterLatencyEstimate> {
+  const fallbackExpected = input.recentChars > 12_000 ? 30_000 : input.recentChars > 4_000 ? 18_000 : 10_000;
+  if (!input.sideBModelId) {
+    return {
+      expectedLatencyMs: fallbackExpected,
+      upperLatencyMs: Math.round(fallbackExpected * 2.5),
+      estimateQuality: "rough",
+      latencyPolicy: "cold_start_fallback_v1",
+      latencyBasis: "no_side_b_model",
+      historicalSampleCount: 0,
+    };
+  }
+
+  const sideBModelId = input.sideBModelId;
+  return withClient(async (c) => {
+    const { rows } = await c.query<{
+      sample_count: string | number;
+      expected_ms: string | number | null;
+      upper_ms: string | number | null;
+    }>(
+      `SELECT
+         COUNT(*) AS sample_count,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY side_b_latency_ms) AS expected_ms,
+         percentile_cont(0.9) WITHIN GROUP (ORDER BY side_b_latency_ms) AS upper_ms
+       FROM router_ab_sessions
+       WHERE side_b_latency_ms IS NOT NULL
+         AND side_b_model_id = $1`,
+      [sideBModelId],
+    );
+    const row = rows[0];
+    const sampleCount = Math.max(0, Math.round(toNumber(row?.sample_count ?? 0) ?? 0));
+    const expectedFromHistory = toNumber(row?.expected_ms ?? null);
+    const upperFromHistory = toNumber(row?.upper_ms ?? null);
+    const hasStrongHeuristic = input.recentChars > 0 && sideBModelId.startsWith("gpt-");
+    const expectedLatencyMs = Math.max(
+      1_000,
+      Math.round(expectedFromHistory ?? (hasStrongHeuristic ? fallbackExpected : fallbackExpected * 1.2)),
+    );
+    const upperLatencyMs = Math.max(
+      expectedLatencyMs + 1_000,
+      Math.round(upperFromHistory ?? expectedLatencyMs * (sampleCount > 0 ? 2 : 2.5)),
+    );
+    const estimateQuality: RouterLatencyEstimate["estimateQuality"] =
+      sampleCount >= 10 || hasStrongHeuristic
+        ? "likely"
+        : sampleCount > 0 || input.recentChars > 0
+          ? "uncertain"
+          : "rough";
+    return {
+      expectedLatencyMs,
+      upperLatencyMs,
+      estimateQuality,
+      latencyPolicy: "side_b_latency_p50_p90_v1",
+      latencyBasis:
+        sampleCount > 0
+          ? `historical_side_b_model_samples:${sideBModelId}`
+          : hasStrongHeuristic
+            ? `heuristic_known_model_tokens:${sideBModelId}`
+            : "cold_start_fallback",
+      historicalSampleCount: sampleCount,
+    };
+  });
+}
