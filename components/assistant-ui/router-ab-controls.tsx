@@ -527,9 +527,24 @@ export const RecommenderToggle: FC<{
  * can both turn the recommender on AND choose which model it runs
  * without leaving the page.
  *
+ * Layout (matches the chat UI mockup):
+ *   - Left column:  `Recommend on/off` pill (in its own bordered well).
+ *   - Right column: two rows, separated by a subtle horizontal divider:
+ *       1. Primary recommender engine (model + reasoning).
+ *       2. Fallback engine (one) — always rendered, with a
+ *          `No fallback` option that round-trips to `null`.
+ *
  * Both children remain independently controlled by the parent so the
  * recommender on/off state (sessionStorage) and the configured model
- * id (server-side Postgres row) can live in different stores.
+ * id (server-side Postgres row) can live in different stores. The
+ * primary + fallback model ids and reasoning levels read/write the
+ * canonical Tab B fields
+ * (`normalChatRecommenderModelId`/`…ReasoningLevel` and
+ * `…FallbackModelId`/`…FallbackReasoningLevel`) via the existing
+ * `/api/router/settings` PATCH path — see `app/assistant.tsx` for the
+ * handlers. We deliberately do NOT mirror them in any chat-only
+ * localStorage; the Settings page must always show the same value as
+ * the chat composer.
  */
 export const RecommenderControl: FC<{
   enabled: boolean;
@@ -570,10 +585,16 @@ export const RecommenderControl: FC<{
 
   return (
     <div
-      className="flex w-full items-start gap-3 rounded-xl border border-border/60 bg-muted/5 px-3 py-3 shadow-sm"
+      className="flex w-full flex-col gap-3 rounded-xl border border-border/60 bg-muted/5 px-3 py-3 shadow-sm sm:flex-row sm:items-stretch sm:gap-3"
       data-testid="recommender-control"
     >
-      <div className="shrink-0 pt-0.5">
+      {/* Left column — Recommend on/off well. The well has its own
+          subtle border so the toggle reads as a single grouped control
+          even though the right-hand rows are stacked vertically. */}
+      <div
+        className="flex shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/60 px-3 py-2 sm:py-0"
+        data-testid="recommender-toggle-well"
+      >
         <RecommenderToggle
           on={enabled}
           onToggle={onToggle}
@@ -581,7 +602,9 @@ export const RecommenderControl: FC<{
           disabledReason={toggleDisabledReason}
         />
       </div>
-      <div className="min-w-0 flex-1 space-y-3">
+
+      <div className="min-w-0 flex-1">
+        {/* Primary recommender engine row. */}
         <div
           className="grid items-center gap-2 lg:grid-cols-[minmax(14rem,1fr)_minmax(20rem,1.35fr)_9rem]"
           data-testid="chat-recommender-engine-controls"
@@ -611,9 +634,13 @@ export const RecommenderControl: FC<{
           ) : null}
         </div>
 
+        {/* Fallback engine row, separated from the primary row by a
+            subtle horizontal divider. The fallback is always rendered
+            (with a "No fallback" option) so the user has a single
+            grouped control surface, not three unrelated rows. */}
         {onFallbackModelChange ? (
           <div
-            className="grid items-center gap-2 border-t border-border/50 pt-3 lg:grid-cols-[minmax(14rem,1fr)_minmax(20rem,1.35fr)_9rem]"
+            className="mt-3 grid items-center gap-2 border-t border-border/50 pt-3 lg:grid-cols-[minmax(14rem,1fr)_minmax(20rem,1.35fr)_9rem]"
             data-testid="chat-recommender-fallback-controls"
           >
             <div className="min-w-0 text-xs leading-tight text-muted-foreground">
@@ -649,7 +676,7 @@ export const RecommenderControl: FC<{
         ) : null}
         {modelSaving ? (
           <span
-            className="text-[10px] text-muted-foreground"
+            className="mt-2 block text-[10px] text-muted-foreground"
             data-testid="chat-recommender-model-saving"
             aria-live="polite"
           >

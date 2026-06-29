@@ -293,8 +293,14 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
   test("Chat UI exposes primary + fallback recommender engine controls", async ({ page }) => {
     await gotoSettings(page);
     await page.goto("/");
-    await expect(page.getByTestId("manual-chat-model-controls")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByTestId("manual-chat-model-controls")).toContainText(/Manual chat model/);
+    // The top controls bar is the new compact "manual chat model" bar.
+    // It intentionally no longer renders a large "Manual chat model"
+    // label/heading — the title is on the wrapper's `title` attribute.
+    const topBar = page.getByTestId("manual-chat-model-controls");
+    await expect(topBar).toBeVisible({ timeout: 15_000 });
+    await expect(topBar).not.toContainText(/^Manual chat model$/);
+    await expect(topBar).toHaveAttribute("title", /Manual chat model/i);
+    // The recommender controls render in a single card below the top bar.
     await expect(page.getByTestId("recommender-toggle").first()).toBeVisible();
     await expect(page.getByTestId("recommender-control")).toBeVisible();
     await expect(page.getByTestId("chat-recommender-engine-controls")).toBeVisible();

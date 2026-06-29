@@ -11,7 +11,6 @@ import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai"
 import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
 import {
-  RecommenderToggle,
   RouterAbToggle,
   ReasoningControls,
   RecommenderControl,
@@ -561,14 +560,12 @@ const ModelSelector: FC<{
   })();
 
   return (
-    <div
-      ref={ref}
-      className="relative flex items-center border-b border-border/60 bg-background px-3 py-2 sm:px-4"
-    >
+    <div ref={ref} className="relative flex items-center">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         data-shortcut-target={SHORTCUT_TARGETS.selectModel}
+        data-testid="aui-model-selector-trigger"
         aria-label={`Select model (currently ${triggerLabel}; press M)`}
         className="aui-model-selector-trigger relative inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-8 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:pr-10"
         disabled={loading}
@@ -588,13 +585,16 @@ const ModelSelector: FC<{
       </button>
 
       {selectedExplanation ? (
-        <div className="ml-2 hidden min-w-0 truncate text-[11px] text-muted-foreground md:block">
+        <div
+          className="ml-2 hidden min-w-0 truncate text-[11px] text-muted-foreground md:block"
+          data-testid="chat-model-access-label"
+        >
           {selectedExplanation}
         </div>
       ) : null}
 
       {open && !isPhone && (
-        <div className="absolute left-4 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
+        <div className="absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
           {models.length === 0 && !loading && (
             <div className="px-3 py-2 text-xs text-muted-foreground">No models available</div>
           )}
@@ -631,58 +631,49 @@ const ModelSelector: FC<{
 };
 
 /**
- * Row of secondary controls that live below the model picker:
- *   - the reasoning-level dropdown (Side A's reasoning effort),
- *   - the Router A/B on/off toggle.
+ * Chat top controls bar (manual/default chat model).
  *
- * The reasoning-level dropdown is always visible — Side A always uses the
- * user's pick — and only lists levels supported by the currently-selected
- * model. The A/B toggle controls whether the recommender runs at all.
+ * A single horizontal rounded bar at the top of the chat surface that
+ * combines the manual chat model controls. From left to right:
+ *
+ *   [ status dot ] [ Model selector ] [ Access: … ] [ Thinking: … ] [ Router A/B … ] [ theme button ]
+ *
+ * The bar is the *only* place the manual chat model controls live —
+ * the recommender controls render as a separate card below, so the
+ * two control surfaces never co-mingle. We deliberately do NOT show
+ * a large "Manual chat model" label here; the title is available on
+ * the wrapper's `title` attribute for users who hover, but the bar
+ * itself stays compact per the brief.
+ *
+ * The reasoning / thinking dropdown is always visible (Side A always
+ * uses the user's pick) and only lists options supported by the
+ * currently-selected model — see `ReasoningControls` in
+ * `router-ab-controls.tsx`. The Router A/B toggle / "OpenAI-only"
+ * notice reflects whether the selected model can run the router
+ * (only OpenAI API rows support it).
  */
-const RouterControlsBar: FC<{
+const ChatTopBar: FC<{
   models: ModelOption[];
   selectedModelId: string | null;
+  onModelChange: (modelId: string) => void;
+  modelsLoading: boolean;
   reasoningLevel: string;
   onReasoningChange: (next: string) => void;
   thinkingMode: ThinkingMode;
   onThinkingModeChange: (next: ThinkingMode) => void;
   routerAbOn: boolean;
   onRouterAbChange: (next: boolean) => void;
-  recommenderEnabled?: boolean;
-  onToggleRecommender?: (next: boolean) => void;
-  recommenderModelId?: string | null;
-  recommenderModelOptions?: ReadonlyArray<RecommenderModelOption>;
-  recommenderModelLoading?: boolean;
-  recommenderModelSaving?: boolean;
-  onRecommenderModelChange?: (modelId: string) => void;
-  recommenderReasoningLevel?: string;
-  onRecommenderReasoningChange?: (level: string) => void;
-  recommenderFallbackModelId?: string | null;
-  recommenderFallbackReasoningLevel?: string | null;
-  onRecommenderFallbackModelChange?: (modelId: string | null) => void;
-  onRecommenderFallbackReasoningChange?: (level: string | null) => void;
 }> = ({
   models,
   selectedModelId,
+  onModelChange,
+  modelsLoading,
   reasoningLevel,
   onReasoningChange,
   thinkingMode,
   onThinkingModeChange,
   routerAbOn,
   onRouterAbChange,
-  recommenderEnabled = false,
-  onToggleRecommender,
-  recommenderModelId = null,
-  recommenderModelOptions = [],
-  recommenderModelLoading = false,
-  recommenderModelSaving = false,
-  onRecommenderModelChange,
-  recommenderReasoningLevel = "low" as string,
-  onRecommenderReasoningChange,
-  recommenderFallbackModelId = null,
-  recommenderFallbackReasoningLevel = null,
-  onRecommenderFallbackModelChange,
-  onRecommenderFallbackReasoningChange,
 }) => {
   const selectedModel = useMemo(
     () => models.find((m) => m.modelId === selectedModelId) ?? null,
@@ -707,56 +698,38 @@ const RouterControlsBar: FC<{
     onRouterAbChange(false);
   }, [supportsRouterAb, routerAbOn, onRouterAbChange]);
   return (
-    <div className="space-y-3 border-b border-border/60 bg-background px-3 py-3 sm:px-4">
-      <div className="flex items-start gap-2">
+    <div
+      className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-background px-3 py-2.5 sm:px-4"
+      data-testid="manual-chat-model-controls"
+      title="Manual chat model — used when Recommend is off or when you choose Keep current."
+      aria-label="Manual chat model controls"
+    >
+      <ModelSelector
+        models={models}
+        selectedModelId={selectedModelId}
+        onModelChange={onModelChange}
+        loading={modelsLoading}
+      />
+      <ReasoningControls
+        capability={capability}
+        reasoningLevel={reasoningLevel}
+        onReasoningChange={onReasoningChange}
+        thinkingMode={thinkingMode}
+        onThinkingModeChange={onThinkingModeChange}
+      />
+      {supportsRouterAb ? (
+        <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
+      ) : (
         <div
-          className="flex min-w-0 flex-1 flex-wrap items-center gap-2 rounded-xl border border-border/60 bg-muted/5 px-3 py-2 shadow-sm"
-          data-testid="manual-chat-model-controls"
+          className="rounded-full border border-border/60 bg-muted/20 px-3 py-1 text-[11px] font-medium text-muted-foreground"
+          data-testid="router-ab-openai-only-pill"
         >
-          <div className="min-w-0 flex-1 text-xs leading-tight text-muted-foreground">
-            <div className="font-semibold text-foreground">Manual chat model</div>
-            <div>Used when Recommend is off or when you choose Keep current.</div>
-          </div>
-          <ReasoningControls
-            capability={capability}
-            reasoningLevel={reasoningLevel}
-            onReasoningChange={onReasoningChange}
-            thinkingMode={thinkingMode}
-            onThinkingModeChange={onThinkingModeChange}
-          />
-          {supportsRouterAb ? (
-            <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
-          ) : (
-            <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-1.5 text-xs text-muted-foreground">
-              Router A/B is OpenAI-only.
-            </div>
-          )}
+          Router A/B is OpenAI-only.
         </div>
-        <div className="shrink-0 pt-1">
-          <ThemeToggle />
-        </div>
+      )}
+      <div className="ml-auto shrink-0">
+        <ThemeToggle />
       </div>
-      {onToggleRecommender ? (
-        onRecommenderModelChange ? (
-          <RecommenderControl
-            enabled={recommenderEnabled}
-            onToggle={onToggleRecommender}
-            modelId={recommenderModelId}
-            modelOptions={recommenderModelOptions}
-            onModelChange={onRecommenderModelChange}
-            modelLoading={recommenderModelLoading}
-            modelSaving={recommenderModelSaving}
-            reasoningLevel={recommenderReasoningLevel}
-            onReasoningChange={onRecommenderReasoningChange}
-            fallbackModelId={recommenderFallbackModelId}
-            fallbackReasoningLevel={recommenderFallbackReasoningLevel}
-            onFallbackModelChange={onRecommenderFallbackModelChange}
-            onFallbackReasoningChange={onRecommenderFallbackReasoningChange}
-          />
-        ) : (
-          <RecommenderToggle on={recommenderEnabled} onToggle={onToggleRecommender} />
-        )
-      ) : null}
     </div>
   );
 };
@@ -1705,39 +1678,39 @@ export const Assistant = () => {
           onOpenSidebar={() => setSidebarOpen(true)}
         />
 
-        <ModelSelector
+        <ChatTopBar
           models={models}
           selectedModelId={selectedModelId}
           onModelChange={(next) => {
             setSelectedModelId(next);
             setSelectedModelSelectionSource("user_explicit");
           }}
-          loading={modelsLoading}
-        />
-
-        <RouterControlsBar
-          models={models}
-          selectedModelId={selectedModelId}
+          modelsLoading={modelsLoading}
           reasoningLevel={selectedReasoningLevel}
           onReasoningChange={setSelectedReasoningLevel}
           thinkingMode={selectedThinkingMode}
           onThinkingModeChange={setSelectedThinkingMode}
           routerAbOn={routerAbOn}
           onRouterAbChange={setRouterAbOn}
-          recommenderEnabled={recommenderEnabled}
-          onToggleRecommender={toggleRecommender}
-          recommenderModelId={recommenderModelId}
-          recommenderModelOptions={recommenderModelOptions}
-          recommenderModelLoading={recommenderModelLoading}
-          recommenderModelSaving={recommenderModelSaving}
-          onRecommenderModelChange={handleRecommenderModelChange}
-          recommenderReasoningLevel={recommenderReasoningLevel}
-          onRecommenderReasoningChange={handleRecommenderReasoningChange}
-          recommenderFallbackModelId={recommenderFallbackModelId}
-          recommenderFallbackReasoningLevel={recommenderFallbackReasoningLevel}
-          onRecommenderFallbackModelChange={handleRecommenderFallbackModelChange}
-          onRecommenderFallbackReasoningChange={handleRecommenderFallbackReasoningChange}
         />
+
+        <div className="border-b border-border/60 bg-background px-3 py-3 sm:px-4">
+          <RecommenderControl
+            enabled={recommenderEnabled}
+            onToggle={toggleRecommender}
+            modelId={recommenderModelId}
+            modelOptions={recommenderModelOptions}
+            onModelChange={handleRecommenderModelChange}
+            modelLoading={recommenderModelLoading}
+            modelSaving={recommenderModelSaving}
+            reasoningLevel={recommenderReasoningLevel}
+            onReasoningChange={handleRecommenderReasoningChange}
+            fallbackModelId={recommenderFallbackModelId}
+            fallbackReasoningLevel={recommenderFallbackReasoningLevel}
+            onFallbackModelChange={handleRecommenderFallbackModelChange}
+            onFallbackReasoningChange={handleRecommenderFallbackReasoningChange}
+          />
+        </div>
 
         {!dbConfigured && (
           <div className="border-b border-border bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
