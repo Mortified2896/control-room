@@ -90,6 +90,20 @@ See `lib/router/schema.ts` for the full settings surface. The Settings UI
 at `/settings/router` writes to a singleton row in Postgres; the env var
 remains the fallback when the DB is not configured (see `.env.example`).
 
+## Recommend-model toggle
+
+Toggle **Recommend on/off** in the composer to have a cheap recommender
+pick the chat model + reasoning option before a message goes out.
+
+- **Off**: the composer sends with the model you picked in the manual selector.
+- **On**: Send calls `/api/model/recommend` first and shows a banner with the
+  recommendation. Accept switches to the recommended model; decline sends with
+  your current manual model.
+
+The normal-chat recommender model is separate from the A/B router model and
+from the manual chat selector. Configure it under Settings → Router →
+Normal-chat recommender model.
+
 ## Tests
 
 ```bash
