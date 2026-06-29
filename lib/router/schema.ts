@@ -332,7 +332,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  *   `minimax:*`          → MiniMax API key (minimax provider)
  *   `MiniMax-*`          → bare MiniMax model ids (default + discovered)
  */
-function providerIdFromModelId(modelId: string): "openai" | "codex" | "minimax" | null {
+export function providerIdFromModelId(modelId: string): "openai" | "codex" | "minimax" | null {
   if (modelId.startsWith("codex:")) return "codex";
   if (modelId.startsWith("minimax:") || modelId.startsWith("MiniMax-")) return "minimax";
   // Bare ids without a provider prefix are OpenAI API by convention
