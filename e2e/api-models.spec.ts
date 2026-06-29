@@ -41,27 +41,6 @@ async function fetchRegistryIds(req: APIRequestContext): Promise<string[]> {
   return (body.effectiveRegistry?.models ?? []).map((m: { modelId: string }) => m.modelId);
 }
 
-async function setSelectorPref(
-  req: APIRequestContext,
-  modelId: string,
-  visible: boolean,
-): Promise<void> {
-  // Fetch existing prefs, mutate the one we care about, write the
-  // whole object back. The route accepts the full object, so we
-  // round-trip the others to avoid clobbering user choices.
-  const cur = await req.get("/api/model-selector-prefs");
-  expect(cur.ok()).toBeTruthy();
-  const curBody = await cur.json();
-  const nextPrefs: Record<string, { visible: boolean }> = {
-    ...(curBody.preferences ?? {}),
-    [modelId]: { visible },
-  };
-  const put = await req.put("/api/model-selector-prefs", {
-    data: { preferences: nextPrefs },
-  });
-  expect(put.ok()).toBeTruthy();
-}
-
 async function gotoSettings(page: Page) {
   await page.goto("/settings/router");
   await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
