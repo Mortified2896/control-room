@@ -17,18 +17,13 @@ import { createMessage, getThread } from "@/lib/repo/threads";
 import { getProject } from "@/lib/repo/projects";
 import { getModelMeta, resolveModel, getDefaultRouterModelId } from "@/lib/providers";
 import { getEffectiveModelsResponse } from "@/lib/providers/registry";
-import { getBillingSourceForProvider } from "@/lib/providers/billing-source";
 import { assertModelExecutionAllowed, ProviderAccessError } from "@/lib/providers/access-control";
-import {
-  enforceNoApiBillingFallback,
-  type ProposedSubscriptionFallback,
-} from "@/lib/policy/no-api-billing-fallback";
-import type { BillingSource, ModelMeta, ProviderId, SelectionSource } from "@/lib/providers/types";
+import { chatFailureFromProviderIssue, preflightChatModel } from "@/lib/policy/chat-send-preflight";
+import type { SelectionSource } from "@/lib/providers/types";
 import {
   getRuntimeModel,
   getRuntimeProviderOptions,
   ProviderConfigurationError,
-  type ThinkingMode,
 } from "@/lib/providers/runtime";
 import { type RouterSettings } from "@/lib/router/schema";
 import { getEffectiveRouterSettings } from "@/lib/router/settings-store";
@@ -46,35 +41,6 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function validThreadId(threadId: unknown): string | null {
   return typeof threadId === "string" && UUID_RE.test(threadId) ? threadId : null;
-}
-
-function parseReasoningOption(value: unknown): string {
-  // The chat composer may send a provider-native value (e.g. "low",
-  // "medium", "xhigh", "none", "minimal"). We do NOT narrow to a
-  // fixed enum — the runtime adapter forwards the value verbatim.
-  // Malformed values are rejected below rather than silently falling
-  // back to a default.
-  if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  return "low";
-}
-
-function parseThinkingMode(value: unknown): ThinkingMode {
-  if (value == null || value === "") return "provider_default";
-  if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  return "__invalid__";
-}
-
-function validSelectionSource(value: unknown): SelectionSource {
-  if (
-    value === "user_explicit" ||
-    value === "user_accepted" ||
-    value === "project_default" ||
-    value === "registry_default" ||
-    value === "system_fallback"
-  ) {
-    return value;
-  }
-  return "registry_default";
 }
 
 async function persistUserMessage(threadId: string, messages: UIMessage[], modelId: string | null) {
@@ -180,107 +146,6 @@ function routerAbRecommendationFromOutput(
   };
 }
 
-type ChatLoudFailureKind =
-  | "model_unavailable"
-  | "provider_access_blocked"
-  | "provider_configuration_error"
-  | "reasoning_mode_unsupported"
-  | "thinking_mode_unsupported"
-  | "unknown_model"
-  | "default_model_unavailable";
-
-type ChatLoudFailurePayload = {
-  error: "chat_model_unavailable";
-  kind: ChatLoudFailureKind;
-  message: string;
-  reason: string;
-  requiresExplicitConfirmation: true;
-  selection: {
-    requestedModelId: string | null;
-    requestedProviderId: ProviderId | null;
-    selectionSource: SelectionSource;
-    billingSource: BillingSource | null;
-  };
-  policy: "NO_API_BILLING_FALLBACK";
-  proposedSubscriptionFallbacks: ReadonlyArray<ProposedSubscriptionFallback>;
-};
-
-async function subscriptionFallbackProposals(input: {
-  requestedModelId: string;
-  requestedProviderId: ProviderId;
-  requestedBillingSource: BillingSource;
-  selectionSource: SelectionSource;
-  reason: string;
-}): Promise<ReadonlyArray<ProposedSubscriptionFallback>> {
-  const effective = await getEffectiveModelsResponse();
-  const candidates: ModelMeta[] = effective.models
-    .filter((m) => m.enabled)
-    .filter((m) => getBillingSourceForProvider(m.providerId, m.modelId) === "subscription")
-    .map((m) => ({
-      providerId: m.providerId,
-      modelId: m.modelId,
-      modelLabel: m.modelLabel,
-      tier: m.tier,
-      reasoningCapability: m.reasoningCapability,
-      reasoningLevels: m.reasoningLevels,
-      billingSource: "subscription" as const,
-    }));
-  const policy = enforceNoApiBillingFallback({
-    requested: {
-      modelId: input.requestedModelId,
-      providerId: input.requestedProviderId,
-      billingSource: input.requestedBillingSource,
-      selectionSource: input.selectionSource,
-    },
-    kind: "model_unavailable",
-    reason: input.reason,
-    candidates,
-    registry: effective.models.map((m) => ({ modelId: m.modelId, displayLabel: m.modelLabel })),
-  });
-  return policy.proposals;
-}
-
-async function chatLoudFailure(input: {
-  kind: ChatLoudFailureKind;
-  status?: number;
-  message: string;
-  reason?: string;
-  requestedModelId: string | null;
-  requestedProviderId: ProviderId | null;
-  selectionSource: SelectionSource;
-  billingSource: BillingSource | null;
-}): Promise<Response> {
-  const reason = input.reason ?? input.message;
-  const proposedSubscriptionFallbacks =
-    input.requestedModelId && input.requestedProviderId && input.billingSource
-      ? await subscriptionFallbackProposals({
-          requestedModelId: input.requestedModelId,
-          requestedProviderId: input.requestedProviderId,
-          requestedBillingSource: input.billingSource,
-          selectionSource: input.selectionSource,
-          reason,
-        })
-      : [];
-  return Response.json(
-    {
-      error: "chat_model_unavailable",
-      kind: input.kind,
-      message: input.message,
-      reason,
-      requiresExplicitConfirmation: true,
-      selection: {
-        requestedModelId: input.requestedModelId,
-        requestedProviderId: input.requestedProviderId,
-        selectionSource: input.selectionSource,
-        billingSource: input.billingSource,
-      },
-      policy: "NO_API_BILLING_FALLBACK",
-      proposedSubscriptionFallbacks,
-    } satisfies ChatLoudFailurePayload,
-    { status: input.status ?? 409 },
-  );
-}
-
 export async function POST(req: Request) {
   const {
     messages,
@@ -320,184 +185,71 @@ export async function POST(req: Request) {
     selectionSource?: SelectionSource;
   } = await req.json();
 
-  const selectionSource = validSelectionSource(rawSelectionSource);
   const effectiveModels = await getEffectiveModelsResponse();
-
-  if (!modelId) {
-    return chatLoudFailure({
-      kind: "default_model_unavailable",
-      status: 409,
-      message:
-        "Your default model is hidden or unavailable. Re-enable it in Settings or choose another model.",
-      requestedModelId: null,
-      requestedProviderId: null,
-      selectionSource,
-      billingSource: null,
-    });
+  const preflight = preflightChatModel({
+    modelId,
+    reasoningOption: rawReasoningOption,
+    thinkingMode: rawThinkingMode,
+    selectionSource: rawSelectionSource,
+    availableModels: effectiveModels.models,
+    resolveModel,
+    getModelMeta,
+  });
+  if (!preflight.ok) {
+    return Response.json(preflight.payload, { status: preflight.status });
   }
 
-  const selectedEffective = effectiveModels.models.find((m) => m.modelId === modelId) ?? null;
-  if (!selectedEffective) {
-    return chatLoudFailure({
-      kind: "model_unavailable",
-      status: 409,
-      message:
-        "Your default model is hidden or unavailable. Re-enable it in Settings or choose another model.",
-      requestedModelId: modelId,
-      requestedProviderId: null,
-      selectionSource,
-      billingSource: null,
-    });
-  }
-
-  const requestedProviderId = selectedEffective.providerId;
-  const requestedBillingSource = getBillingSourceForProvider(
-    selectedEffective.providerId,
-    selectedEffective.modelId,
-  );
-
-  if (!selectedEffective.enabled) {
-    return chatLoudFailure({
-      kind: "model_unavailable",
-      status: 409,
-      message:
-        selectedEffective.reason ??
-        "Your default model is hidden or unavailable. Re-enable it in Settings or choose another model.",
-      requestedModelId: selectedEffective.modelId,
-      requestedProviderId,
-      selectionSource,
-      billingSource: requestedBillingSource,
-    });
-  }
-
-  const result = resolveModel(modelId);
-
-  if (!result.ok) {
-    const err = result.error;
-    return chatLoudFailure({
-      kind: err.kind === "provider_disabled" ? "provider_access_blocked" : "unknown_model",
-      status: err.kind === "unknown_model" ? 400 : 503,
-      message:
-        err.kind === "no_models_available"
-          ? "No models are available. Configure a provider in Settings."
-          : err.kind === "provider_disabled"
-            ? err.reason
-            : "The selected model is hidden, unavailable, or not configured. Re-enable it in Settings or choose another model.",
-      requestedModelId: modelId,
-      requestedProviderId,
-      selectionSource,
-      billingSource: requestedBillingSource,
-    });
-  }
-
-  if (
-    result.resolved.providerId !== requestedProviderId ||
-    result.resolved.modelId !== selectedEffective.modelId ||
-    result.resolved.billingSource !== requestedBillingSource
-  ) {
-    return chatLoudFailure({
-      kind: "model_unavailable",
-      status: 409,
-      message:
-        "Selected model resolution changed before execution. Control Room will not auto-substitute.",
-      requestedModelId: selectedEffective.modelId,
-      requestedProviderId,
-      selectionSource,
-      billingSource: requestedBillingSource,
-    });
-  }
-
-  const reasoningOption = parseReasoningOption(rawReasoningOption);
-  const thinkingMode = parseThinkingMode(rawThinkingMode);
-
-  // Capability lookup for the resolved model. OpenAI static alias map
-  // and Codex / MiniMax catalog all carry a `reasoningCapability`
-  // now; if the registry has no metadata for this id (e.g. opted-in
-  // unconfigured OpenAI model), we pass through to the runtime with
-  // an `unknown` capability — the runtime will omit reasoning
-  // provider options rather than fake one.
-  const meta = getModelMeta(result.resolved.modelId);
-  const reasoningCapability =
-    meta?.reasoningCapability ?? ({ kind: "unknown", control: "unknown" } as const);
-
-  if (thinkingMode === "__invalid__") {
-    return chatLoudFailure({
-      kind: "thinking_mode_unsupported",
-      status: 400,
-      message: "Invalid thinking mode. Control Room will not silently use a provider default.",
-      requestedModelId: result.resolved.modelId,
-      requestedProviderId: result.resolved.providerId,
-      selectionSource,
-      billingSource: result.resolved.billingSource,
-    });
-  }
-
-  if (
-    reasoningCapability.kind === "thinking_budget" &&
-    reasoningCapability.control === "supported" &&
-    thinkingMode !== "provider_default" &&
-    reasoningCapability.modes?.length &&
-    !reasoningCapability.modes.some((m) => m.value === thinkingMode)
-  ) {
-    return chatLoudFailure({
-      kind: "thinking_mode_unsupported",
-      status: 400,
-      message: `Thinking mode ${thinkingMode} is not supported by ${result.resolved.modelId}.`,
-      requestedModelId: result.resolved.modelId,
-      requestedProviderId: result.resolved.providerId,
-      selectionSource,
-      billingSource: result.resolved.billingSource,
-    });
-  }
+  const result = { ok: true as const, resolved: preflight.resolved };
+  const reasoningOption = preflight.reasoningOption;
+  const thinkingMode = preflight.thinkingMode;
+  const reasoningCapability = preflight.reasoningCapability;
 
   try {
     await assertModelExecutionAllowed({
-      providerId: result.resolved.providerId,
-      modelId: result.resolved.modelId,
+      providerId: preflight.resolved.providerId,
+      modelId: preflight.resolved.modelId,
       surface: "manual_chat",
       reasoningLevel: reasoningOption,
     });
   } catch (err) {
     if (err instanceof ProviderAccessError) {
-      return chatLoudFailure({
+      const failure = chatFailureFromProviderIssue({
         kind:
           err.message.includes("Reasoning level") || err.message.includes("reasoning controls")
             ? "reasoning_mode_unsupported"
             : "provider_access_blocked",
         status: err.status,
         message: err.message,
-        requestedModelId: result.resolved.modelId,
-        requestedProviderId: result.resolved.providerId,
-        selectionSource,
-        billingSource: result.resolved.billingSource,
+        preflight,
+        availableModels: effectiveModels.models,
       });
+      return Response.json(failure.payload, { status: failure.status });
     }
     throw err;
   }
 
-  const routerAbSupported = result.resolved.providerId === "openai";
+  const routerAbSupported = preflight.resolved.providerId === "openai";
 
   let sideAModel;
   let sideAProviderOptions;
   try {
-    sideAModel = getRuntimeModel(result.resolved);
+    sideAModel = getRuntimeModel(preflight.resolved);
     sideAProviderOptions = getRuntimeProviderOptions({
-      resolved: result.resolved,
+      resolved: preflight.resolved,
       capability: reasoningCapability,
       reasoningOption,
       thinkingMode,
     });
   } catch (err: unknown) {
     if (err instanceof ProviderConfigurationError) {
-      return chatLoudFailure({
+      const failure = chatFailureFromProviderIssue({
         kind: "provider_configuration_error",
         status: 503,
         message: err.message,
-        requestedModelId: result.resolved.modelId,
-        requestedProviderId: result.resolved.providerId,
-        selectionSource,
-        billingSource: result.resolved.billingSource,
+        preflight,
+        availableModels: effectiveModels.models,
       });
+      return Response.json(failure.payload, { status: failure.status });
     }
     throw err;
   }
