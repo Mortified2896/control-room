@@ -79,7 +79,8 @@ export function fakeRouterRecommendation(opts: {
   allowlist: ReadonlyArray<RouterAllowlistEntry>;
 }): {
   recommended_model: string;
-  recommended_reasoning_level: "low" | "medium" | "high";
+  /** Provider-native reasoning-effort value (see RouterRecommendation). */
+  recommended_reasoning_level: string;
   confidence: number;
   task_type:
     | "simple_chat"

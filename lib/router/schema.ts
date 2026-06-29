@@ -26,12 +26,19 @@
  * a client bundle — Next inlines `process.env.X` reads for the client.
  */
 import { DEFAULT_REASONING_LEVEL } from "@/lib/providers/openai";
-import type { ReasoningLevel } from "@/lib/providers/types";
 import { listRouterAllowedPool } from "@/lib/providers";
 
+/**
+ * Provider-native reasoning-effort value stored in a router allowed
+ * combination. May be any of the model's advertised values —
+ * `low`, `medium`, `xhigh`, `none`, etc. The router settings
+ * validator checks each combo against the live registry's
+ * `supportedReasoningLevels` (derived from `capability.options`) so
+ * stale values are rejected at save time.
+ */
 export type RouterAllowedCombo = {
   modelId: string;
-  reasoningLevel: ReasoningLevel;
+  reasoningLevel: string;
 };
 
 export type RouterFailureBehavior = "fail_loud" | "suggest_alternative" | "auto_fallback";
@@ -39,6 +46,22 @@ export type RouterFailureBehavior = "fail_loud" | "suggest_alternative" | "auto_
 export type RouterSettings = {
   /** Master kill-switch. When false, the router never runs and Side B is skipped. */
   abEnabled: boolean;
+  /**
+   * Cost-safety gate for the OpenAI paid API. The router / recommender
+   * can only call an OpenAI API model (e.g. `gpt-5.4-mini`, `gpt-5.5`)
+   * when this flag is explicitly true. Subscription providers (Codex,
+   * MiniMax) are always accepted.
+   *
+   * The shipped default is `false` so a fresh deploy never silently
+   * burns OpenAI API budget. Users who want the cheap OpenAI API
+   * router / recommender must opt in via Settings → Router.
+   *
+   * Runtime also consults this flag — see
+   * `pickSubscriptionFirstRecommender` for the recommender fallback
+   * chain and `lib/providers/access-control.ts` for the parallel
+   * chat-side guard.
+   */
+  allowOpenAiApiRouter: boolean;
   /** When false, expensive-tier models are excluded from the router allowlist. */
   allowExpensiveModels: boolean;
   /**
@@ -55,12 +78,44 @@ export type RouterSettings = {
   maxCostPerAbRunUsd: number;
   /** Model id the router uses for its own recommendation call. */
   routerModelId: string;
+  /**
+   * Model id used for the *normal chat* recommendation — the cheap model
+   * the user-facing "recommend model" toggle consults when picking which
+   * chat model to answer with. This is separate from `routerModelId`
+   * (which is used by the Side B A/B router and is OpenAI-only) and
+   * separate from the manual model selector.
+   *
+   * Default: `"codex:gpt-5.4-mini"` (Codex subscription). The same
+   * cost-safety fallback chain (`buildRouterFallbackChain`) walks
+   * configured → Codex → MiniMax → OpenAI API (only when
+   * `allowOpenAiApiRouter === true`) when the configured model fails.
+   */
+  normalChatRecommenderModelId: string;
+  /**
+   * Reasoning level passed to the recommender model itself (not to the
+   * chat model the recommender suggests). Only honored when the
+   * recommender model is an OpenAI API model — Codex / MiniMax
+   * providers ignore reasoning controls at runtime (see
+   * `getRuntimeProviderOptions`). Default `"low"` keeps the recommender
+   * cheap; bump to `"medium"` or `"xhigh"` (or any other
+   * provider-native value the recommender accepts) when you want
+   * the recommender to think harder about which chat model to
+   * pick.
+   *
+   * Surface in the Settings UI next to the
+   * `normalChatRecommenderModelId` picker. The chat composer's
+   * `RecommenderControl` mirrors it for inline adjustment. The
+   * value is provider-native — the recommender forwards it
+   * verbatim and the runtime adapter validates against the
+   * recommender model's `reasoningCapability.options`.
+   */
+  normalChatRecommenderReasoningLevel: string;
   /** What happens when a selected/recommended combo cannot run. Defaults to fail-loud. */
   failureBehavior: RouterFailureBehavior;
   /** Legacy only: retained for persisted payload compatibility; not used unless auto_fallback is enabled. */
   fallbackModelId: string;
   /** Legacy only: retained for persisted payload compatibility; not used unless auto_fallback is enabled. */
-  fallbackReasoningLevel: ReasoningLevel;
+  fallbackReasoningLevel: string;
   /**
    * Explicit (modelId, reasoningLevel) pairs the user has authorized the
    * router to choose from. The dynamic allowlist is the intersection of
@@ -74,38 +129,94 @@ export type RouterSettings = {
    * ever been opened.
    */
   allowedCombos: ReadonlyArray<RouterAllowedCombo>;
+  /**
+   * User-curated allowlist of model ids the *normal-chat recommender*
+   * may recommend to the user. This is the pool from which the
+   * recommender picks when a chat send goes through the "Recommend
+   * model" flow.
+   *
+   * Semantics:
+   *   - `null` (default): no restriction. Every enabled model that is
+   *     not Codex (the recommender already excludes Codex from its
+   *     prompt because Codex is an agent backend, not a chat model)
+   *     is eligible.
+   *   - `[]`: no models allowed. The recommender will fail loud and
+   *     the banner will tell the user "no models enabled for the
+   *     recommender".
+   *   - `["gpt-5.4-mini", "MiniMax-M3"]`: only these model ids are
+   *     eligible. Unknown ids are silently dropped at runtime so the
+   *     recommender never recommends a model the user can't actually
+   *     call.
+   *
+   * This is the user-facing surface of the Settings UI. The Model
+   * Registry table exposes one Switch per row (mirroring the Manual
+   * and Router columns), and the Router Global Settings section
+   * shows a summary + `Allow all enabled` / `Block all` buttons.
+   */
+  normalChatRecommenderAllowedModels: ReadonlyArray<string> | null;
 };
 
 /**
- * Default authorized combos for the MVP: every cheap-tier pairing the
- * registry exposes, i.e. (gpt-5.4-mini, low) + (gpt-5.4-mini, medium).
+ * Default authorized combos for the MVP. Cost-safety first: ship with
+ * the Codex (subscription) entry so a fresh deploy never falls back
+ * to the OpenAI paid API. The OpenAI API is opt-in via
+ * `allowOpenAiApiRouter`.
  *
- * This intentionally does NOT include any expensive-tier combo — those
- * require the user to opt in via `allowExpensiveModels`.
+ * Codex models do not advertise reasoning-level controls
+ * (`supportedReasoningLevels = []`), so the validator skips the
+ * reasoning-level check for them. The `reasoningLevel: "low"` label
+ * below is informational and is ignored at runtime.
  */
 const DEFAULT_ALLOWED_COMBOS: ReadonlyArray<RouterAllowedCombo> = [
-  { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
-  { modelId: "gpt-5.4-mini", reasoningLevel: "medium" },
+  { modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" },
 ];
 
 export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
   abEnabled: true,
+  // OpenAI paid API is OFF by default. The shipped defaults only use
+  // subscription providers (Codex) so a fresh deploy never burns paid
+  // API budget. Users must opt in via Settings → Router to add an
+  // OpenAI API recommender / router.
+  allowOpenAiApiRouter: false,
   allowExpensiveModels: false,
   allowLongPromptWhenExpensive: false,
   longPromptThresholdChars: 1500,
   maxCostPerRecommendationUsd: 0.03,
   maxCostPerAbRunUsd: 0.3,
-  routerModelId: "gpt-5.4-mini",
+  // Codex first (subscription). The runtime recommender walks:
+  // configured → Codex → MiniMax → OpenAI API (only if
+  // `allowOpenAiApiRouter === true`).
+  routerModelId: "codex:gpt-5.4-mini",
+  // Same subscription-first default for the normal-chat recommender so a
+  // fresh deploy never silently burns paid OpenAI API budget.
+  normalChatRecommenderModelId: "codex:gpt-5.4-mini",
+  // Cheap-by-default reasoning for the recommender itself.
+  normalChatRecommenderReasoningLevel: DEFAULT_REASONING_LEVEL,
   failureBehavior: "fail_loud",
-  fallbackModelId: "gpt-5.4-mini",
+  fallbackModelId: "codex:gpt-5.4-mini",
   fallbackReasoningLevel: DEFAULT_REASONING_LEVEL,
   allowedCombos: DEFAULT_ALLOWED_COMBOS,
+  // Default: no restriction. Every enabled non-Codex model is
+  // eligible for the recommender. The Settings UI lets the user
+  // narrow this to a specific subset.
+  normalChatRecommenderAllowedModels: null,
 };
 
-const REASONING_LEVELS: ReadonlyArray<ReasoningLevel> = ["low", "medium", "high"];
+/**
+ * Provider-native reasoning-effort value. May be any of the model's
+ * advertised values (`"low"`, `"medium"`, `"xhigh"`, `"none"`, …)
+ * — we do NOT narrow to the historical `"low" | "medium" | "high"`
+ * triple.
+ */
+export type RouterReasoningValue = string;
 
-function isReasoningLevel(value: unknown): value is ReasoningLevel {
-  return typeof value === "string" && (REASONING_LEVELS as ReadonlyArray<string>).includes(value);
+/**
+ * Test whether a value is a non-empty string. The full per-model
+ * validation happens in `parseRouterSettingsForSave` against the
+ * registry's advertised option set.
+ */
+function isProviderNativeReasoningValue(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isFailureBehavior(value: unknown): value is RouterFailureBehavior {
@@ -117,34 +228,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Detect model ids that belong to a non-OpenAI provider surface and
- * therefore cannot enter the OpenAI-only normal-chat router allowlist.
+ * Detect model ids that belong to a non-OpenAI provider surface.
+ * Used by the validator + recommender for diagnostics only — we do
+ * NOT reject subscription providers here, since the policy is to
+ * accept them by default.
  *
  *   `codex:*`            → Codex CLI / ChatGPT login (codex provider)
  *   `minimax:*`          → MiniMax API key (minimax provider)
  *   `MiniMax-*`          → bare MiniMax model ids (default + discovered)
- *
- * Used as the first gate in `parseRouterSettingsForSave` so the user
- * gets a clear "OpenAI-only" error message even when the strict
- * registry (OpenAI entries only) would otherwise surface the id as
- * "Unknown model id".
  */
-function isNonOpenAiProviderId(modelId: string): boolean {
-  if (modelId.startsWith("codex:")) return true;
-  if (modelId.startsWith("minimax:")) return true;
-  if (modelId.startsWith("MiniMax-")) return true;
-  return false;
-}
-
-/**
- * Return a short, human-readable label for the non-OpenAI provider a
- * rejected model id belongs to. Falls back to `"non-OpenAI"` for
- * unknown id shapes so the error message is still actionable.
- */
-function nonOpenAiProviderLabel(modelId: string): string {
+function providerIdFromModelId(modelId: string): "openai" | "codex" | "minimax" | null {
   if (modelId.startsWith("codex:")) return "codex";
   if (modelId.startsWith("minimax:") || modelId.startsWith("MiniMax-")) return "minimax";
-  return "non-OpenAI";
+  // Bare ids without a provider prefix are OpenAI API by convention
+  // (e.g. `gpt-5.4-mini`, `gpt-5.5`). Gated behind `allowOpenAiApiRouter`.
+  return "openai";
 }
 
 /**
@@ -234,6 +332,23 @@ export function parseRouterSettings(input: unknown): RouterSettings {
     }
     out.routerModelId = input.routerModelId.trim();
   }
+  if (input.normalChatRecommenderModelId !== undefined) {
+    if (
+      typeof input.normalChatRecommenderModelId !== "string" ||
+      input.normalChatRecommenderModelId.trim().length === 0
+    ) {
+      throw new Error("normalChatRecommenderModelId must be a non-empty string");
+    }
+    out.normalChatRecommenderModelId = input.normalChatRecommenderModelId.trim();
+  }
+  if (input.normalChatRecommenderReasoningLevel !== undefined) {
+    if (!isProviderNativeReasoningValue(input.normalChatRecommenderReasoningLevel)) {
+      throw new Error(
+        "normalChatRecommenderReasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh')",
+      );
+    }
+    out.normalChatRecommenderReasoningLevel = input.normalChatRecommenderReasoningLevel;
+  }
   if (input.failureBehavior !== undefined) {
     if (!isFailureBehavior(input.failureBehavior)) {
       throw new Error(
@@ -249,8 +364,10 @@ export function parseRouterSettings(input: unknown): RouterSettings {
     out.fallbackModelId = input.fallbackModelId.trim();
   }
   if (input.fallbackReasoningLevel !== undefined) {
-    if (!isReasoningLevel(input.fallbackReasoningLevel)) {
-      throw new Error("fallbackReasoningLevel must be one of 'low' | 'medium' | 'high'");
+    if (!isProviderNativeReasoningValue(input.fallbackReasoningLevel)) {
+      throw new Error(
+        "fallbackReasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh')",
+      );
     }
     out.fallbackReasoningLevel = input.fallbackReasoningLevel;
   }
@@ -266,12 +383,32 @@ export function parseRouterSettings(input: unknown): RouterSettings {
       if (typeof modelId !== "string" || modelId.trim().length === 0) {
         throw new Error("allowedCombos[].modelId must be a non-empty string");
       }
-      if (!isReasoningLevel(reasoningLevel)) {
-        throw new Error("allowedCombos[].reasoningLevel must be one of 'low' | 'medium' | 'high'");
+      if (!isProviderNativeReasoningValue(reasoningLevel)) {
+        throw new Error(
+          "allowedCombos[].reasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh')",
+        );
       }
       combos.push({ modelId: modelId.trim(), reasoningLevel });
     }
     out.allowedCombos = combos;
+  }
+  if (input.normalChatRecommenderAllowedModels !== undefined) {
+    if (input.normalChatRecommenderAllowedModels === null) {
+      out.normalChatRecommenderAllowedModels = null;
+    } else if (Array.isArray(input.normalChatRecommenderAllowedModels)) {
+      const ids: string[] = [];
+      for (const raw of input.normalChatRecommenderAllowedModels) {
+        if (typeof raw !== "string" || raw.trim().length === 0) {
+          throw new Error(
+            "normalChatRecommenderAllowedModels must be null or an array of non-empty strings",
+          );
+        }
+        ids.push(raw.trim());
+      }
+      out.normalChatRecommenderAllowedModels = ids;
+    } else {
+      throw new Error("normalChatRecommenderAllowedModels must be null or an array");
+    }
   }
 
   return out;
@@ -341,6 +478,21 @@ export function parseRouterSettingsForSave(
   if (b.abEnabled !== undefined) {
     if (typeof b.abEnabled === "boolean") abEnabled = b.abEnabled;
     else errors.push({ field: "abEnabled", message: "abEnabled must be a boolean." });
+  }
+
+  // `allowOpenAiApiRouter` defaults to false so a fresh deploy never
+  // burns paid OpenAI API budget. The Settings UI must surface this
+  // toggle so users opt in deliberately.
+  let allowOpenAiApiRouter = DEFAULT_ROUTER_SETTINGS.allowOpenAiApiRouter;
+  if (b.allowOpenAiApiRouter !== undefined) {
+    if (typeof b.allowOpenAiApiRouter === "boolean") {
+      allowOpenAiApiRouter = b.allowOpenAiApiRouter;
+    } else {
+      errors.push({
+        field: "allowOpenAiApiRouter",
+        message: "allowOpenAiApiRouter must be a boolean.",
+      });
+    }
   }
 
   let allowExpensiveModels = DEFAULT_ROUTER_SETTINGS.allowExpensiveModels;
@@ -413,6 +565,35 @@ export function parseRouterSettingsForSave(
     }
   }
 
+  let normalChatRecommenderModelId = DEFAULT_ROUTER_SETTINGS.normalChatRecommenderModelId;
+  if (b.normalChatRecommenderModelId !== undefined) {
+    if (
+      typeof b.normalChatRecommenderModelId === "string" &&
+      b.normalChatRecommenderModelId.trim().length > 0
+    ) {
+      normalChatRecommenderModelId = b.normalChatRecommenderModelId.trim();
+    } else {
+      errors.push({
+        field: "normalChatRecommenderModelId",
+        message: "normalChatRecommenderModelId must be a non-empty string.",
+      });
+    }
+  }
+
+  let normalChatRecommenderReasoningLevel: string =
+    DEFAULT_ROUTER_SETTINGS.normalChatRecommenderReasoningLevel;
+  if (b.normalChatRecommenderReasoningLevel !== undefined) {
+    if (isProviderNativeReasoningValue(b.normalChatRecommenderReasoningLevel)) {
+      normalChatRecommenderReasoningLevel = b.normalChatRecommenderReasoningLevel;
+    } else {
+      errors.push({
+        field: "normalChatRecommenderReasoningLevel",
+        message:
+          "normalChatRecommenderReasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh').",
+      });
+    }
+  }
+
   let failureBehavior = DEFAULT_ROUTER_SETTINGS.failureBehavior;
   if (b.failureBehavior !== undefined) {
     if (isFailureBehavior(b.failureBehavior)) {
@@ -439,12 +620,13 @@ export function parseRouterSettingsForSave(
 
   let fallbackReasoningLevel = DEFAULT_ROUTER_SETTINGS.fallbackReasoningLevel;
   if (b.fallbackReasoningLevel !== undefined) {
-    if (isReasoningLevel(b.fallbackReasoningLevel)) {
+    if (isProviderNativeReasoningValue(b.fallbackReasoningLevel)) {
       fallbackReasoningLevel = b.fallbackReasoningLevel;
     } else {
       errors.push({
         field: "fallbackReasoningLevel",
-        message: "fallbackReasoningLevel must be one of 'low' | 'medium' | 'high'.",
+        message:
+          "fallbackReasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh').",
       });
     }
   }
@@ -485,11 +667,12 @@ export function parseRouterSettingsForSave(
         }
         const modelId = typeof raw.modelId === "string" ? raw.modelId.trim() : "";
         const reasoningLevel = raw.reasoningLevel;
-        if (!modelId || !isReasoningLevel(reasoningLevel)) {
+        if (!modelId || !isProviderNativeReasoningValue(reasoningLevel)) {
           hasInvalid = true;
           errors.push({
             field: "allowedCombos",
-            message: "Each allowlist entry needs a model id and a reasoning level.",
+            message:
+              "Each allowlist entry needs a model id and a provider-native reasoning level value (e.g. 'low', 'medium', 'xhigh').",
           });
           continue;
         }
@@ -512,23 +695,17 @@ export function parseRouterSettingsForSave(
           // discovery snapshot — see the file-level docstring above for
           // why this matches the chat path's `resolveModel` semantics.
           //
-          // Non-OpenAI provider detection runs first so the user gets a
-          // clear "OpenAI-only" error message for `codex:*` and
-          // `MiniMax-*` ids, even when the strict registry (OpenAI
-          // entries only at the validator boundary) would otherwise
-          // surface them as "Unknown model id". Defense-in-depth: if the
-          // registry is ever widened to include other providers, the
-          // `entry.providerId !== "openai"` branch below will also fire.
-          if (isNonOpenAiProviderId(modelId)) {
-            hasInvalid = true;
-            errors.push({
-              field: "allowedCombos",
-              message: `${modelId} belongs to ${nonOpenAiProviderLabel(modelId)}; the normal-chat router allowlist is OpenAI-only.`,
-            });
-            continue;
-          }
+          // Cost-safety: when the model is an OpenAI API id (no
+          // provider prefix), require `allowOpenAiApiRouter` to be on.
+          // Subscription providers (Codex, MiniMax) are always
+          // accepted — that's the whole point of the subscription-first
+          // policy. Codex/MiniMax catalog entries are not always
+          // present in the live registry (they are appended in the
+          // chat response, not the registry), so we fall through to
+          // `providerIdFromModelId` for those.
           const entry = registryById.get(modelId);
-          if (!entry) {
+          const providerId = entry?.providerId ?? providerIdFromModelId(modelId);
+          if (!entry && providerId === "openai") {
             hasInvalid = true;
             errors.push({
               field: "allowedCombos",
@@ -536,18 +713,15 @@ export function parseRouterSettingsForSave(
             });
             continue;
           }
-          if (entry.providerId !== "openai") {
-            // Defense-in-depth: if the registry is widened in the
-            // future to include non-OpenAI entries, still reject them
-            // here so the OpenAI-only invariant is preserved end-to-end.
+          if (providerId === "openai" && !allowOpenAiApiRouter) {
             hasInvalid = true;
             errors.push({
               field: "allowedCombos",
-              message: `${modelId} belongs to ${entry.providerId}; the normal-chat router allowlist is OpenAI-only.`,
+              message: `${modelId} is an OpenAI API model. OpenAI API router use is disabled — set Settings → Router → "Allow OpenAI API router use" to opt in.`,
             });
             continue;
           }
-          if (!entry.configured) {
+          if (entry && !entry.configured) {
             hasInvalid = true;
             errors.push({
               field: "allowedCombos",
@@ -555,7 +729,11 @@ export function parseRouterSettingsForSave(
             });
             continue;
           }
-          if (!(entry.supportedReasoningLevels as ReadonlyArray<string>).includes(reasoningLevel)) {
+          if (
+            entry &&
+            entry.supportedReasoningLevels.length > 0 &&
+            !(entry.supportedReasoningLevels as ReadonlyArray<string>).includes(reasoningLevel)
+          ) {
             hasInvalid = true;
             errors.push({
               field: "allowedCombos",
@@ -581,34 +759,92 @@ export function parseRouterSettingsForSave(
     }
   }
 
-  if (registry) {
-    // Reject non-OpenAI provider ids first so the user gets a clear
-    // "OpenAI-only" error message for `codex:*` / `MiniMax-*` instead
-    // of a confusing "Unknown router model id" — the strict registry
-    // (OpenAI entries only) would otherwise surface these as unknown.
-    if (isNonOpenAiProviderId(routerModelId)) {
+  let normalChatRecommenderAllowedModels: ReadonlyArray<string> | null =
+    DEFAULT_ROUTER_SETTINGS.normalChatRecommenderAllowedModels;
+  if (b.normalChatRecommenderAllowedModels !== undefined) {
+    if (b.normalChatRecommenderAllowedModels === null) {
+      normalChatRecommenderAllowedModels = null;
+    } else if (!Array.isArray(b.normalChatRecommenderAllowedModels)) {
       errors.push({
-        field: "routerModelId",
-        message: `Router model must be an OpenAI API model, not a ${nonOpenAiProviderLabel(routerModelId)} model.`,
+        field: "normalChatRecommenderAllowedModels",
+        message: "Recommender allowlist must be null or an array.",
       });
     } else {
-      const routerEntry = registry.models.find((m) => m.modelId === routerModelId);
-      if (!routerEntry) {
-        errors.push({
-          field: "routerModelId",
-          message: `Unknown router model id: ${routerModelId}.`,
-        });
-      } else if (routerEntry.providerId !== "openai") {
-        errors.push({
-          field: "routerModelId",
-          message: "Router model must be an OpenAI API model, not a Codex or MiniMax model.",
-        });
-      } else if (!routerEntry.configured) {
-        errors.push({
-          field: "routerModelId",
-          message: `${routerModelId} is not configured for OpenAI API use.`,
-        });
+      // We deliberately do NOT reject unknown ids here: the user may
+      // have selected a model that was later disabled, and silently
+      // filtering it out at runtime is friendlier than forcing a
+      // re-save. We DO reject entries that aren't strings or are
+      // blank, because those would corrupt the persisted payload.
+      const seen = new Set<string>();
+      const cleaned: string[] = [];
+      for (const raw of b.normalChatRecommenderAllowedModels) {
+        if (typeof raw !== "string" || raw.trim().length === 0) {
+          errors.push({
+            field: "normalChatRecommenderAllowedModels",
+            message: "Recommender allowlist entries must be non-empty strings.",
+          });
+          break;
+        }
+        const id = raw.trim();
+        if (seen.has(id)) continue;
+        seen.add(id);
+        cleaned.push(id);
       }
+      if (!errors.some((e) => e.field === "normalChatRecommenderAllowedModels")) {
+        normalChatRecommenderAllowedModels = cleaned;
+      }
+    }
+  }
+
+  if (registry) {
+    // Cost-safety: subscription providers (Codex, MiniMax) are always
+    // accepted. OpenAI API models are gated behind
+    // `allowOpenAiApiRouter` so a fresh deploy never burns paid API
+    // budget. Codex/MiniMax catalog entries are not always in the
+    // live registry (they are appended in the chat response, not
+    // the registry), so we fall through to `providerIdFromModelId`
+    // for them.
+    const routerEntry = registry.models.find((m) => m.modelId === routerModelId);
+    const routerProviderId = routerEntry?.providerId ?? providerIdFromModelId(routerModelId);
+    if (!routerEntry && routerProviderId === "openai") {
+      errors.push({
+        field: "routerModelId",
+        message: `Unknown router model id: ${routerModelId}.`,
+      });
+    } else if (routerEntry && !routerEntry.configured) {
+      errors.push({
+        field: "routerModelId",
+        message: `${routerModelId} is not configured for this provider.`,
+      });
+    } else if (routerProviderId === "openai" && !allowOpenAiApiRouter) {
+      errors.push({
+        field: "routerModelId",
+        message: `${routerModelId} is an OpenAI API model. OpenAI API router use is disabled — set Settings → Router → "Allow OpenAI API router use" to opt in.`,
+      });
+    }
+
+    // Same gating for the normal-chat recommender. The recommender can
+    // be any provider the registry knows about (Codex, MiniMax, or
+    // OpenAI when opted in). Subscription providers are accepted by
+    // default; OpenAI API is gated behind `allowOpenAiApiRouter`.
+    const normalChatEntry = registry.models.find((m) => m.modelId === normalChatRecommenderModelId);
+    const normalChatProviderId =
+      normalChatEntry?.providerId ?? providerIdFromModelId(normalChatRecommenderModelId);
+    if (!normalChatEntry && normalChatProviderId === "openai") {
+      errors.push({
+        field: "normalChatRecommenderModelId",
+        message: `Unknown recommender model id: ${normalChatRecommenderModelId}.`,
+      });
+    } else if (normalChatEntry && !normalChatEntry.configured) {
+      errors.push({
+        field: "normalChatRecommenderModelId",
+        message: `${normalChatRecommenderModelId} is not configured for this provider.`,
+      });
+    } else if (normalChatProviderId === "openai" && !allowOpenAiApiRouter) {
+      errors.push({
+        field: "normalChatRecommenderModelId",
+        message: `${normalChatRecommenderModelId} is an OpenAI API model. OpenAI API router use is disabled — set Settings → Router → "Allow OpenAI API router use" to opt in.`,
+      });
     }
   }
 
@@ -635,16 +871,20 @@ export function parseRouterSettingsForSave(
     ok: true,
     value: {
       abEnabled,
+      allowOpenAiApiRouter,
       allowExpensiveModels,
       allowLongPromptWhenExpensive,
       longPromptThresholdChars,
       maxCostPerRecommendationUsd,
       maxCostPerAbRunUsd,
       routerModelId,
+      normalChatRecommenderModelId,
+      normalChatRecommenderReasoningLevel,
       failureBehavior,
       fallbackModelId,
       fallbackReasoningLevel,
       allowedCombos,
+      normalChatRecommenderAllowedModels,
     },
   };
 }
@@ -656,6 +896,187 @@ export function parseRouterSettingsForSave(
  */
 export function serializeRouterSettings(settings: RouterSettings): string {
   return JSON.stringify(settings, null, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime subscription-first recommender / router-model picker.
+// ---------------------------------------------------------------------------
+//
+// The narrow cost-safety policy: OpenAI API is OPT-IN only and never
+// the default. The recommender / router-model selection walks the
+// following priority order:
+//
+//   1. The configured model id (if it can be resolved to a usable
+//      provider model).
+//   2. The first Codex subscription candidate the user authorized in
+//      `allowedCombos` (subscription / included).
+//   3. The MiniMax M3 subscription fallback (token plan).
+//   4. OpenAI API — ONLY when `allowOpenAiApiRouter === true`. Never
+//      silently.
+//
+// `isModelUsableForRouter` is the cheap resolver. `pickRouterModelForRun`
+// returns the chosen id plus a non-secret `source` discriminator
+// (`configured` | `codex` | `minimax` | `openai`) so the route can
+// surface it in the response `diagnostics` block — the user said
+// "expose diagnostics showing when it was used" without leaking
+// anything sensitive.
+
+export type RouterRecommenderCandidate = {
+  modelId: string;
+  providerId: "openai" | "codex" | "minimax";
+};
+
+export type RouterModelResolution =
+  | {
+      ok: true;
+      modelId: string;
+      providerId: "openai" | "codex" | "minimax";
+      source: "configured" | "codex" | "minimax" | "openai";
+      reason: string;
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Try a single candidate by invoking the supplied `resolver`. The
+ * resolver is the chat-side or recommender-side function that actually
+ * attempts the call (and reports quota / network errors). When the
+ * resolver succeeds we return its outcome. When it fails we return the
+ * error so the caller can keep walking the fallback chain.
+ */
+type ResolverFn = (
+  candidate: RouterRecommenderCandidate,
+) => Promise<{ ok: true } | { ok: false; reason: string }>;
+
+/**
+ * Build the deterministic fallback chain for a single run. The chain
+ * is a stable ordering so the diagnostics `source` field is
+ * reproducible.
+ *
+ * The order is:
+ *
+ *   configured  → Codex (subscription) → MiniMax (subscription)
+ *   → OpenAI API (only when `allowOpenAiApiRouter === true`)
+ *
+ * `allowedCombos` is consulted to prefer a Codex entry the user
+ * actually authorized (rather than blindly defaulting to one catalog
+ * entry); falls back to the static Codex default when none is
+ * authorized.
+ */
+export function buildRouterFallbackChain(input: {
+  configuredRouterModelId: string;
+  allowedCombos: ReadonlyArray<RouterAllowedCombo>;
+  allowOpenAiApiRouter: boolean;
+  codexDefault: string;
+  minimaxDefault: string;
+  openaiDefault: string;
+}): ReadonlyArray<RouterRecommenderCandidate> {
+  const {
+    configuredRouterModelId,
+    allowedCombos,
+    allowOpenAiApiRouter,
+    codexDefault,
+    minimaxDefault,
+    openaiDefault,
+  } = input;
+
+  const chain: RouterRecommenderCandidate[] = [];
+
+  // 1. Configured choice (honored if the user picked one).
+  if (configuredRouterModelId) {
+    const providerId = providerIdFromModelId(configuredRouterModelId);
+    if (providerId) {
+      chain.push({ modelId: configuredRouterModelId, providerId });
+    }
+  }
+
+  // 2. Codex subscription. Prefer a codex entry the user authorized
+  //    in `allowedCombos`; fall back to the static default.
+  const codexFromAllowlist = allowedCombos.find((c) => c.modelId.startsWith("codex:"));
+  const codexId = codexFromAllowlist?.modelId ?? codexDefault;
+  if (codexId && !chain.some((c) => c.modelId === codexId)) {
+    chain.push({ modelId: codexId, providerId: "codex" });
+  }
+
+  // 3. MiniMax M3 subscription fallback.
+  if (minimaxDefault && !chain.some((c) => c.modelId === minimaxDefault)) {
+    chain.push({ modelId: minimaxDefault, providerId: "minimax" });
+  }
+
+  // 4. OpenAI API — strictly behind the explicit opt-in flag. Never
+  //    silently included.
+  if (allowOpenAiApiRouter && openaiDefault) {
+    if (!chain.some((c) => c.modelId === openaiDefault)) {
+      chain.push({ modelId: openaiDefault, providerId: "openai" });
+    }
+  }
+
+  return chain;
+}
+
+/**
+ * Walk `chain` calling `resolver` for each candidate. Returns the
+ * first successful resolution, or the deterministic final failure
+ * (with the last error preserved as `reason`).
+ *
+ * Pure orchestration — no I/O, no env reads. The caller passes in
+ * whatever `resolver` does the actual call (AI SDK, network probe,
+ * mock in tests). This is what makes the fallback policy
+ * deterministic and testable.
+ */
+export async function pickRouterModelForRun(input: {
+  chain: ReadonlyArray<RouterRecommenderCandidate>;
+  resolver: ResolverFn;
+  allowOpenAiApiRouter: boolean;
+}): Promise<RouterModelResolution> {
+  const { chain, resolver, allowOpenAiApiRouter } = input;
+
+  let lastReason = "no candidates available";
+  for (const candidate of chain) {
+    if (candidate.providerId === "openai" && !allowOpenAiApiRouter) {
+      // Defense-in-depth: skip OpenAI API candidates when the opt-in
+      // is off, even if they made it into the chain.
+      continue;
+    }
+    const result = await resolver(candidate);
+    if (result.ok) {
+      // `source` discriminates whether we honored the user's
+      // configured model or fell back to a default candidate. The
+      // configured case means the chain tried the configured id
+      // first AND it succeeded; the provider-specific cases mean
+      // the configured id was not viable (or absent) and we picked
+      // the static default for that provider tier.
+      const providerId = candidate.providerId;
+      const source: "configured" | "codex" | "minimax" | "openai" =
+        providerId === "openai"
+          ? "openai"
+          : providerId === "codex"
+            ? "codex"
+            : providerId === "minimax"
+              ? "minimax"
+              : "openai";
+      const reason =
+        source === "openai"
+          ? "Using the explicitly enabled OpenAI API router model."
+          : source === "codex"
+            ? "Using a Codex subscription router model (OpenAI API disabled or unavailable)."
+            : "Using the MiniMax M3 subscription fallback (Codex unavailable).";
+      return {
+        ok: true,
+        modelId: candidate.modelId,
+        providerId: candidate.providerId,
+        source,
+        reason,
+      };
+    }
+    lastReason = `${candidate.modelId} (${candidate.providerId}) failed: ${result.reason}`;
+  }
+
+  return {
+    ok: false,
+    reason:
+      `No router / recommender model succeeded. Last error: ${lastReason}. ` +
+      "Enable Codex, MiniMax, or (explicitly) OpenAI API in Settings → Router.",
+  };
 }
 
 let cached: RouterSettings | null = null;

@@ -7,6 +7,7 @@ import {
   type RouterPoolValidationError,
 } from "./registry.ts";
 import type { EffectiveRegistry, EffectiveModelEntry } from "@/lib/providers/registry.ts";
+import { effortLevelsCapability } from "@/lib/providers/capability.ts";
 
 function entry(overrides: Partial<EffectiveModelEntry>): EffectiveModelEntry {
   return {
@@ -17,6 +18,7 @@ function entry(overrides: Partial<EffectiveModelEntry>): EffectiveModelEntry {
     available: true,
     stale: false,
     supportsReasoning: true,
+    reasoningCapability: effortLevelsCapability(["low", "medium"], "supported"),
     supportedReasoningLevels: ["low", "medium"],
     tier: "standard",
     usableForChat: true,
@@ -102,6 +104,7 @@ test("validateRouterPoolAgainstRegistry rejects an empty list", () => {
     rawCombos: [],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -114,6 +117,7 @@ test("validateRouterPoolAgainstRegistry rejects a non-array payload", () => {
     rawCombos: "not-an-array" as unknown as ReadonlyArray<unknown>,
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -126,6 +130,7 @@ test("validateRouterPoolAgainstRegistry rejects an unknown model id", () => {
     rawCombos: [{ modelId: "gpt-not-a-real-model", reasoningLevel: "low" }],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -138,6 +143,7 @@ test("validateRouterPoolAgainstRegistry rejects an unknown (discovered-only) mod
     rawCombos: [{ modelId: "gpt-fake-unknown-xyz", reasoningLevel: "low" }],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI, UNKNOWN_FAKE]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -154,11 +160,14 @@ test("validateRouterPoolAgainstRegistry accepts a configured OpenAI model that i
   // static alias map (configured=true) but is not currently in the
   // discovery snapshot (e.g. fresh key without access, or a stale
   // cache). The chat path and the recommender both still call this
-  // model via `resolveModel`, so the validator must accept it.
+  // model via `resolveModel`, so the validator must accept it. The
+  // caller has opted into OpenAI API router use via
+  // `allowOpenAiApiRouter: true`.
   const result = validateRouterPoolAgainstRegistry({
     rawCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([entry({ modelId: "gpt-5.4-mini", available: false })]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, true);
   if (result.ok) {
@@ -171,15 +180,22 @@ test("validateRouterPoolAgainstRegistry accepts a stale OpenAI model id when it 
   // a real OpenAI API model as far as `resolveModel` is concerned —
   // it is in the static alias map and `OPENAI_API_KEY` is the only
   // runtime gate. The router pool must not over-reject on stale flags.
+  // Caller has opted into OpenAI API router use via
+  // `allowOpenAiApiRouter: true`.
   const result = validateRouterPoolAgainstRegistry({
     rawCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([STALE_MINI]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, true);
 });
 
-test("validateRouterPoolAgainstRegistry rejects a codex-prefixed model id (non-OpenAI provider)", () => {
+test("validateRouterPoolAgainstRegistry accepts a Codex subscription model id (subscription-first policy)", () => {
+  // Cost-safety: subscription providers (Codex) are accepted by default
+  // under the subscription-first policy. Codex models do not advertise
+  // reasoning-level controls (`supportedReasoningLevels = []`), so the
+  // reasoning-level check is skipped for them.
   const codexEntry = entry({
     modelId: "codex:gpt-5.5",
     displayLabel: "Codex · GPT-5.5",
@@ -188,20 +204,25 @@ test("validateRouterPoolAgainstRegistry rejects a codex-prefixed model id (non-O
     supportsReasoning: false,
   });
   // The test helper hardcodes `providerId: "openai"`; cast so we can
-  // exercise the non-OpenAI rejection branch of the validator.
+  // exercise the Codex subscription branch.
   (codexEntry as unknown as { providerId: "codex" }).providerId = "codex";
   const result = validateRouterPoolAgainstRegistry({
     rawCombos: [{ modelId: "codex:gpt-5.5", reasoningLevel: "low" }],
-    fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
+    fallback: { modelId: "codex:gpt-5.5", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI, codexEntry]),
+    allowOpenAiApiRouter: false,
   });
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.ok(findError(result.errors, "allowedCombos", "OpenAI-only"));
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.combos, [{ modelId: "codex:gpt-5.5", reasoningLevel: "low" }]);
   }
 });
 
-test("validateRouterPoolAgainstRegistry rejects a MiniMax model id (non-OpenAI provider)", () => {
+test("validateRouterPoolAgainstRegistry accepts a MiniMax subscription model id (subscription-first policy)", () => {
+  // Cost-safety: subscription providers (MiniMax) are accepted by
+  // default under the subscription-first policy. MiniMax models do
+  // not advertise reasoning-level controls so the reasoning-level
+  // check is skipped for them.
   const minimaxEntry = entry({
     modelId: "MiniMax-M3",
     displayLabel: "MiniMax-M3",
@@ -211,12 +232,29 @@ test("validateRouterPoolAgainstRegistry rejects a MiniMax model id (non-OpenAI p
   (minimaxEntry as unknown as { providerId: "minimax" }).providerId = "minimax";
   const result = validateRouterPoolAgainstRegistry({
     rawCombos: [{ modelId: "MiniMax-M3", reasoningLevel: "low" }],
-    fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
+    fallback: { modelId: "MiniMax-M3", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI, minimaxEntry]),
+    allowOpenAiApiRouter: false,
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.combos, [{ modelId: "MiniMax-M3", reasoningLevel: "low" }]);
+  }
+});
+
+test("validateRouterPoolAgainstRegistry rejects an OpenAI API model id when allowOpenAiApiRouter is false", () => {
+  // Cost-safety: even though `gpt-5.4-mini` is configured and
+  // available, an OpenAI API entry must be rejected unless the
+  // caller has explicitly opted in via `allowOpenAiApiRouter: true`.
+  const result = validateRouterPoolAgainstRegistry({
+    rawCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" }],
+    fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
+    registry: registry([KNOWN_MINI]),
+    allowOpenAiApiRouter: false,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
-    assert.ok(findError(result.errors, "allowedCombos", "OpenAI-only"));
+    assert.ok(findError(result.errors, "allowedCombos", "OpenAI API model"));
   }
 });
 
@@ -225,6 +263,7 @@ test("validateRouterPoolAgainstRegistry rejects a reasoning level not supported 
     rawCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "high" }],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -240,6 +279,7 @@ test("validateRouterPoolAgainstRegistry rejects a fallback not in the validated 
     ],
     fallback: { modelId: "gpt-5.5", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI, KNOWN_BIG]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -255,6 +295,7 @@ test("validateRouterPoolAgainstRegistry rejects a duplicate entry", () => {
     ],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -270,6 +311,7 @@ test("validateRouterPoolAgainstRegistry accepts a valid known+available+supporte
     ],
     fallback: { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI, KNOWN_BIG]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, true);
   if (result.ok) {
@@ -287,6 +329,7 @@ test("validateRouterPoolAgainstRegistry accumulates all errors before returning"
     ],
     fallback: { modelId: "gpt-5.5", reasoningLevel: "low" },
     registry: registry([KNOWN_MINI, KNOWN_BIG]),
+    allowOpenAiApiRouter: true,
   });
   assert.equal(result.ok, false);
   if (!result.ok) {

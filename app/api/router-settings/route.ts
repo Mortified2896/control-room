@@ -9,6 +9,8 @@ import {
   parseRouterSettingsForSave,
   type RouterSettings,
 } from "@/lib/router/schema";
+import { buildNormalChatRecommenderPrompt } from "@/lib/router/normal-chat-prompts";
+import { getEffectiveModelsResponse } from "@/lib/providers/registry";
 import {
   buildEffectiveRegistry,
   getEffectiveModelsRegistry,
@@ -24,7 +26,9 @@ import {
   minimaxProvider,
 } from "@/lib/providers/minimax";
 import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
-import type { ProviderId, ReasoningLevel } from "@/lib/providers/types";
+import type { ProviderId } from "@/lib/providers/types";
+import type { ReasoningCapability } from "@/lib/providers/capability";
+import { getEffectiveReasoningLevels, hasReasoningControls } from "@/lib/providers/capability";
 import { CODEX_CATALOG_MODELS } from "@/lib/providers/codex-catalog";
 import { getProviderAccessSettings } from "@/lib/providers/access-control";
 import { upsertRouterSettingsRow } from "@/lib/repo/router-settings";
@@ -52,7 +56,8 @@ type RouterSettingsDto = {
   registry: ReadonlyArray<{
     modelId: string;
     modelLabel: string;
-    reasoningLevel: ReasoningLevel;
+    /** Provider-native reasoning-effort value. */
+    reasoningLevel: string;
     tier: "cheap" | "expensive";
     configured: boolean;
     available: boolean;
@@ -67,9 +72,18 @@ type RouterSettingsDto = {
       configured: boolean;
       available: boolean;
       stale: boolean;
+      /**
+       * Canonical reasoning / thinking capability for the row. See
+       * `lib/providers/capability.ts` for the full union. The Settings
+       * UI consults this to decide which control surface to render in
+       * the Reasoning column — never the legacy
+       * `supportedReasoningLevels` alone, because a thinking-budget
+       * model has zero effort levels but does support reasoning.
+       */
+      reasoningCapability: ReasoningCapability;
       supportsReasoning: boolean;
-      supportedReasoningLevels: ReadonlyArray<ReasoningLevel>;
-      tier: "standard" | "expensive" | "unknown";
+      supportedReasoningLevels: ReadonlyArray<string>;
+      tier: "standard" | "expensive" | "unknown" | "cheap";
       usableForChat: boolean;
       manualSelectorVisible: boolean;
       manuallyOverridden: boolean;
@@ -84,7 +98,7 @@ type RouterSettingsDto = {
       };
       provenance: "local_meta" | "discovered_only" | "fake" | "stale" | "env_static";
     }>;
-    defaults: { manualModelId: string | null; reasoningLevel: ReasoningLevel };
+    defaults: { manualModelId: string | null; reasoningLevel: string };
     counts: {
       discovered: number;
       discoveredConfigured: number;
@@ -117,6 +131,20 @@ type RouterSettingsDto = {
     selectorPrefs: Record<string, { visible: boolean }>;
     fakeMode: boolean;
   };
+  /**
+   * Read-only preview of the prompt the normal-chat recommender sends
+   * to the configured recommender model. Built with the live registry
+   * so the Settings UI shows exactly what the API route sends — no
+   * drift between the two surfaces. The user message, current model,
+   * and availableModels are filled with representative example values
+   * because the live prompt is dynamic and per-message.
+   */
+  normalChatRecommenderPrompt: {
+    system: string;
+    user: string;
+    /** Pretty-printed JSON of the user prompt body for the read-only preview. */
+    userJsonExample: string;
+  };
 };
 
 function getFallbackEffectiveRegistry(): ReturnType<typeof buildEffectiveRegistry> {
@@ -130,6 +158,21 @@ function getFallbackEffectiveRegistry(): ReturnType<typeof buildEffectiveRegistr
 async function serializeRegistryModels(
   registry: Awaited<ReturnType<typeof getEffectiveModelsRegistry>>,
 ): Promise<RouterSettingsDto["effectiveRegistry"]["models"]> {
+  // The async refresh path runs for Codex + MiniMax too; apply the
+  // refreshed capabilities so the Settings DTO shows the same
+  // `source` / `refreshedAt` values as the chat-picker endpoint.
+  const refreshedById = registry.refreshedCapabilitiesById;
+  function applyRefreshed<
+    T extends {
+      modelId?: string;
+      id?: string;
+      reasoningCapability: import("@/lib/providers/capability").ReasoningCapability;
+    },
+  >(m: T, modelId: string): T {
+    const next = refreshedById?.get(modelId);
+    if (!next || next === m.reasoningCapability) return m;
+    return { ...m, reasoningCapability: next };
+  }
   const openaiRows = registry.models.map((m) => ({
     ...m,
     providerId: "openai" as const,
@@ -137,60 +180,68 @@ async function serializeRegistryModels(
   }));
   const minimaxConfig = getMiniMaxConfig();
   const minimaxSnapshot = await getMiniMaxDiscoverySnapshot();
-  const minimaxRows = (await getDiscoveredMiniMaxModels()).map((m) => ({
-    providerId: minimaxProvider.id,
-    providerLabel: "MiniMax API",
-    modelId: m.modelId,
-    displayLabel: m.modelLabel,
-    configured: true,
-    available: m.enabled,
-    stale: minimaxSnapshot.fetchedAt
-      ? Date.now() - minimaxSnapshot.fetchedAt.getTime() >= 24 * 60 * 60 * 1000
-      : true,
-    supportsReasoning: false,
-    supportedReasoningLevels: [] as ReadonlyArray<ReasoningLevel>,
-    tier: "standard" as const,
-    usableForChat: m.enabled,
-    manualSelectorVisible: true,
-    manuallyOverridden: false,
-    routerEligible: false,
-    capabilities: {
-      reasoning: false,
-      vision: false,
-      images: false,
-      functionCalling: false,
-      structuredOutput: false,
-      streaming: true,
-    },
-    provenance: "env_static" as const,
-    // Keep the read above intentional: this row reflects env-file config only.
-    ...(!minimaxConfig.apiKeySet ? { available: false, usableForChat: false } : {}),
-  }));
-  const codexRows = CODEX_CATALOG_MODELS.map((m) => ({
-    providerId: "codex" as const,
-    providerLabel: "Codex CLI / ChatGPT login",
-    modelId: `codex:${m.id}`,
-    displayLabel: `Codex · ${m.label}`,
-    configured: true,
-    available: true,
-    stale: false,
-    supportsReasoning: false,
-    supportedReasoningLevels: [] as ReadonlyArray<ReasoningLevel>,
-    tier: m.tier === "expensive" ? ("expensive" as const) : ("standard" as const),
-    usableForChat: true,
-    manualSelectorVisible: true,
-    manuallyOverridden: false,
-    routerEligible: false,
-    capabilities: {
-      reasoning: false,
-      vision: false,
-      images: false,
-      functionCalling: false,
-      structuredOutput: false,
-      streaming: true,
-    },
-    provenance: "env_static" as const,
-  }));
+  const minimaxRows = (await getDiscoveredMiniMaxModels()).map((m) => {
+    const refreshedMinimax = applyRefreshed(m, m.modelId);
+    return {
+      providerId: minimaxProvider.id,
+      providerLabel: "MiniMax API",
+      modelId: m.modelId,
+      displayLabel: m.modelLabel,
+      configured: true,
+      available: m.enabled,
+      stale: minimaxSnapshot.fetchedAt
+        ? Date.now() - minimaxSnapshot.fetchedAt.getTime() >= 24 * 60 * 60 * 1000
+        : true,
+      reasoningCapability: m.reasoningCapability,
+      supportsReasoning: hasReasoningControls(m.reasoningCapability),
+      supportedReasoningLevels: getEffectiveReasoningLevels(m.reasoningCapability),
+      tier: "standard" as const,
+      usableForChat: m.enabled,
+      manualSelectorVisible: true,
+      manuallyOverridden: false,
+      routerEligible: false,
+      capabilities: {
+        reasoning: hasReasoningControls(refreshedMinimax.reasoningCapability),
+        vision: false,
+        images: false,
+        functionCalling: false,
+        structuredOutput: false,
+        streaming: true,
+      },
+      provenance: "env_static" as const,
+      // Keep the read above intentional: this row reflects env-file config only.
+      ...(!minimaxConfig.apiKeySet ? { available: false, usableForChat: false } : {}),
+    };
+  });
+  const codexRows = CODEX_CATALOG_MODELS.map((m) => {
+    const refreshedCodex = applyRefreshed(m, `codex:${m.id}`);
+    return {
+      providerId: "codex" as const,
+      providerLabel: "Codex CLI / ChatGPT login",
+      modelId: `codex:${m.id}`,
+      displayLabel: `Codex · ${m.label}`,
+      configured: true,
+      available: true,
+      stale: false,
+      reasoningCapability: refreshedCodex.reasoningCapability,
+      supportsReasoning: hasReasoningControls(refreshedCodex.reasoningCapability),
+      supportedReasoningLevels: getEffectiveReasoningLevels(refreshedCodex.reasoningCapability),
+      tier: m.tier === "expensive" ? ("expensive" as const) : ("standard" as const),
+      usableForChat: true,
+      manualSelectorVisible: true,
+      manuallyOverridden: false,
+      routerEligible: false,
+      capabilities: {
+        reasoning: hasReasoningControls(refreshedCodex.reasoningCapability),
+        vision: false,
+        images: false,
+        functionCalling: false,
+        structuredOutput: false,
+        streaming: true,
+      },
+      provenance: "env_static" as const,
+    };
+  });
   return [...openaiRows, ...codexRows, ...minimaxRows];
 }
 
@@ -207,6 +258,62 @@ function serializeDiscovery(
     errorMessage: discovery.errorMessage,
     ageMs,
     isStale: ageMs === null ? true : ageMs >= 24 * 60 * 60 * 1000,
+  };
+}
+
+/**
+ * Build the read-only prompt preview shown in the Settings UI. Uses
+ * the live registry for the availableModels list (so the preview
+ * matches what the API route will send) and representative example
+ * values for the dynamic per-message fields.
+ *
+ * The example is intentionally a small "plan a 2-day trip" prompt
+ * because it exercises both branches the recommender cares about —
+ * the message is non-trivial, so the preview shows the recommender
+ * gets enough context to make a meaningful decision.
+ */
+/**
+ * Async prompt preview that pulls the live `getEffectiveModelsResponse`
+ * shape so the availableModels list matches exactly what
+ * `/api/model/recommend` will see. Called by the GET handler.
+ */
+async function buildNormalChatRecommenderPromptPreview(): Promise<
+  RouterSettingsDto["normalChatRecommenderPrompt"]
+> {
+  const modelsPayload = await getEffectiveModelsResponse();
+  const availableModels = modelsPayload.models
+    .filter((m) => m.enabled && m.providerId !== "codex")
+    .slice(0, 6) // Cap so the preview stays scannable
+    .map((m) => ({
+      provider: m.providerId,
+      modelId: m.modelId,
+      displayLabel: m.modelLabel,
+      supportsReasoningControls:
+        m.reasoningCapability.kind === "effort_levels" &&
+        m.reasoningCapability.control !== "unknown",
+      allowedReasoningLevels:
+        m.reasoningCapability.kind === "effort_levels"
+          ? m.reasoningCapability.options.map((o) => o.value)
+          : [],
+      enabled: m.enabled,
+      accessPath: m.accessPath ?? null,
+      tier: m.tier as "cheap" | "expensive" | "standard" | "unknown",
+    }));
+  const defaultModel = modelsPayload.models.find((m) => m.modelId === modelsPayload.defaultModelId);
+  const prompt = buildNormalChatRecommenderPrompt({
+    mode: "normal_chat",
+    message: "Plan a 2-day trip to Kyoto in October with budget-friendly museum stops.",
+    current: {
+      modelId: modelsPayload.defaultModelId,
+      provider: defaultModel?.providerId ?? "openai",
+      reasoningLevel: modelsPayload.defaultReasoningLevel,
+    },
+    availableModels,
+  });
+  return {
+    system: prompt.system,
+    user: prompt.user,
+    userJsonExample: prompt.user,
   };
 }
 
@@ -326,6 +433,11 @@ export async function GET() {
       ),
       fakeMode: registry.fakeMode,
     },
+    // Build the read-only prompt preview using the live registry so the
+    // Settings UI shows the same prompt the API route will send. We use
+    // a representative example for the message + current model since the
+    // live prompt is dynamic per send.
+    normalChatRecommenderPrompt: await buildNormalChatRecommenderPromptPreview(),
     providerAccess,
   };
   return NextResponse.json(dto, { headers: { "Cache-Control": "no-store" } });
@@ -415,6 +527,17 @@ export async function PUT(req: Request) {
     fallbackReasoningLevel: b.fallbackReasoningLevel ?? current.fallbackReasoningLevel,
     allowedCombos: b.allowedCombos ?? current.allowedCombos,
     routerModelId: b.routerModelId ?? current.routerModelId,
+    normalChatRecommenderModelId:
+      b.normalChatRecommenderModelId ?? current.normalChatRecommenderModelId,
+    normalChatRecommenderReasoningLevel:
+      b.normalChatRecommenderReasoningLevel ?? current.normalChatRecommenderReasoningLevel,
+    // Recommender allowlist: `null` means "no restriction" and must
+    // round-trip as `null`. `[]` means "block all". When the UI omits
+    // the field, keep the existing value.
+    normalChatRecommenderAllowedModels:
+      b.normalChatRecommenderAllowedModels === undefined
+        ? current.normalChatRecommenderAllowedModels
+        : b.normalChatRecommenderAllowedModels,
     // Non-UI-managed fields round-trip from the existing effective
     // payload so a Save does not silently reset them to defaults.
     maxCostPerRecommendationUsd: current.maxCostPerRecommendationUsd,

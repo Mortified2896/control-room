@@ -11,10 +11,28 @@ import {
 } from "./policy.ts";
 import { DEFAULT_ROUTER_SETTINGS, parseRouterSettings } from "./schema.ts";
 
-const POOL = resolveAllowedPool(DEFAULT_ROUTER_SETTINGS, 0);
+// Tests in this file exercise the OpenAI allowlist path (cheap +
+// expensive tier, budget guards, recommendation validation). Pin an
+// explicit allowlist that includes the OpenAI combos we want to test;
+// the shipped defaults are subscription-safe codex-only and require
+// `allowOpenAiApiRouter` to admit OpenAI API entries.
+const TEST_SETTINGS = {
+  ...DEFAULT_ROUTER_SETTINGS,
+  allowOpenAiApiRouter: true,
+  allowedCombos: [
+    { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const },
+    { modelId: "gpt-5.4-mini", reasoningLevel: "medium" as const },
+    { modelId: "gpt-5.4-mini", reasoningLevel: "high" as const },
+    { modelId: "gpt-5.5", reasoningLevel: "low" as const },
+    { modelId: "gpt-5.5", reasoningLevel: "medium" as const },
+    { modelId: "gpt-5.5", reasoningLevel: "high" as const },
+  ],
+};
+
+const POOL = resolveAllowedPool(TEST_SETTINGS, 0);
 
 test("resolveAllowedPool excludes expensive tier when allowExpensiveModels=false", () => {
-  const pool = resolveAllowedPool(DEFAULT_ROUTER_SETTINGS, 0);
+  const pool = resolveAllowedPool(TEST_SETTINGS, 0);
   assert.equal(
     pool.some((e) => e.tier === "expensive"),
     false,
@@ -30,10 +48,10 @@ test("resolveAllowedPool includes expensive tier when allowExpensiveModels=true"
   // the user's allowlist — the registry's tier filter is the first gate
   // and the user's explicit allowlist is the second.
   const settings = {
-    ...DEFAULT_ROUTER_SETTINGS,
+    ...TEST_SETTINGS,
     allowExpensiveModels: true,
     allowedCombos: [
-      ...DEFAULT_ROUTER_SETTINGS.allowedCombos,
+      ...TEST_SETTINGS.allowedCombos,
       { modelId: "gpt-5.5", reasoningLevel: "low" as const },
       { modelId: "gpt-5.5", reasoningLevel: "medium" as const },
       { modelId: "gpt-5.5", reasoningLevel: "high" as const },
@@ -48,10 +66,10 @@ test("resolveAllowedPool includes expensive tier when allowExpensiveModels=true"
 
 test("resolveAllowedPool auto-excludes expensive on long prompt unless allowed", () => {
   const settings = {
-    ...DEFAULT_ROUTER_SETTINGS,
+    ...TEST_SETTINGS,
     allowExpensiveModels: true,
     allowedCombos: [
-      ...DEFAULT_ROUTER_SETTINGS.allowedCombos,
+      ...TEST_SETTINGS.allowedCombos,
       { modelId: "gpt-5.5", reasoningLevel: "low" as const },
       { modelId: "gpt-5.5", reasoningLevel: "medium" as const },
       { modelId: "gpt-5.5", reasoningLevel: "high" as const },
@@ -62,7 +80,7 @@ test("resolveAllowedPool auto-excludes expensive on long prompt unless allowed",
     short.some((e) => e.tier === "expensive"),
     true,
   );
-  const long = resolveAllowedPool(settings, DEFAULT_ROUTER_SETTINGS.longPromptThresholdChars + 1);
+  const long = resolveAllowedPool(settings, TEST_SETTINGS.longPromptThresholdChars + 1);
   assert.equal(
     long.some((e) => e.tier === "expensive"),
     false,
@@ -71,11 +89,11 @@ test("resolveAllowedPool auto-excludes expensive on long prompt unless allowed",
 
 test("resolveAllowedPool keeps expensive on long prompt when explicitly allowed", () => {
   const settings = {
-    ...DEFAULT_ROUTER_SETTINGS,
+    ...TEST_SETTINGS,
     allowExpensiveModels: true,
     allowLongPromptWhenExpensive: true,
     allowedCombos: [
-      ...DEFAULT_ROUTER_SETTINGS.allowedCombos,
+      ...TEST_SETTINGS.allowedCombos,
       { modelId: "gpt-5.5", reasoningLevel: "low" as const },
       { modelId: "gpt-5.5", reasoningLevel: "medium" as const },
       { modelId: "gpt-5.5", reasoningLevel: "high" as const },
@@ -89,14 +107,18 @@ test("resolveAllowedPool keeps expensive on long prompt when explicitly allowed"
 });
 
 test("resolveAllowedPool intersects with settings.allowedCombos", () => {
-  // Default allowlist ships with cheap-tier combos only.
-  const basePool = resolveAllowedPool(DEFAULT_ROUTER_SETTINGS, 0);
+  // Default allowlist ships with cheap-tier combos only. With
+  // provider-native capability metadata, `gpt-5.4-mini` now
+  // advertises `low`, `medium`, AND `high` (the cheap-tier set is
+  // `none | low | medium | high`); the test settings explicitly
+  // include `high`, so the intersected pool carries all three.
+  const basePool = resolveAllowedPool(TEST_SETTINGS, 0);
   const baseKeys = basePool.map((e) => `${e.modelId}|${e.reasoningLevel}`).sort();
-  assert.deepEqual(baseKeys, ["gpt-5.4-mini|low", "gpt-5.4-mini|medium"]);
+  assert.deepEqual(baseKeys, ["gpt-5.4-mini|high", "gpt-5.4-mini|low", "gpt-5.4-mini|medium"]);
 
   // Now restrict the allowlist to JUST one combo.
   const restricted = {
-    ...DEFAULT_ROUTER_SETTINGS,
+    ...TEST_SETTINGS,
     allowedCombos: [{ modelId: "gpt-5.4-mini", reasoningLevel: "low" as const }],
   };
   const pool = resolveAllowedPool(restricted, 0);
@@ -109,7 +131,7 @@ test("resolveAllowedPool honors allowExpensiveModels AND allowedCombos together"
   // Even if the user has checked an expensive combo, the tier filter
   // still applies. The intersection of both layers must be respected.
   const settings = {
-    ...DEFAULT_ROUTER_SETTINGS,
+    ...TEST_SETTINGS,
     allowExpensiveModels: false, // expensive tier OFF
     allowedCombos: [
       { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const },
@@ -127,7 +149,7 @@ test("resolveAllowedPool honors allowExpensiveModels AND allowedCombos together"
 
 test("resolveAllowedPool with empty allowedCombos yields an empty pool", () => {
   const settings = {
-    ...DEFAULT_ROUTER_SETTINGS,
+    ...TEST_SETTINGS,
     allowedCombos: [],
   };
   const pool = resolveAllowedPool(settings, 0);
@@ -136,7 +158,7 @@ test("resolveAllowedPool with empty allowedCombos yields an empty pool", () => {
 
 test("resolveAllowedPool with allowedCombos referencing an unknown model is filtered out", () => {
   const settings = {
-    ...DEFAULT_ROUTER_SETTINGS,
+    ...TEST_SETTINGS,
     allowedCombos: [
       { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const },
       { modelId: "gpt-not-a-real-model", reasoningLevel: "low" as const },
@@ -165,7 +187,7 @@ test("isInAllowedPool is false for a non-pool member", () => {
 test("applyBudgetGuard keeps B under budget", () => {
   const sideA = { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const };
   const sideB = { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const };
-  const decision = applyBudgetGuard(sideA, sideB, DEFAULT_ROUTER_SETTINGS, 100);
+  const decision = applyBudgetGuard(sideA, sideB, TEST_SETTINGS, 100);
   assert.equal(decision.keepB, true);
   if (decision.keepB) {
     assert.deepEqual(decision.combo, sideB);
@@ -173,7 +195,7 @@ test("applyBudgetGuard keeps B under budget", () => {
 });
 
 test("applyBudgetGuard rejects B when combined A/B cost exceeds max", () => {
-  const settings = { ...DEFAULT_ROUTER_SETTINGS, maxCostPerAbRunUsd: 0.001 };
+  const settings = { ...TEST_SETTINGS, maxCostPerAbRunUsd: 0.001 };
   const sideA = { modelId: "gpt-5.5", reasoningLevel: "medium" as const };
   const sideB = { modelId: "gpt-5.5", reasoningLevel: "low" as const };
   const decision = applyBudgetGuard(sideA, sideB, settings, 100);
@@ -184,7 +206,7 @@ test("applyBudgetGuard rejects B when combined A/B cost exceeds max", () => {
 });
 
 test("applyBudgetGuard rejects B when recommendation itself exceeds max", () => {
-  const settings = { ...DEFAULT_ROUTER_SETTINGS, maxCostPerRecommendationUsd: 0.0005 };
+  const settings = { ...TEST_SETTINGS, maxCostPerRecommendationUsd: 0.0005 };
   const sideA = { modelId: "gpt-5.4-mini", reasoningLevel: "low" as const };
   const sideB = { modelId: "gpt-5.5", reasoningLevel: "low" as const };
   const decision = applyBudgetGuard(sideA, sideB, settings, 100);
@@ -229,13 +251,16 @@ test("validateRouterOutput rejects unknown model id", () => {
 });
 
 test("validateRouterOutput rejects disallowed reasoning level", () => {
-  // gpt-5.4-mini only supports low/medium — "high" is not allowed.
+  // gpt-5.4-mini supports the cheap-tier effort set
+  // (`none`, `low`, `medium`, `high`) but NOT the full
+  // expensive-tier set (no `minimal`, no `xhigh`). Pick `xhigh`
+  // to exercise the per-model capability check.
   const raw = {
     recommended_model: "gpt-5.4-mini",
-    recommended_reasoning_level: "high",
+    recommended_reasoning_level: "xhigh",
     confidence: 0.5,
     task_type: "coding",
-    short_reason: "Asking for high reasoning on a model that does not support it.",
+    short_reason: "Asking for xhigh reasoning on a model that does not support it.",
   };
   const result = validateRouterOutput(raw, POOL);
   assert.equal(result.ok, false);

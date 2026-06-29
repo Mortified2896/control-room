@@ -15,15 +15,16 @@ import { isDbConfigured } from "@/lib/db";
 import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thread-messages";
 import { createMessage, getThread } from "@/lib/repo/threads";
 import { getProject } from "@/lib/repo/projects";
-import { resolveModel, getDefaultRouterModelId } from "@/lib/providers";
+import { getModelMeta, resolveModel, getDefaultRouterModelId } from "@/lib/providers";
 import { getEffectiveModelsResponse } from "@/lib/providers/registry";
+import { getBillingSourceForProvider } from "@/lib/providers/billing-source";
 import { assertModelExecutionAllowed, ProviderAccessError } from "@/lib/providers/access-control";
 import {
   getRuntimeModel,
   getRuntimeProviderOptions,
   ProviderConfigurationError,
+  type ThinkingMode,
 } from "@/lib/providers/runtime";
-import type { ReasoningLevel } from "@/lib/providers/types";
 import { type RouterSettings } from "@/lib/router/schema";
 import { getEffectiveRouterSettings } from "@/lib/router/settings-store";
 import { runRouterGraph, type RouterGraphOutput } from "@/lib/router/graph";
@@ -42,8 +43,22 @@ function validThreadId(threadId: unknown): string | null {
   return typeof threadId === "string" && UUID_RE.test(threadId) ? threadId : null;
 }
 
-function validReasoningLevel(value: unknown): ReasoningLevel {
-  return value === "medium" || value === "high" ? value : "low";
+function validReasoningOption(value: unknown): string {
+  // The chat composer may send a provider-native value (e.g. "low",
+  // "medium", "xhigh", "none", "minimal"). We do NOT narrow to a
+  // fixed enum — the runtime adapter forwards the value verbatim.
+  // Capability-aware validation (which model supports which value)
+  // happens in `assertModelExecutionAllowed` via
+  // `validateReasoningLevelForCapability`. Anything malformed from
+  // the client falls back to the provider default below; the
+  // runtime layer also handles null / undefined.
+  if (typeof value === "string" && value.trim().length > 0) return value;
+  return "low";
+}
+
+function validThinkingMode(value: unknown): ThinkingMode {
+  if (value === "enabled" || value === "disabled") return value;
+  return "provider_default";
 }
 
 async function persistUserMessage(threadId: string, messages: UIMessage[], modelId: string | null) {
@@ -79,8 +94,8 @@ async function persistAssistantMessage(threadId: string, message: UIMessage, mod
 export type RouterAbDataParts = {
   "router-ab": {
     sessionId: string;
-    sideA: { modelId: string; reasoningLevel: ReasoningLevel };
-    sideB: { modelId: string; reasoningLevel: ReasoningLevel } | null;
+    sideA: { modelId: string; reasoningLevel: string };
+    sideB: { modelId: string; reasoningLevel: string } | null;
     recommendation: RouterAbRecommendationDto | null;
     usedFallback: boolean;
     fallbackReason: string | null;
@@ -101,11 +116,35 @@ export type RouterAbDataParts = {
   };
 };
 
+/**
+ * Canonical reasoning / thinking capability for the resolved chat model.
+ * Surfaced to the panel so it can render the right reasoning UI even
+ * after reload. When the model is unknown to the registry, falls back
+ * to `{ kind: "unknown", control: "unknown" }`.
+ */
+export type ResolvedReasoningCapability =
+  | {
+      kind: "effort_levels";
+      control: "supported" | "model_dependent" | "unknown";
+      levels: ReadonlyArray<string>;
+    }
+  | {
+      kind: "thinking_budget";
+      control: "supported" | "model_dependent" | "unknown";
+      supportsEnabled?: boolean;
+      supportsTokenBudget?: boolean;
+      supportsExclude?: boolean;
+      defaultMode?: "provider_default" | "enabled" | "disabled";
+      description?: string;
+    }
+  | { kind: "none"; control: "unsupported"; reason?: string }
+  | { kind: "unknown"; control: "unknown"; reason?: string };
+
 type RouterAbUiMessage = UIMessage<unknown, RouterAbDataParts>;
 
 type RouterAbRecommendationDto = {
   recommendedModel: string;
-  recommendedReasoningLevel: ReasoningLevel;
+  recommendedReasoningLevel: string;
   confidence: number;
   taskType: AbTaskType;
   shortReason: string;
@@ -132,7 +171,8 @@ export async function POST(req: Request) {
     tools,
     modelId,
     threadId: rawThreadId,
-    reasoningLevel: rawReasoningLevel,
+    reasoningOption: rawReasoningOption,
+    thinkingMode: rawThinkingMode,
     routerAb: routerAbOn,
   }: {
     messages: UIMessage[];
@@ -140,17 +180,56 @@ export async function POST(req: Request) {
     tools?: Record<string, { description?: string; parameters: JSONSchema7 }>;
     modelId?: string;
     threadId?: string;
+    /**
+     * Provider-native reasoning-effort value (e.g. `"low"`,
+     * `"medium"`, `"xhigh"`, `"none"`, `"minimal"`). The runtime
+     * adapter validates the value against the model's
+     * `reasoningCapability.options` before forwarding it to the
+     * provider. Legacy callers may still send `reasoningLevel`; we
+     * accept both for backwards compatibility during the migration.
+     */
+    reasoningOption?: string;
+    /** @deprecated Use `reasoningOption` (provider-native value). */
     reasoningLevel?: string;
+    /**
+     * Thinking-mode pick for thinking-budget models (MiniMax M3).
+     * Distinct from `reasoningOption`. The runtime adapter translates
+     * this into the provider-native reasoning payload when the
+     * capability says it's safe to do so.
+     */
+    thinkingMode?: string;
     routerAb?: boolean;
   } = await req.json();
 
   let result = resolveModel(modelId);
 
   if (!result.ok && result.error.kind === "unknown_model" && modelId) {
+    // `resolveModel` consults the static `getAvailableModels` registry
+    // which only knows about OpenAI API and MiniMax. The chat composer
+    // additionally surfaces Codex (subscription) and discovered MiniMax
+    // ids, so for those we fall through to the live effective-models
+    // response. The Codex branch in the ChatPane renders
+    // `CodexChatPane` (a separate transport), so a request that
+    // reaches `/api/chat` with a `codex:` modelId is usually a stale
+    // persisted preference from before the Codex transport was wired
+    // up; we resolve it here so the chat surfaces a clear provider
+    // error instead of an "unknown model" 400.
     const effectiveModels = await getEffectiveModelsResponse();
     const dynamic = effectiveModels.models.find((m) => m.modelId === modelId && m.enabled);
-    if (dynamic && (dynamic.providerId === "minimax" || dynamic.providerId === "openai")) {
-      result = { ok: true, resolved: { providerId: dynamic.providerId, modelId: dynamic.modelId } };
+    if (
+      dynamic &&
+      (dynamic.providerId === "minimax" ||
+        dynamic.providerId === "openai" ||
+        dynamic.providerId === "codex")
+    ) {
+      result = {
+        ok: true,
+        resolved: {
+          providerId: dynamic.providerId,
+          modelId: dynamic.modelId,
+          billingSource: getBillingSourceForProvider(dynamic.providerId, dynamic.modelId),
+        },
+      };
     }
   }
 
@@ -180,19 +259,33 @@ export async function POST(req: Request) {
         error: "unknown_model",
         modelId: err.modelId,
         allowedIds: err.allowedIds,
+        message:
+          "The selected model is hidden, unavailable, or not configured. " +
+          "Re-enable it in Settings or pick another model. Control Room will not auto-substitute.",
       },
       { status: 400 },
     );
   }
 
-  const reasoningLevel = validReasoningLevel(rawReasoningLevel);
+  const reasoningOption = validReasoningOption(rawReasoningOption);
+  const thinkingMode = validThinkingMode(rawThinkingMode);
+
+  // Capability lookup for the resolved model. OpenAI static alias map
+  // and Codex / MiniMax catalog all carry a `reasoningCapability`
+  // now; if the registry has no metadata for this id (e.g. opted-in
+  // unconfigured OpenAI model), we pass through to the runtime with
+  // an `unknown` capability — the runtime will omit reasoning
+  // provider options rather than fake one.
+  const meta = getModelMeta(result.resolved.modelId);
+  const reasoningCapability =
+    meta?.reasoningCapability ?? ({ kind: "unknown", control: "unknown" } as const);
 
   try {
     await assertModelExecutionAllowed({
       providerId: result.resolved.providerId,
       modelId: result.resolved.modelId,
       surface: "manual_chat",
-      reasoningLevel,
+      reasoningLevel: reasoningOption,
     });
   } catch (err) {
     if (err instanceof ProviderAccessError) {
@@ -210,7 +303,12 @@ export async function POST(req: Request) {
   let sideAProviderOptions;
   try {
     sideAModel = getRuntimeModel(result.resolved);
-    sideAProviderOptions = getRuntimeProviderOptions(result.resolved, reasoningLevel);
+    sideAProviderOptions = getRuntimeProviderOptions({
+      resolved: result.resolved,
+      capability: reasoningCapability,
+      reasoningOption,
+      thinkingMode,
+    });
   } catch (err: unknown) {
     if (err instanceof ProviderConfigurationError) {
       return Response.json(
@@ -298,7 +396,7 @@ export async function POST(req: Request) {
       routerOutput = await runRouterGraph({
         latestUserText: latestText,
         recentTurns,
-        sideA: { modelId: result.resolved.modelId, reasoningLevel },
+        sideA: { modelId: result.resolved.modelId, reasoningLevel: reasoningOption },
         recentChars,
         settingsOverride: settings,
       });
@@ -328,7 +426,7 @@ export async function POST(req: Request) {
         threadId,
         userMessageId,
         sideAModelId: result.resolved.modelId,
-        sideAReasoningLevel: reasoningLevel,
+        sideAReasoningLevel: reasoningOption,
         userPromptText: latestText,
         recentChars,
         routerModelId: routerModelIdUsed,
@@ -362,7 +460,7 @@ export async function POST(req: Request) {
   const sideAStream = isFakeLlmEnabled()
     ? fakeStreamText({
         modelId: result.resolved.modelId,
-        reasoningLevel,
+        reasoningLevel: reasoningOption,
         userPrompt: latestText,
         side: "A",
       })
@@ -398,7 +496,7 @@ export async function POST(req: Request) {
           type: "data-router-ab",
           data: {
             sessionId: sessionId ?? "ad-hoc",
-            sideA: { modelId: result.resolved.modelId, reasoningLevel },
+            sideA: { modelId: result.resolved.modelId, reasoningLevel: reasoningOption },
             sideB: routerOutput?.sideB ?? null,
             recommendation: routerAbRecommendationFromOutput(routerOutput),
             usedFallback: routerOutput?.usedFallback ?? false,
@@ -556,7 +654,7 @@ export async function POST(req: Request) {
 
 function fakeStreamText(args: {
   modelId: string;
-  reasoningLevel: ReasoningLevel;
+  reasoningLevel: string;
   userPrompt: string;
   side: "A" | "B";
 }): {
@@ -584,7 +682,7 @@ function fakeStreamText(args: {
 
 async function fakeGenerateTextResult(args: {
   modelId: string;
-  reasoningLevel: ReasoningLevel;
+  reasoningLevel: string;
   userPrompt: string;
   side: "A" | "B";
 }): Promise<{ text: string }> {

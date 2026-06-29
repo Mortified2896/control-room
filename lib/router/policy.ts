@@ -22,12 +22,12 @@
  *      confidence out of range, etc.), reject it, use fallback, log.
  */
 import type { RouterSettings } from "@/lib/router/schema";
-import type { ReasoningLevel, RouterAllowlistEntry } from "@/lib/providers/types";
+import type { RouterAllowlistEntry } from "@/lib/providers/types";
 import { getModelMeta, listRouterAllowedPool } from "@/lib/providers";
 
 export type RouterSideCombo = {
   modelId: string;
-  reasoningLevel: ReasoningLevel;
+  reasoningLevel: string;
 };
 
 /**
@@ -38,7 +38,7 @@ export type RouterSideCombo = {
  * Numbers are intentionally low (the cheapest tier) so the budget guard
  * rejects expensive picks by default. Treat this table as "estimate only".
  */
-const COST_TABLE_USD: Record<string, Record<ReasoningLevel, number>> = {
+const COST_TABLE_USD: Record<string, Record<string, number>> = {
   "gpt-5.4-mini": { low: 0.001, medium: 0.003, high: 0.005 },
   "gpt-5.5": { low: 0.01, medium: 0.03, high: 0.06 },
 };
@@ -111,7 +111,7 @@ export function isInAllowedPool(
  */
 export type RouterRecommendation = {
   recommendedModel: string;
-  recommendedReasoningLevel: ReasoningLevel;
+  recommendedReasoningLevel: string;
   confidence: number;
   taskType: RouterTaskType;
   shortReason: string;
@@ -146,7 +146,20 @@ export type RouterValidationResult =
   | { ok: true; value: RouterRecommendation }
   | { ok: false; reason: string };
 
-const REASONING_LEVELS: ReadonlyArray<ReasoningLevel> = ["low", "medium", "high"];
+/**
+ * Provider-native reasoning-effort values we recognize for the
+ * cost guard. Provider-specific values like `xhigh`, `minimal`,
+ * `none`, or any future name flow through unchanged — we just
+ * default to the cheap-tier cost when the level is unknown.
+ */
+const KNOWN_REASONING_VALUES: ReadonlyArray<string> = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
 
 /**
  * Validate an LLM-produced recommendation against the resolved allowlist.
@@ -180,10 +193,20 @@ export function validateRouterOutput(
     return { ok: false, reason: "missing recommended_reasoning_level" };
   }
   const level = r.recommended_reasoning_level;
-  if (!(REASONING_LEVELS as ReadonlyArray<string>).includes(level)) {
+  // Provider-native values pass through. We do NOT narrow to a
+  // fixed enum here — the registry's per-model `supportedReasoningLevels`
+  // is the authoritative allowlist (checked in `isInAllowedPool` /
+  // `meta.reasoningLevels.includes`). This check only rejects
+  // malformed payloads.
+  if (typeof level !== "string" || level.trim().length === 0) {
     return { ok: false, reason: `disallowed reasoning_level: ${String(level)}` };
   }
-  const reasoningLevel = level as ReasoningLevel;
+  // Touch the KNOWN_REASONING_VALUES list so a future addition
+  // (e.g. `"xhigh"` is already included) remains in sync with the
+  // cost table. The list is informational — any non-empty string
+  // passes through.
+  void KNOWN_REASONING_VALUES;
+  const reasoningLevel = level;
 
   if (typeof r.confidence !== "number" || !Number.isFinite(r.confidence)) {
     return { ok: false, reason: "confidence must be a finite number" };

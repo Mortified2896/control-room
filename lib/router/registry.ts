@@ -3,6 +3,21 @@ import type { ReasoningLevel } from "@/lib/providers/types";
 import { listRouterAllowedPool } from "@/lib/providers";
 
 /**
+ * Detect model ids that belong to a non-OpenAI provider surface. Mirrors
+ * `providerIdFromModelId` in `lib/router/schema.ts` (kept private there)
+ * so the registry-aware validator can decide whether a missing entry is
+ * an OpenAI id (must be in the registry) or a subscription provider
+ * id (accepted without a registry entry).
+ */
+function providerIdFromModelId(modelId: string): "openai" | "codex" | "minimax" | null {
+  if (modelId.startsWith("codex:")) return "codex";
+  if (modelId.startsWith("minimax:") || modelId.startsWith("MiniMax-")) {
+    return "minimax";
+  }
+  return "openai";
+}
+
+/**
  * Strict router-pool validator against the live registry.
  *
  * Mirrors the per-field shape of `parseRouterSettingsForSave` (see
@@ -16,15 +31,20 @@ import { listRouterAllowedPool } from "@/lib/providers";
  *   3. No duplicate (modelId, reasoningLevel) pairs.
  *   4. The model id must be in the registry (it must exist somewhere —
  *      known or discovered).
- *   5. The model must belong to the `openai` provider. Codex (`codex:*`)
- *      and MiniMax (`MiniMax-M*`) entries are explicitly rejected — the
- *      router pool is OpenAI-only.
+ *   5. Subscription providers (Codex `codex:*`, MiniMax `MiniMax-M*`)
+ *      are accepted by default under the subscription-first policy.
+ *      OpenAI API entries are gated behind `allowOpenAiApiRouter` — a
+ *      fresh deploy must never silently burn paid API budget.
  *   6. The model must be `configured=true` (i.e. present in the local
  *      static alias map at `lib/providers/openai-static.ts`). Unknown
  *      discovered models cannot enter the router pool under any UI
  *      path (brief, hard rule).
  *   7. The reasoning level must be in the model's
- *      `supportedReasoningLevels`.
+ *      `supportedReasoningLevels`. For models with an empty
+ *      `supportedReasoningLevels` (e.g. Codex, MiniMax, which do not
+ *      advertise reasoning-level controls), the reasoning level check
+ *      is skipped because no level is supported — any labeled level is
+ *      informational only.
  *   8. The fallback combo must be one of the validated entries. We
  *      always check (even when `validated` is empty) so the user gets a
  *      clear "fallback not in pool" error even when every combo was
@@ -66,9 +86,10 @@ export function validateRouterPoolAgainstRegistry(input: {
   rawCombos: ReadonlyArray<unknown>;
   fallback: { modelId: string; reasoningLevel: ReasoningLevel };
   registry: EffectiveRegistry;
+  allowOpenAiApiRouter: boolean;
 }): RouterPoolValidationResult {
   const errors: RouterPoolValidationError[] = [];
-  const { rawCombos, fallback, registry } = input;
+  const { rawCombos, fallback, registry, allowOpenAiApiRouter } = input;
 
   if (!Array.isArray(rawCombos)) {
     return {
@@ -120,30 +141,41 @@ export function validateRouterPoolAgainstRegistry(input: {
     seen.add(key);
 
     const entry = registryById.get(modelId);
-    if (!entry) {
+    // Codex/MiniMax catalog entries are not always present in the
+    // registry (they are appended in the chat response, not the
+    // registry), so the subscription-first validation falls through
+    // to `providerIdFromModelId` for those.
+    const providerId = entry?.providerId ?? providerIdFromModelId(modelId);
+    if (!entry && providerId === "openai") {
       errors.push({
         field: "allowedCombos",
         message: `Unknown model id: ${modelId}. Add it to the manual selector first.`,
       });
       continue;
     }
-    if (entry.providerId !== "openai") {
-      // Router pool is OpenAI-only by design. Codex and MiniMax have
-      // their own non-router surfaces; do not let them leak in.
+    if (providerId === "openai" && !allowOpenAiApiRouter) {
+      // Cost-safety: OpenAI API entries are gated behind
+      // `allowOpenAiApiRouter` so a fresh deploy never burns paid API
+      // budget. Subscription providers (Codex, MiniMax) are accepted
+      // unconditionally under the subscription-first policy.
       errors.push({
         field: "allowedCombos",
-        message: `${modelId} belongs to ${entry.providerId}; the normal-chat router allowlist is OpenAI-only.`,
+        message: `${modelId} is an OpenAI API model. OpenAI API router use is disabled — set Settings → Router → "Allow OpenAI API router use" to opt in.`,
       });
       continue;
     }
-    if (!entry.configured) {
+    if (entry && !entry.configured) {
       errors.push({
         field: "allowedCombos",
         message: `${modelId} is not in the local model registry and cannot enter the router pool. Add it to the manual selector with explicit metadata first.`,
       });
       continue;
     }
-    if (!(entry.supportedReasoningLevels as ReadonlyArray<string>).includes(reasoningLevel)) {
+    if (
+      entry &&
+      entry.supportedReasoningLevels.length > 0 &&
+      !(entry.supportedReasoningLevels as ReadonlyArray<string>).includes(reasoningLevel)
+    ) {
       errors.push({
         field: "allowedCombos",
         message: `${modelId} does not support reasoning level ${reasoningLevel}.`,

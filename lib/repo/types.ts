@@ -17,6 +17,7 @@ export type ThreadRow = {
   projectId: string | null;
   threadMode: ThreadMode;
   harness: ThreadHarness | null;
+  modelId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -88,9 +89,18 @@ export type AbSessionRow = {
   userMessageId: string | null;
   assistantMessageId: string | null;
   sideAModelId: string;
-  sideAReasoningLevel: "low" | "medium" | "high";
+  /**
+   * Provider-native reasoning-effort value (e.g. `"low"`, `"medium"`,
+   * `"xhigh"`, `"none"`, `"minimal"`). The chat composer sends the
+   * raw value verbatim and the runtime adapter validates it
+   * against the model's `reasoningCapability.options`. The DB column
+   * is plain `text` with a non-empty CHECK — see migration
+   * `0014_router_ab_provider_native_reasoning.sql`.
+   */
+  sideAReasoningLevel: string;
   sideBModelId: string | null;
-  sideBReasoningLevel: "low" | "medium" | "high" | null;
+  /** Provider-native reasoning-effort value, or `null` if Side B did not run. */
+  sideBReasoningLevel: string | null;
   taskType: AbTaskType | null;
   confidence: number | null;
   shortReason: string | null;

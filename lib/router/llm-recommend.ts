@@ -24,7 +24,10 @@ import { fakeRouterRecommendation, isFakeLlmEnabled } from "@/lib/router/fake-ll
 
 const routerRecommendationSchema = z.object({
   recommended_model: z.string().min(1).max(120),
-  recommended_reasoning_level: z.enum(["low", "medium", "high"]),
+  // Provider-native value — the recommender is told the model's
+  // `allowedReasoningLevels` set in the user prompt and is expected
+  // to pick one. We do NOT narrow to a fixed enum.
+  recommended_reasoning_level: z.string().min(1).max(40),
   confidence: z.number().min(0).max(1),
   task_type: z.enum(ROUTER_TASK_TYPE_VALUES),
   short_reason: z.string().min(1).max(240),
@@ -130,7 +133,8 @@ function extractLatestUserTextFromPrompt(prompt: string): string {
  */
 function fakeRouterRecommendationFromPrompt(prompt: string): {
   recommended_model: string;
-  recommended_reasoning_level: "low" | "medium" | "high";
+  /** Provider-native reasoning-effort value (e.g. "low", "xhigh"). */
+  recommended_reasoning_level: string;
   confidence: number;
   task_type:
     | "simple_chat"

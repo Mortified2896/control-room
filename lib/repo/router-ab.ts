@@ -98,14 +98,15 @@ export type CreateAbSessionInput = {
   userMessageId?: string | null;
   assistantMessageId?: string | null;
   sideAModelId: string;
-  sideAReasoningLevel: "low" | "medium" | "high";
+  /** Provider-native reasoning-effort value (see `AbSessionRow.sideAReasoningLevel`). */
+  sideAReasoningLevel: string;
   userPromptText: string;
   recentChars: number;
   poolKeyHash?: string | null;
   routerModelId: string;
   /** Set when Side B was decided up-front (cheaper than a second round-trip). */
   sideBModelId?: string | null;
-  sideBReasoningLevel?: "low" | "medium" | "high" | null;
+  sideBReasoningLevel?: string | null;
   taskType?: AbTaskType | null;
   confidence?: number | null;
   shortReason?: string | null;
@@ -164,7 +165,7 @@ export type AttachSideBInput = {
   abSessionId: string;
   assistantMessageId?: string | null;
   sideBModelId: string | null;
-  sideBReasoningLevel: "low" | "medium" | "high" | null;
+  sideBReasoningLevel: string | null;
   taskType: AbTaskType | null;
   confidence: number | null;
   shortReason: string | null;
