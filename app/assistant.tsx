@@ -431,6 +431,8 @@ const CodexChatPane: FC<{
     estimate_quality: "likely" | "uncertain" | "rough";
     started_at: string;
   } | null;
+  codingHarnessRecommendationError?: string | null;
+  decisionApproved?: "coding_task" | null;
   onSendToCodingHarness?: (input: {
     harnessId: "codex_cli" | "minimax_cli";
     modelId: string;
@@ -470,6 +472,8 @@ const CodexChatPane: FC<{
   codingHarnessRecommendation = null,
   codingHarnessRecommendationLoading = false,
   codingHarnessRecommendationEta = null,
+  codingHarnessRecommendationError = null,
+  decisionApproved = null,
   onSendToCodingHarness,
   onAnswerInChatInstead,
   onCodingRunComplete,
@@ -560,6 +564,8 @@ const CodexChatPane: FC<{
         codingHarnessRecommendation={codingHarnessRecommendation}
         codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
         codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+        codingHarnessRecommendationError={codingHarnessRecommendationError}
+        decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
       />
@@ -643,6 +649,8 @@ const ChatPane: FC<{
     estimate_quality: "likely" | "uncertain" | "rough";
     started_at: string;
   } | null;
+  codingHarnessRecommendationError?: string | null;
+  decisionApproved?: "coding_task" | null;
   onSendToCodingHarness?: (input: {
     harnessId: "codex_cli" | "minimax_cli";
     modelId: string;
@@ -687,6 +695,8 @@ const ChatPane: FC<{
   codingHarnessRecommendation = null,
   codingHarnessRecommendationLoading = false,
   codingHarnessRecommendationEta = null,
+  codingHarnessRecommendationError = null,
+  decisionApproved = null,
   onSendToCodingHarness,
   onAnswerInChatInstead,
 }) => {
@@ -730,6 +740,8 @@ const ChatPane: FC<{
         codingHarnessRecommendation={codingHarnessRecommendation}
         codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
         codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+        codingHarnessRecommendationError={codingHarnessRecommendationError}
+        decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
       />
@@ -811,6 +823,8 @@ const ChatPane: FC<{
         codingHarnessRecommendation={codingHarnessRecommendation}
         codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
         codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+        codingHarnessRecommendationError={codingHarnessRecommendationError}
+        decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
       />
@@ -1468,6 +1482,9 @@ export const Assistant = () => {
       setRouterDecision(null);
       setThreadModeOverride(null);
       setHarnessOverride(null);
+      setDecisionApproved(null);
+      setCodingHarnessRecommendation(null);
+      setCodingHarnessRecommendationError(null);
     }
   }, []);
   const [routerDecision, setRouterDecision] = useState<RouterDecision | null>(null);
@@ -1480,6 +1497,34 @@ export const Assistant = () => {
   } | null>(null);
   const [threadModeOverride, setThreadModeOverride] = useState<ThreadMode | null>(null);
   const [harnessOverride, setHarnessOverride] = useState<ThreadHarness | null>(null);
+  /**
+   * Intermediate state set when the user approves / corrects the
+   * router decision to `coding_task`. We keep this separate from
+   * `threadModeOverride` so the composer can distinguish three
+   * coding-task shapes:
+   *
+   *   1. Legacy path: `isCodingTask === true` because the thread
+   *      was opened directly as coding_task (NewChatDialog). The
+   *      composer shows the legacy "Send to Codex" / handoff-draft
+   *      pills.
+   *   2. Intermediate state: the user approved a router decision
+   *      as coding_task and we are awaiting the harness
+   *      recommendation. The composer MUST hide the legacy
+   *      handoff-draft button (which would otherwise fire
+   *      "This coding task thread is missing a harness.") and
+   *      instead surface the harness approval card / loader /
+   *      failure UI.
+   *   3. Active state: a harness was selected and the run is in
+   *      flight — the composer is back to its normal shape and
+   *      `harnessOverride` carries the user's pick.
+   *
+   * `decisionApproved` is cleared when:
+   *   - The user sends to a coding harness (transitions to active).
+   *   - The user clicks "Answer in chat instead" (transitions out).
+   *   - A new router decision arrives (resets the state machine).
+   *   - The user toggles Recommend off (clears all in-flight state).
+   */
+  const [decisionApproved, setDecisionApproved] = useState<"coding_task" | null>(null);
   const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
   const [recommendationEta, setRecommendationEta] = useState<{
@@ -1517,6 +1562,15 @@ export const Assistant = () => {
     estimate_quality: "likely" | "uncertain" | "rough";
     started_at: string;
   } | null>(null);
+  /**
+   * Sanitized error from `/api/coding-harness/recommend`. Surfaced
+   * to the composer so the harness approval card can render a
+   * loud failure ("Coding harness recommendation failed: <reason>")
+   * instead of silently leaving the user in the intermediate
+   * state with no Send button. Never contains API keys.
+   */
+  const [codingHarnessRecommendationError, setCodingHarnessRecommendationError] =
+    useState<string | null>(null);
 
   // Refresh the harness registry whenever the composer mounts so the
   // approval card surfaces current install / auth state.
@@ -1542,6 +1596,7 @@ export const Assistant = () => {
 
   const fetchCodingHarnessRecommendation = useCallback(async (prompt: string) => {
     setCodingHarnessRecommendation(null);
+    setCodingHarnessRecommendationError(null);
     setCodingHarnessRecommendationLoading(true);
     setCodingHarnessRecommendationEta({
       expected_latency_ms: 1500,
@@ -1555,13 +1610,23 @@ export const Assistant = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instruction: prompt }),
       });
-      if (!res.ok) throw new Error(`status ${res.status}`);
+      if (!res.ok) {
+        // Surface the HTTP status so the user can tell whether the
+        // endpoint was missing, the harness registry was down, or
+        // the request was rejected. We never echo the response body
+        // here — the API error paths already sanitise.
+        throw new Error(`status ${res.status}`);
+      }
       const data = (await res.json()) as CodingHarnessRecommendation;
       setCodingHarnessRecommendation(data);
-    } catch {
-      // Best-effort: leave the recommendation as `null`. The card
-      // renders the legacy "Recommended executor: Codex CLI" pill
-      // until the user re-clicks Approve / Correct.
+    } catch (err) {
+      // Loud failure: surface the sanitized reason so the harness
+      // approval card can render "Coding harness recommendation
+      // failed: <safe reason>" instead of silently leaving the
+      // user in the intermediate state with no Send button.
+      setCodingHarnessRecommendationError(
+        err instanceof Error ? err.message : "unknown error",
+      );
     } finally {
       setCodingHarnessRecommendationLoading(false);
       setCodingHarnessRecommendationEta(null);
@@ -1570,12 +1635,16 @@ export const Assistant = () => {
 
   // Drop the harness recommendation whenever the user cancels or
   // switches to normal chat, so a stale recommendation cannot
-  // bleed into the next decision.
+  // bleed into the next decision. We also reset the intermediate
+  // `decisionApproved` state so a fresh router decision starts a
+  // clean state machine.
   useEffect(() => {
     if (!routerDecision) {
       setCodingHarnessRecommendation(null);
+      setCodingHarnessRecommendationError(null);
       setCodingHarnessRecommendationLoading(false);
       setCodingHarnessRecommendationEta(null);
+      setDecisionApproved(null);
     }
   }, [routerDecision]);
   const newChatCounter = useRef(0);
@@ -2127,8 +2196,14 @@ export const Assistant = () => {
         }),
       });
       const prompt = routerDecision.prompt;
-      setRouterDecision(null);
-      if (action === "canceled") return;
+      if (action === "canceled") {
+        // Cancel clears the decision entirely; the user returns to
+        // a clean composer. The harness-recommendation state is
+        // dropped by the `useEffect` on `routerDecision === null`
+        // above.
+        setRouterDecision(null);
+        return;
+      }
       if (finalDecision === "coding_task") {
         // Switch to coding-task thread mode WITHOUT forcing a
         // specific harness. The user picks the harness explicitly
@@ -2137,11 +2212,28 @@ export const Assistant = () => {
         // when the user actually sends via one of the harness
         // buttons so the legacy Codex-only pill keeps working for
         // users who never open the new card.
+        //
+        // IMPORTANT: we keep `routerDecision` visible until the
+        // user either (a) sends to a coding harness, (b) answers
+        // in chat instead, or (c) cancels. Clearing it here would
+        // hide the harness approval card during the
+        // recommendation fetch (the card's visibility predicate
+        // falls back to `routerDecision.decision === "coding_task"`
+        // before the harness override is set), causing the user
+        // to see the bare composer + the legacy handoff-draft
+        // button which would then fire "This coding task thread
+        // is missing a harness." when clicked. We avoid that by
+        // setting `decisionApproved` instead and leaving the
+        // decision visible.
+        setDecisionApproved("coding_task");
         setThreadModeOverride("coding_task");
         setHarnessOverride(null);
         void fetchCodingHarnessRecommendation(prompt);
         return;
       }
+      // normal_chat path: clear the decision immediately and let
+      // the normal-chat recommender take over.
+      setRouterDecision(null);
       setThreadModeOverride(null);
       setHarnessOverride(null);
       void handleRecommendNormalChat(prompt);
@@ -2162,8 +2254,15 @@ export const Assistant = () => {
       // through `sendToCodingHarness`. The user must explicitly
       // click Send.
       setHarnessOverride(input.harnessId === "minimax_cli" ? "minimax" : "codex");
-      // Drop the recommendation so the next decision starts fresh.
+      // Transition out of the intermediate state: the user picked
+      // a harness, so the decision + harness recommendation have
+      // both been consumed. Clear both pieces of state and the
+      // router decision so the next send starts a clean state
+      // machine.
+      setDecisionApproved(null);
       setCodingHarnessRecommendation(null);
+      setCodingHarnessRecommendationError(null);
+      setRouterDecision(null);
     },
     [],
   );
@@ -2175,7 +2274,10 @@ export const Assistant = () => {
     // through the chat path.
     setThreadModeOverride(null);
     setHarnessOverride(null);
+    setDecisionApproved(null);
     setCodingHarnessRecommendation(null);
+    setCodingHarnessRecommendationError(null);
+    setRouterDecision(null);
   }, []);
 
   const handleUseRecommendation = useCallback(
@@ -2430,6 +2532,8 @@ export const Assistant = () => {
               codingHarnessRecommendation={codingHarnessRecommendation}
               codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
               codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+              codingHarnessRecommendationError={codingHarnessRecommendationError}
+              decisionApproved={decisionApproved}
               onSendToCodingHarness={handleSendToCodingHarness}
               onAnswerInChatInstead={handleAnswerInChatInstead}
             />

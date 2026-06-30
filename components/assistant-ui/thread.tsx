@@ -259,6 +259,28 @@ export const Thread: FC<{
   codingHarnessRecommendationLoading?: boolean;
   codingHarnessRecommendationEta?: RecommendationEta | null;
   /**
+   * Sanitized error message from `/api/coding-harness/recommend`.
+   * When set, the harness approval card renders a loud-failure
+   * state ("Coding harness recommendation failed: <reason>")
+   * instead of leaving the user stuck in the intermediate state
+   * with no Send button. Never contains API keys.
+   */
+  codingHarnessRecommendationError?: string | null;
+  /**
+   * Set by the parent when the user approved / corrected the
+   * router decision to `coding_task`. The composer uses this to
+   * distinguish the "intermediate state" (decision approved,
+   * harness not yet picked) from the legacy Codex-pill path
+   * (thread opened directly as coding_task). In the intermediate
+   * state we:
+   *   - Hide the legacy handoff-draft button, which would
+   *     otherwise fire "This coding task thread is missing a
+   *     harness." when clicked.
+   *   - Surface the harness approval card / loader / failure UI
+   *     so the user can pick Codex CLI or MiniMax CLI.
+   */
+  decisionApproved?: "coding_task" | null;
+  /**
    * Send-to-coding-harness action. The parent owns the API call so
    * the composer can stay UI-only. The composer reports the user
    * pick (which harness, which model, which reasoning level) and the
@@ -310,6 +332,8 @@ export const Thread: FC<{
   codingHarnessRecommendation = null,
   codingHarnessRecommendationLoading = false,
   codingHarnessRecommendationEta = null,
+  codingHarnessRecommendationError = null,
+  decisionApproved = null,
   onSendToCodingHarness,
   onAnswerInChatInstead,
 }) => {
@@ -389,6 +413,8 @@ export const Thread: FC<{
               codingHarnessRecommendation={codingHarnessRecommendation}
               codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
               codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+              codingHarnessRecommendationError={codingHarnessRecommendationError}
+              decisionApproved={decisionApproved}
               onSendToCodingHarness={onSendToCodingHarness}
               onAnswerInChatInstead={onAnswerInChatInstead}
             />
@@ -518,6 +544,8 @@ const Composer: FC<{
   codingHarnessRecommendation?: CodingHarnessRecommendation | null;
   codingHarnessRecommendationLoading?: boolean;
   codingHarnessRecommendationEta?: RecommendationEta | null;
+  codingHarnessRecommendationError?: string | null;
+  decisionApproved?: "coding_task" | null;
   onSendToCodingHarness?: (input: {
     harnessId: CodingHarnessId;
     modelId: string;
@@ -553,6 +581,8 @@ const Composer: FC<{
   codingHarnessRecommendation = null,
   codingHarnessRecommendationLoading = false,
   codingHarnessRecommendationEta = null,
+  codingHarnessRecommendationError = null,
+  decisionApproved = null,
   onSendToCodingHarness,
   onAnswerInChatInstead,
 }) => {
@@ -641,6 +671,8 @@ const Composer: FC<{
             codingHarnessRecommendation={codingHarnessRecommendation}
             codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
             codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+            codingHarnessRecommendationError={codingHarnessRecommendationError}
+            decisionApproved={decisionApproved}
             onSendToCodingHarness={onSendToCodingHarness}
             onAnswerInChatInstead={onAnswerInChatInstead}
           />
@@ -689,6 +721,8 @@ const ComposerAction: FC<{
   codingHarnessRecommendation?: CodingHarnessRecommendation | null;
   codingHarnessRecommendationLoading?: boolean;
   codingHarnessRecommendationEta?: RecommendationEta | null;
+  codingHarnessRecommendationError?: string | null;
+  decisionApproved?: "coding_task" | null;
   onSendToCodingHarness?: (input: {
     harnessId: CodingHarnessId;
     modelId: string;
@@ -726,6 +760,8 @@ const ComposerAction: FC<{
   codingHarnessRecommendation = null,
   codingHarnessRecommendationLoading = false,
   codingHarnessRecommendationEta = null,
+  codingHarnessRecommendationError = null,
+  decisionApproved = null,
   onSendToCodingHarness,
   onAnswerInChatInstead,
 }) => {
@@ -1023,13 +1059,33 @@ const ComposerAction: FC<{
   const projectPath = activeProject?.repoPath ?? activeProject?.localPath ?? null;
 
   // Whether the generic coding-harness approval card should render.
-  // The card surfaces after the user has approved or corrected the
-  // first decision gate to `coding_task` AND the parent has fetched
-  // the harness recommendation. Until the recommendation arrives we
-  // render a "fetching harness recommendation…" placeholder that
-  // uses the existing compact timer format.
+  // The card surfaces in three shapes:
+  //
+  //   1. The user just got a fresh router decision whose verdict
+  //      is `coding_task` (they haven't acted on it yet). Show
+  //      the card so the approval / correction buttons drive
+  //      the harness recommendation fetch.
+  //   2. The user approved / corrected to `coding_task` and we
+  //      are awaiting the harness recommendation
+  //      (`decisionApproved === "coding_task"`). Show the card
+  //      immediately so the user sees "This looks like a coding
+  //      task. Picking harness…" instead of an empty composer.
+  //   3. The thread is in coding_task mode AND a harness was
+  //      already selected via the card
+  //      (`(worker === "codex" || worker === "minimax")` AND
+  //      `codingHarnessRecommendation` is non-null). Show the
+  //      card with the chosen harness and the run state.
+  //
+  // The key fix: previously `showCodingHarnessCard` was false
+  // in the intermediate state (decisionApproved but no worker
+  // yet), which left the composer with only the legacy
+  // handoff-draft button — clicking it fired "This coding task
+  // thread is missing a harness." We now surface the card in
+  // every shape so the user can always pick Codex CLI / MiniMax
+  // CLI / Answer in chat instead.
   const showCodingHarnessCard =
     routerDecision?.decision === "coding_task" ||
+    decisionApproved === "coding_task" ||
     (isCodingTask && (worker === "codex" || worker === "minimax") && codingHarnessRecommendation);
 
   return (
@@ -1050,6 +1106,84 @@ const ComposerAction: FC<{
                 mode="recommendation"
               />
               <span>· picking harness…</span>
+            </div>
+          ) : null}
+          {/* Loud-failure state for the harness recommendation
+              fetch. Surfaces when
+              `/api/coding-harness/recommend` failed and the parent
+              set `codingHarnessRecommendationError` to a sanitized
+              reason. We never leave the user stuck in the
+              intermediate state with no actionable UI: the failure
+              card is shown INSTEAD of the silent intermediate
+              composer + handoff-draft button that previously fired
+              "This coding task thread is missing a harness." */}
+          {codingHarnessRecommendationError &&
+          !codingHarnessRecommendation &&
+          !codingHarnessRecommendationLoading ? (
+            <div
+              className="space-y-2"
+              data-testid="coding-harness-recommendation-error"
+            >
+              <div className="font-medium text-destructive">
+                Coding harness recommendation failed.
+              </div>
+              <div className="text-muted-foreground">
+                Reason: {codingHarnessRecommendationError}
+              </div>
+              <div className="text-muted-foreground">
+                The harness registry probe could not pick between Codex CLI and MiniMax CLI.
+                Pick a harness manually:
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full px-3"
+                  data-testid="coding-harness-fallback-codex"
+                  onClick={() => {
+                    const codex = harnessRegistry?.find((h) => h.id === "codex_cli");
+                    if (!codex) return;
+                    void sendToCodingHarness({
+                      harnessId: "codex_cli",
+                      modelId: codex.defaultModelId,
+                      reasoningLevel: codex.defaultReasoningLevel,
+                    });
+                  }}
+                >
+                  Try Codex CLI
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 rounded-full px-3"
+                  data-testid="coding-harness-fallback-minimax"
+                  onClick={() => {
+                    const minimax = harnessRegistry?.find((h) => h.id === "minimax_cli");
+                    if (!minimax) return;
+                    void sendToCodingHarness({
+                      harnessId: "minimax_cli",
+                      modelId: minimax.defaultModelId,
+                      reasoningLevel: minimax.defaultReasoningLevel,
+                    });
+                  }}
+                >
+                  Try MiniMax CLI
+                </Button>
+                {onAnswerInChatInstead ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 rounded-full px-3"
+                    data-testid="coding-harness-fallback-answer-in-chat"
+                    onClick={onAnswerInChatInstead}
+                  >
+                    Answer in chat instead
+                  </Button>
+                ) : null}
+              </div>
             </div>
           ) : null}
           {codingHarnessRecommendation ? (
@@ -1466,7 +1600,20 @@ const ComposerAction: FC<{
             </AuiIf>
           </AuiIf>
           {isCodingTask ? (
-            worker === "codex" ? (
+            // In the intermediate state (`decisionApproved ===
+            // "coding_task"` but no harness selected yet) we
+            // intentionally hide BOTH the "Send to Codex" button
+            // and the legacy handoff-draft button. The harness
+            // approval card above is the only action surface; any
+            // send-button here would either fire the legacy
+            // createDraft() path with `worker === null` (raising
+            // "This coding task thread is missing a harness.") or
+            // race with the harness recommendation fetch. Once
+            // the user picks a harness via the card, the parent
+            // sets `harnessOverride` and `worker` becomes non-null,
+            // so the "Send to Codex" / MiniMax button renders
+            // normally.
+            decisionApproved === "coding_task" && !worker ? null : worker === "codex" ? (
               <Button
                 type="button"
                 size="sm"
@@ -1800,9 +1947,15 @@ const CodingHarnessApprovalCard: FC<{
           size="sm"
           className="h-7 rounded-full px-3"
           data-testid="coding-harness-cancel"
-          onClick={() => {
-            /* parent-owned: cancellation simply keeps the composer open */
-          }}
+          // Cancel = dismiss the harness card and return to a
+          // clean composer. We reuse the parent's
+          // `onAnswerInChatInstead` handler because it already
+          // clears the intermediate state machine (routerDecision,
+          // decisionApproved, harnessRecommendation, harnessOverride,
+          // threadModeOverride). The user can re-issue a fresh
+          // Send after cancelling without stale state bleeding
+          // into the next round.
+          onClick={() => onAnswerInChatInstead?.()}
         >
           Cancel
         </Button>
