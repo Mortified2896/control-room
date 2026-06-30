@@ -258,7 +258,6 @@ export const RouterAbPanel: FC<RouterAbPanelProps> = ({ initialPayload }) => {
             {payload.taskType}
           </span>
         )}
-
       </header>
 
       <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">

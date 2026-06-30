@@ -67,6 +67,10 @@ export function getOpenAIModels(): ModelOption[] {
     capabilityKind: "model_provider",
     description:
       "Access: OpenAI API key · OpenAI API billing. Direct OpenAI API call; not subscription-backed. This provider is API-billed per token and is never a silent fallback under the no-API-billing-fallback policy.",
+    // OpenAI API is chat-only; never the target of a Codex CLI /
+    // MiniMax CLI execution harness.
+    supportedExecutionTargets: ["chat_model"] as const,
+    supportsReasoningLevels: m.reasoningLevels.length > 0,
     reasoningCapability: m.reasoningCapability,
     reasoningLevels: m.reasoningLevels,
     tier: m.tier,
@@ -87,14 +91,19 @@ export function isOpenAIEnabled(): boolean {
 export function getOpenAIModelMeta(modelId: string): ModelMeta | null {
   const alias = getStaticOpenAIModelAlias(modelId);
   if (!alias) return null;
+  const reasoningLevels = getEffectiveReasoningLevels(alias.reasoningCapability);
   return {
     providerId: "openai",
     modelId,
     modelLabel: alias.label,
     tier: alias.tier,
     reasoningCapability: alias.reasoningCapability,
-    reasoningLevels: getEffectiveReasoningLevels(alias.reasoningCapability),
+    reasoningLevels,
     billingSource: "api_billing" as const,
+    // OpenAI API is chat-only; never the target of a Codex / MiniMax
+    // CLI execution harness.
+    supportedExecutionTargets: ["chat_model"] as const,
+    supportsReasoningLevels: reasoningLevels.length > 0,
   };
 }
 

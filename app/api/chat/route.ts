@@ -41,7 +41,13 @@ import {
   recordSideBOutput,
 } from "@/lib/repo/router-ab";
 import type { AbTaskType } from "@/lib/repo/types";
-import { classifyTokens, estimateExecution, estimateTokens, latencyOutcome, promptHash } from "@/lib/router/telemetry";
+import {
+  classifyTokens,
+  estimateExecution,
+  estimateTokens,
+  latencyOutcome,
+  promptHash,
+} from "@/lib/router/telemetry";
 import { completeExecutionRun, createExecutionRun } from "@/lib/repo/router-telemetry";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -406,7 +412,10 @@ export async function POST(req: Request) {
         recentChars,
       });
     } catch (err: unknown) {
-      console.error("[api/chat] failed to estimate Side B latency:", err instanceof Error ? err.message : err);
+      console.error(
+        "[api/chat] failed to estimate Side B latency:",
+        err instanceof Error ? err.message : err,
+      );
     }
   }
   if (routerAbEnabled && settings.abEnabled && threadId) {
@@ -450,7 +459,8 @@ export async function POST(req: Request) {
   }
 
   const executionPromptTokens = estimateTokens(latestText);
-  const executionContextTokens = estimateTokens(effectiveSystem ?? "") + Math.max(0, modelMessages.length - 1) * 64;
+  const executionContextTokens =
+    estimateTokens(effectiveSystem ?? "") + Math.max(0, modelMessages.length - 1) * 64;
   const executionEstimate = await estimateExecution({
     selectedModelId: result.resolved.modelId,
     providerPath: result.resolved.providerId,
@@ -458,8 +468,10 @@ export async function POST(req: Request) {
     contextTokenEstimate: executionContextTokens,
     stepId: "normal_chat",
   });
-  const executionModelName = getModelMeta(result.resolved.modelId)?.modelLabel ?? result.resolved.modelId;
-  const recommendedModelId = rawSelectionSource === "user_accepted" ? result.resolved.modelId : null;
+  const executionModelName =
+    getModelMeta(result.resolved.modelId)?.modelLabel ?? result.resolved.modelId;
+  const recommendedModelId =
+    rawSelectionSource === "user_accepted" ? result.resolved.modelId : null;
   const executionStartedAtMs = Date.now();
   const executionStartedAt = new Date(executionStartedAtMs).toISOString();
   const executionRunId = await createExecutionRun({
@@ -680,9 +692,10 @@ export async function POST(req: Request) {
         executionEstimate.upperLatencyMs,
       );
       const tokenDeviationCount = actualTotalTokens - executionEstimate.expectedTotalTokens;
-      const tokenDeviationPct = executionEstimate.expectedTotalTokens > 0
-        ? (tokenDeviationCount / executionEstimate.expectedTotalTokens) * 100
-        : null;
+      const tokenDeviationPct =
+        executionEstimate.expectedTotalTokens > 0
+          ? (tokenDeviationCount / executionEstimate.expectedTotalTokens) * 100
+          : null;
       const tokenResult = classifyTokens(actualTotalTokens, executionEstimate.expectedTotalTokens);
       await completeExecutionRun(executionRunId, {
         completedAt,

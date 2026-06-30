@@ -329,7 +329,8 @@ export async function estimateSideBLatency(input: {
   sideBModelId: string | null;
   recentChars: number;
 }): Promise<RouterLatencyEstimate> {
-  const fallbackExpected = input.recentChars > 12_000 ? 30_000 : input.recentChars > 4_000 ? 18_000 : 10_000;
+  const fallbackExpected =
+    input.recentChars > 12_000 ? 30_000 : input.recentChars > 4_000 ? 18_000 : 10_000;
   if (!input.sideBModelId) {
     return {
       expectedLatencyMs: fallbackExpected,
@@ -364,7 +365,9 @@ export async function estimateSideBLatency(input: {
     const hasStrongHeuristic = input.recentChars > 0 && sideBModelId.startsWith("gpt-");
     const expectedLatencyMs = Math.max(
       1_000,
-      Math.round(expectedFromHistory ?? (hasStrongHeuristic ? fallbackExpected : fallbackExpected * 1.2)),
+      Math.round(
+        expectedFromHistory ?? (hasStrongHeuristic ? fallbackExpected : fallbackExpected * 1.2),
+      ),
     );
     const upperLatencyMs = Math.max(
       expectedLatencyMs + 1_000,

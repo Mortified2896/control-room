@@ -6,6 +6,7 @@ import {
   thinkingBudgetCapability,
 } from "./capability";
 import { getMiniMaxDiscoverySnapshot } from "@/lib/repo/minimax-models-discovery";
+import type { SupportedExecutionTarget } from "./codex-catalog";
 
 export const MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io/v1";
 export const MINIMAX_DEFAULT_MODEL_ID = "MiniMax-M3";
@@ -74,8 +75,10 @@ function toMiniMaxModelOption(
   enabled: boolean,
   capability: ReasoningCapability,
   reason?: string,
+  supportedExecutionTargets?: ReadonlyArray<SupportedExecutionTarget>,
 ): ModelOption {
-  return {
+  const targets = supportedExecutionTargets ?? defaultMiniMaxTargets(modelId);
+  const option: ModelOption = {
     providerId: minimaxProvider.id,
     providerLabel: "MiniMax subscription",
     modelId,
@@ -86,11 +89,42 @@ function toMiniMaxModelOption(
     capabilityKind: "model_provider",
     description:
       "Access: MiniMax subscription. The env key is the subscription secret, not an API-billed per-token meter. This provider is never an API-billed fallback under the no-API-billing-fallback policy.",
-    ...(reason ? { reason } : {}),
     reasoningCapability: capability,
     reasoningLevels: getEffectiveReasoningLevels(capability),
     tier: "cheap",
+    // Surface the execution targets on the chat-picker DTO so the
+    // harness registry can filter eligible model ids without
+    // consulting a hard-coded allowlist. The default for the M3
+    // model id is `[chat_model, minimax_cli]` — the harness registry
+    // refuses to recommend MiniMax-M3 against `codex_cli`, and Codex
+    // CLI's catalog explicitly excludes `MiniMax-M3`.
+    supportedExecutionTargets: targets,
+    // MiniMax M3 advertises thinking-budget modes today; from the
+    // harness approval card's perspective the M3 model "supports"
+    // reasoning controls even though the CLI surface does not
+    // (yet) accept a reasoning knob. We report `true` here so the
+    // registry UI doesn't downgrade the row.
+    supportsReasoningLevels: true,
   };
+  if (reason) {
+    option.reason = reason;
+  }
+  return option;
+}
+
+/**
+ * Default execution targets per MiniMax model id. `MiniMax-M3` is the
+ * only MiniMax catalog row today and it supports BOTH the chat path
+ * AND the MiniMax CLI harness. Future MiniMax ids inherit the same
+ * defaults so the harness registry can pick them up without a code
+ * change.
+ */
+function defaultMiniMaxTargets(modelId: string): ReadonlyArray<SupportedExecutionTarget> {
+  if (modelId === "MiniMax-M3") return ["chat_model", "minimax_cli"];
+  // Discovered-only MiniMax ids inherit the same dual-target default
+  // because the family is uniformly harness-eligible; the registry
+  // rejects any model not in the harness's `allowedModelIds`.
+  return ["chat_model", "minimax_cli"];
 }
 
 export function getMiniMaxModels(): ModelOption[] {
@@ -141,5 +175,10 @@ export function getMiniMaxModelMeta(modelId: string): ModelMeta | null {
     reasoningCapability: MINIMAX_M3_CAPABILITY,
     reasoningLevels: getEffectiveReasoningLevels(MINIMAX_M3_CAPABILITY),
     billingSource: "subscription",
+    // MiniMax catalog row — both the chat path AND the MiniMax CLI
+    // harness target. The harness registry reads this field to
+    // decide whether `minimax_cli` may run against this model id.
+    supportedExecutionTargets: defaultMiniMaxTargets(modelId),
+    supportsReasoningLevels: true,
   };
 }

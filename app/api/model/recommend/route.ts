@@ -6,7 +6,10 @@ import { getEffectiveModelsResponse } from "@/lib/providers/registry";
 import { getModelMeta, resolveModel } from "@/lib/providers";
 import { getRuntimeModel, getRuntimeProviderOptions } from "@/lib/providers/runtime";
 import { getEffectiveRouterSettings } from "@/lib/router/settings-store";
-import { providerIdFromModelId } from "@/lib/router/schema";
+import {
+  buildConfiguredRecommenderChain,
+  providerIdFromRecommenderModelId,
+} from "@/lib/router/recommender-config";
 import {
   buildNormalChatRecommenderPrompt,
   type NormalChatAvailableModel,
@@ -19,7 +22,12 @@ import {
 } from "@/lib/policy/no-api-billing-fallback";
 import { isCodexModelId, resolveCodexBinary, runCodexExec } from "@/lib/codex/runner";
 import { walkRecommenderChain } from "./recommender-chain";
-import { estimateRecommendation, estimateTokens, latencyOutcome, promptHash } from "@/lib/router/telemetry";
+import {
+  estimateRecommendation,
+  estimateTokens,
+  latencyOutcome,
+  promptHash,
+} from "@/lib/router/telemetry";
 import { completeRecommendationRun, createRecommendationRun } from "@/lib/repo/router-telemetry";
 
 export const dynamic = "force-dynamic";
@@ -193,19 +201,6 @@ function parseJsonObjectFromText(text: string): unknown {
 }
 
 /**
- * Narrow a model id to its provider, for the two-rung recommender
- * chain. Mirrors `providerIdFromModelId` in `lib/router/schema.ts` but
- * returns `"minimax"` as the default for bare ids (the chain walker
- * never sees OpenAI here — it only walks the configured primary and
- * the configured fallback — so we narrow defensively).
- */
-function providerIdFromModelIdForChain(modelId: string): "openai" | "codex" | "minimax" {
-  const p = providerIdFromModelId(modelId);
-  if (p === "codex" || p === "minimax") return p;
-  return "openai";
-}
-
-/**
  * Build the per-rung failure copy the chat composer renders inside
  * the "Recommendation blocked" card. The brief mandates:
  *
@@ -325,31 +320,7 @@ export async function POST(request: Request) {
   // returns a loud blocked recommendation with NO third attempt.
   // This is the explicit product contract: "Fallback engine (one)"
   // means exactly one configured fallback engine — nothing more.
-  type ChainRung = {
-    source: "configured" | "configured_fallback";
-    providerId: "openai" | "codex" | "minimax";
-    modelId: string;
-    reasoningLevel: string | undefined;
-    /** Free-text reason when the rung fails (omitted on success). */
-    failureReason?: string;
-  };
-  const chain: ChainRung[] = [];
-  if (settings.normalChatRecommenderModelId) {
-    chain.push({
-      source: "configured",
-      providerId: providerIdFromModelIdForChain(settings.normalChatRecommenderModelId),
-      modelId: settings.normalChatRecommenderModelId,
-      reasoningLevel: settings.normalChatRecommenderReasoningLevel,
-    });
-  }
-  if (settings.normalChatRecommenderFallbackModelId) {
-    chain.push({
-      source: "configured_fallback",
-      providerId: providerIdFromModelIdForChain(settings.normalChatRecommenderFallbackModelId),
-      modelId: settings.normalChatRecommenderFallbackModelId,
-      reasoningLevel: settings.normalChatRecommenderFallbackReasoningLevel ?? undefined,
-    });
-  }
+  const chain = buildConfiguredRecommenderChain(settings);
   // Sanity check: the chain must never exceed 2 entries. The
   // product contract is "primary → one fallback → blocked"; a
   // 3+ rung chain would violate that contract. If a future
@@ -383,11 +354,14 @@ export async function POST(request: Request) {
   }> = [];
 
   const telemetryPromptTokens = estimateTokens(input.message);
-  const telemetryContextTokens = estimateTokens(JSON.stringify({ projectId: input.projectId, threadId: input.threadId }));
-  const telemetryRecommender = chain[0] ?? chain[1] ?? {
-    providerId: "unknown" as const,
-    modelId: settings.normalChatRecommenderModelId ?? "unknown",
-  };
+  const telemetryContextTokens = estimateTokens(
+    JSON.stringify({ projectId: input.projectId, threadId: input.threadId }),
+  );
+  const telemetryRecommender = chain[0] ??
+    chain[1] ?? {
+      providerId: "unknown" as const,
+      modelId: settings.normalChatRecommenderModelId ?? "unknown",
+    };
   const recommendationStartedAtMs = Date.now();
   const recommendationStartedAt = new Date(recommendationStartedAtMs).toISOString();
   const recommendationEstimate = await estimateRecommendation({
@@ -791,7 +765,7 @@ export async function POST(request: Request) {
     // Active recommender is the last rung the chain attempted.
     const lastAttempt = callAttempts[callAttempts.length - 1];
     const activeProvider = lastAttempt
-      ? providerIdFromModelIdForChain(lastAttempt.modelId)
+      ? providerIdFromRecommenderModelId(lastAttempt.modelId)
       : "codex";
     const response = fallbackResponse(
       input,

@@ -15,6 +15,7 @@ import type { DiscoverySnapshot } from "@/lib/repo/openai-models-discovery-types
 import type { SelectorPreferences } from "@/lib/repo/model-selector-prefs-types";
 
 import type { ModelOption, ModelTier as LegacyModelTier } from "./types";
+import type { SupportedExecutionTarget } from "./codex-catalog";
 import type { ReasoningCapability } from "./capability";
 import {
   getEffectiveReasoningLevels,
@@ -102,6 +103,23 @@ export type EffectiveModelEntry = {
   stale: boolean;
   /** Local metadata advertises at least one reasoning level. */
   supportsReasoning: boolean;
+  /**
+   * Execution targets this model id is eligible for. Populated by the
+   * provider catalogs (Codex / MiniMax) and surfaced through this
+   * registry so the harness layer never needs to consult a hard-coded
+   * allowlist. OpenAI API models always list `["chat_model"]`.
+   *
+   * Optional on the type so test fixtures and legacy callers that
+   * build an `EffectiveModelEntry` by hand can omit it; the harness
+   * registry falls back to `["chat_model"]` when missing.
+   */
+  supportedExecutionTargets?: ReadonlyArray<SupportedExecutionTarget>;
+  /**
+   * Mirrors `supportsReasoning` but phrased for the harness approval
+   * card. The card reads this to decide whether to render a reasoning
+   * picker or just "provider default".
+   */
+  supportsReasoningLevels?: boolean;
   /**
    * Canonical reasoning / thinking capability for this model.
    * Surfaced as-is from the provider static metadata (OpenAI alias map,
@@ -460,6 +478,14 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
       available,
       stale,
       supportsReasoning,
+      // OpenAI API models are chat-only — never the target of a
+      // Codex CLI / MiniMax CLI execution harness. The harness
+      // approval card filters by this field so Codex / MiniMax can
+      // never accidentally recommend `gpt-5.4-mini`.
+      supportedExecutionTargets: ["chat_model"] as const,
+      // OpenAI API models always advertise the reasoning-effort
+      // picker — the model catalog lists at least one effort level.
+      supportsReasoningLevels: supportsReasoning,
       reasoningCapability,
       supportedReasoningLevels,
       tier,
@@ -690,6 +716,12 @@ export async function getEffectiveModelsResponse(): Promise<{
       capabilityKind: "model_provider",
       description:
         "Access: OpenAI API key · OpenAI API billing. Direct OpenAI API call; not subscription-backed. This provider is API-billed per token and is never a silent fallback under the no-API-billing-fallback policy.",
+      // Pass-through the registry's execution targets — the harness
+      // registry reads this field directly so a future cross-surface
+      // OpenAI model (e.g. a Codex CLI row that ALSO accepts OpenAI
+      // API calls) doesn't need an extra registry edit.
+      supportedExecutionTargets: m.supportedExecutionTargets ?? (["chat_model"] as const),
+      supportsReasoningLevels: m.supportsReasoningLevels ?? m.supportedReasoningLevels.length > 0,
       reasoningCapability: m.reasoningCapability,
       reasoningLevels: m.supportedReasoningLevels,
       tier: legacyTier(m.tier),
@@ -740,6 +772,12 @@ export async function getEffectiveModelsResponse(): Promise<{
       description: `Access: Codex CLI / ChatGPT login. Source: Official Codex catalog.${
         m.mayBePlanGated ? " May require Pro." : ""
       } This is a subscription-backed chat provider; it is never an API-billed fallback under the no-API-billing-fallback policy.`,
+      // Codex catalog rows are the target of `codex_cli` execution.
+      // They never enter the MiniMax CLI harness registry path;
+      // surfacing `minimax_cli` here would falsely advertise Codex
+      // models as MiniMax-compatible.
+      supportedExecutionTargets: m.supportedExecutionTargets,
+      supportsReasoningLevels: m.supportsReasoningLevels,
       // Honest per-model capability — the Codex CLI / config / IDE
       // surfaces `reasoning_effort` when the underlying model
       // supports it. We mirror the documented set for known models
@@ -770,6 +808,14 @@ export async function getEffectiveModelsResponse(): Promise<{
       return {
         ...m,
         modelLabel: `${m.modelLabel} · token plan`,
+        // Pass through the catalog-declared execution targets
+        // (`["chat_model", "minimax_cli"]` for the default M3 id;
+        // `["chat_model", "minimax_cli"]` for discovered ids — the
+        // harness registry rejects anything not in its
+        // `allowedModelIds`).
+        supportedExecutionTargets:
+          m.supportedExecutionTargets ?? (["chat_model", "minimax_cli"] as const),
+        supportsReasoningLevels: m.supportsReasoningLevels ?? true,
         reasoningCapability: capability,
         reasoningLevels: getEffectiveReasoningLevels(capability),
         enabled: Boolean(m.enabled && minimaxAccess?.enabled && minimaxAccess.allow_manual),

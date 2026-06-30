@@ -58,8 +58,61 @@ type NoteResponse = {
 };
 
 type ThreadMode = "chat" | "coding_task";
-type HandoffWorker = "pi" | "codex" | "opencode";
+type HandoffWorker = "pi" | "codex" | "opencode" | "minimax";
 type HandoffTaskType = "implement" | "debug" | "inspect" | "refactor" | "test" | "review";
+
+/**
+ * Generic coding-harness id, mirroring `lib/harness/registry.ts`.
+ * Used by the Composer + the generic harness approval card so the
+ * UI can render Codex CLI / MiniMax CLI side-by-side.
+ */
+type CodingHarnessId = "codex_cli" | "minimax_cli";
+
+/**
+ * Snapshot of one registered coding harness as surfaced by the
+ * `/api/coding-runs` GET handler (which itself calls
+ * `probeHarnessStatuses()` server-side). The composer reads this to
+ * render the Send-to-<harness> button enabled / disabled state.
+ */
+type HarnessRegistryView = {
+  id: CodingHarnessId;
+  displayName: string;
+  providerPath: string;
+  billingPath: string;
+  requiresProjectFolder: boolean;
+  canModifyFiles: boolean;
+  supportsTokenUsage: boolean;
+  supportsReasoningLevels: boolean;
+  defaultModelId: string;
+  allowedModelIds: ReadonlyArray<string>;
+  defaultReasoningLevel: string;
+  status: "available" | "unavailable" | "unknown";
+  unavailableReason: string | null;
+};
+
+/**
+ * Result of the generic coding-harness recommender
+ * (`/api/coding-harness/recommend`). Drives the generic harness
+ * approval card.
+ */
+type CodingHarnessRecommendation = {
+  taskType: "coding" | "debugging" | "repo_edit" | "code_review" | "other";
+  executionTarget: "coding_harness";
+  recommendedHarness: CodingHarnessId;
+  recommendedModelId: string;
+  recommendedReasoningLevel: string;
+  reason: string;
+  requiresProjectFolder: true;
+  requiresUserApproval: true;
+  alternatives: Array<{
+    harness: CodingHarnessId;
+    modelId: string;
+    reasoningLevel: string;
+    reason: string;
+  }>;
+  fallback?: boolean;
+  fallbackReason?: "model_not_listed" | "provider_call_failed" | "no_harness_available" | null;
+};
 /**
  * Provider-native reasoning-effort value (`"low"`, `"medium"`,
  * `"xhigh"`, `"none"`, etc.). The chat composer stores the
@@ -80,6 +133,53 @@ type RecommendationEta = {
   started_at: string;
 };
 
+type DecisionErrorType =
+  | "usage_limit"
+  | "auth"
+  | "provider_disabled"
+  | "network"
+  | "schema_parse"
+  | "schema_validation"
+  | "empty_output"
+  | "provider_configuration_error"
+  | "not_attempted"
+  | "unknown";
+
+type RouterDecisionErrorDetails = {
+  primary_recommender_model_id: string | null;
+  primary_provider_path: "openai" | "codex" | "minimax" | "unknown";
+  primary_error_type: DecisionErrorType | null;
+  primary_error_message_safe: string | null;
+  fallback_recommender_model_id: string | null;
+  fallback_provider_path: "openai" | "codex" | "minimax" | "unknown" | null;
+  fallback_attempted: boolean;
+  fallback_error_type: DecisionErrorType | null;
+  fallback_error_message_safe: string | null;
+  final_decision_source: "model" | "manual_after_model_error";
+};
+
+type RouterDecision = {
+  runId: string | null;
+  prompt: string;
+  decision: "normal_chat" | "coding_task" | null;
+  reason: string;
+  ambiguity?: "low" | "medium" | "high" | null;
+  signals?: string[];
+  decision_source?: "model" | "manual_after_model_error";
+  recommender_model_id?: string | null;
+  /**
+   * Structured per-rung failure trace from `/api/router/decision`.
+   * The failure card renders this so the user can see whether
+   * the fallback was attempted, which model handled the call,
+   * and the sanitized error reason. Never contains secrets.
+   */
+  error_details?: RouterDecisionErrorDetails;
+  estimate_quality: "likely" | "uncertain" | "rough";
+  expected_latency_ms: number;
+  upper_latency_ms: number;
+  started_at: string;
+};
+
 type ModelRecommendation = {
   recommendedModelId: string;
   recommendedProvider: string;
@@ -92,13 +192,13 @@ type ModelRecommendation = {
     reason: string;
   }>;
   loudFailure?: boolean;
-  recommendationTelemetry?: (RecommendationEta & {
+  recommendationTelemetry?: RecommendationEta & {
     completed_at: string | null;
     actual_latency_ms: number | null;
     latency_deviation_ms: number | null;
     latency_deviation_pct: number | null;
     latency_result: string | null;
-  });
+  };
   diagnostics?: { fallback?: boolean; fallbackReason?: string | null; recommenderModelId?: string };
 };
 
@@ -123,17 +223,60 @@ export const Thread: FC<{
    */
   recommenderEnabled?: boolean;
   onToggleRecommender?: (next: boolean) => void;
+  routerDecision?: RouterDecision | null;
+  routerDecisionLoading?: boolean;
+  routerDecisionEta?: RecommendationEta | null;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: RecommendationEta | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
+  onDecisionAction?: (
+    action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
+    comment: string,
+  ) => void;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  onEnsureCodingThread?: () => Promise<string | null>;
+  onCodingRunComplete?: (threadId: string | null) => void;
+  /**
+   * Live harness registry snapshot fetched by the parent. When
+   * provided, the composer renders the Send-to-<harness> button
+   * enabled/disabled according to the harness `status` field and
+   * surfaces a clear reason when no harness is available.
+   */
+  harnessRegistry?: ReadonlyArray<HarnessRegistryView> | null;
+  /**
+   * Harness recommendation from `/api/coding-harness/recommend`,
+   * shown after the user approves the first decision gate as a
+   * coding task. Drives the generic harness approval card.
+   */
+  codingHarnessRecommendation?: CodingHarnessRecommendation | null;
+  codingHarnessRecommendationLoading?: boolean;
+  codingHarnessRecommendationEta?: RecommendationEta | null;
+  /**
+   * Send-to-coding-harness action. The parent owns the API call so
+   * the composer can stay UI-only. The composer reports the user
+   * pick (which harness, which model, which reasoning level) and the
+   * parent decides whether to dispatch through Codex CLI or
+   * MiniMax CLI.
+   */
+  onSendToCodingHarness?: (input: {
+    harnessId: CodingHarnessId;
+    modelId: string;
+    reasoningLevel: string;
+  }) => void;
+  /**
+   * Triggered when the user clicks "Answer in chat instead" on the
+   * generic harness approval card. The parent should switch the
+   * composer back to the normal-chat flow without consuming the
+   * coding-task thread state.
+   */
+  onAnswerInChatInstead?: () => void;
 }> = ({
   threadId,
   activeProjectId = null,
@@ -146,17 +289,29 @@ export const Thread: FC<{
   routerAbOn = false,
   recommenderEnabled = false,
   onToggleRecommender,
+  routerDecision = null,
+  routerDecisionLoading = false,
+  routerDecisionEta = null,
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
+  onDecisionAction,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onEnsureCodingThread,
+  onCodingRunComplete,
+  harnessRegistry = null,
+  codingHarnessRecommendation = null,
+  codingHarnessRecommendationLoading = false,
+  codingHarnessRecommendationEta = null,
+  onSendToCodingHarness,
+  onAnswerInChatInstead,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -213,17 +368,29 @@ export const Thread: FC<{
               harness={harness}
               recommenderEnabled={recommenderEnabled}
               onToggleRecommender={onToggleRecommender}
+              routerDecision={routerDecision}
+              routerDecisionLoading={routerDecisionLoading}
+              routerDecisionEta={routerDecisionEta}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
               recommendationEta={recommendationEta}
               manualModelSummary={manualModelSummary}
               recommenderEngineSummary={recommenderEngineSummary}
               fallbackEngineSummary={fallbackEngineSummary}
+              onDecisionAction={onDecisionAction}
               onRecommend={onRecommend}
               onUseRecommendation={onUseRecommendation}
               onKeepCurrent={onKeepCurrent}
               pendingRecommendedSend={pendingRecommendedSend}
               onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+              onEnsureCodingThread={onEnsureCodingThread}
+              onCodingRunComplete={onCodingRunComplete}
+              harnessRegistry={harnessRegistry}
+              codingHarnessRecommendation={codingHarnessRecommendation}
+              codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
+              codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+              onSendToCodingHarness={onSendToCodingHarness}
+              onAnswerInChatInstead={onAnswerInChatInstead}
             />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
@@ -327,17 +494,36 @@ const Composer: FC<{
   harness: HandoffWorker | null;
   recommenderEnabled?: boolean;
   onToggleRecommender?: (next: boolean) => void;
+  routerDecision?: RouterDecision | null;
+  routerDecisionLoading?: boolean;
+  routerDecisionEta?: RecommendationEta | null;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: RecommendationEta | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
+  onDecisionAction?: (
+    action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
+    comment: string,
+  ) => void;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  onEnsureCodingThread?: () => Promise<string | null>;
+  onCodingRunComplete?: (threadId: string | null) => void;
+  harnessRegistry?: ReadonlyArray<HarnessRegistryView> | null;
+  codingHarnessRecommendation?: CodingHarnessRecommendation | null;
+  codingHarnessRecommendationLoading?: boolean;
+  codingHarnessRecommendationEta?: RecommendationEta | null;
+  onSendToCodingHarness?: (input: {
+    harnessId: CodingHarnessId;
+    modelId: string;
+    reasoningLevel: string;
+  }) => void;
+  onAnswerInChatInstead?: () => void;
 }> = ({
   threadId,
   activeProjectId,
@@ -346,17 +532,29 @@ const Composer: FC<{
   harness,
   recommenderEnabled = false,
   onToggleRecommender,
+  routerDecision = null,
+  routerDecisionLoading = false,
+  routerDecisionEta = null,
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
+  onDecisionAction,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onEnsureCodingThread,
+  onCodingRunComplete,
+  harnessRegistry = null,
+  codingHarnessRecommendation = null,
+  codingHarnessRecommendationLoading = false,
+  codingHarnessRecommendationEta = null,
+  onSendToCodingHarness,
+  onAnswerInChatInstead,
 }) => {
   const [error, setError] = useState<string | null>(null);
   const composerText = useAuiState((s) => s.composer.text);
@@ -394,7 +592,13 @@ const Composer: FC<{
             <div className="flex flex-wrap items-center gap-2 px-2 pt-1 text-xs">
               <span className="rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-medium text-primary">
                 Coding task ·{" "}
-                {worker === "opencode" ? "OpenCode" : worker === "codex" ? "Codex" : "Pi"}
+                {worker === "opencode"
+                  ? "OpenCode"
+                  : worker === "minimax"
+                    ? "MiniMax"
+                    : worker === "codex"
+                      ? "Codex"
+                      : "Pi"}
               </span>
             </div>
           ) : null}
@@ -416,17 +620,29 @@ const Composer: FC<{
             onError={setError}
             recommenderEnabled={recommenderEnabled}
             onToggleRecommender={onToggleRecommender}
+            routerDecision={routerDecision}
+            routerDecisionLoading={routerDecisionLoading}
+            routerDecisionEta={routerDecisionEta}
             recommendation={recommendation}
             recommendationLoading={recommendationLoading}
             recommendationEta={recommendationEta}
             manualModelSummary={manualModelSummary}
             recommenderEngineSummary={recommenderEngineSummary}
             fallbackEngineSummary={fallbackEngineSummary}
+            onDecisionAction={onDecisionAction}
             onRecommend={onRecommend}
             onUseRecommendation={onUseRecommendation}
             onKeepCurrent={onKeepCurrent}
             pendingRecommendedSend={pendingRecommendedSend}
             onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+            onEnsureCodingThread={onEnsureCodingThread}
+            onCodingRunComplete={onCodingRunComplete}
+            harnessRegistry={harnessRegistry}
+            codingHarnessRecommendation={codingHarnessRecommendation}
+            codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
+            codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+            onSendToCodingHarness={onSendToCodingHarness}
+            onAnswerInChatInstead={onAnswerInChatInstead}
           />
           {isCodingTask && error ? (
             <div className="px-2 text-xs font-medium text-destructive" role="alert">
@@ -449,17 +665,36 @@ const ComposerAction: FC<{
   onError: (message: string | null) => void;
   recommenderEnabled?: boolean;
   onToggleRecommender?: (next: boolean) => void;
+  routerDecision?: RouterDecision | null;
+  routerDecisionLoading?: boolean;
+  routerDecisionEta?: RecommendationEta | null;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: RecommendationEta | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
+  onDecisionAction?: (
+    action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
+    comment: string,
+  ) => void;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  onEnsureCodingThread?: () => Promise<string | null>;
+  onCodingRunComplete?: (threadId: string | null) => void;
+  harnessRegistry?: ReadonlyArray<HarnessRegistryView> | null;
+  codingHarnessRecommendation?: CodingHarnessRecommendation | null;
+  codingHarnessRecommendationLoading?: boolean;
+  codingHarnessRecommendationEta?: RecommendationEta | null;
+  onSendToCodingHarness?: (input: {
+    harnessId: CodingHarnessId;
+    modelId: string;
+    reasoningLevel: string;
+  }) => void;
+  onAnswerInChatInstead?: () => void;
 }> = ({
   isCodingTask,
   worker,
@@ -470,17 +705,29 @@ const ComposerAction: FC<{
   onError,
   recommenderEnabled = false,
   onToggleRecommender,
+  routerDecision = null,
+  routerDecisionLoading = false,
+  routerDecisionEta = null,
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
+  onDecisionAction,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onEnsureCodingThread,
+  onCodingRunComplete,
+  harnessRegistry = null,
+  codingHarnessRecommendation = null,
+  codingHarnessRecommendationLoading = false,
+  codingHarnessRecommendationEta = null,
+  onSendToCodingHarness,
+  onAnswerInChatInstead,
 }) => {
   const aui = useAui();
   const [creatingDraft, setCreatingDraft] = useState(false);
@@ -493,7 +740,26 @@ const ComposerAction: FC<{
     gitStatusShort?: string;
     gitDiffStat?: string;
   }>(null);
+  type CodexRunResponse = {
+    run?: typeof codexRun;
+    userText?: string;
+    assistantText?: string;
+    metadata?: {
+      executor?: string;
+      model?: string;
+      reasoning?: string;
+      durationMs?: number | null;
+      projectName?: string;
+      projectPath?: string;
+    };
+    message?: string;
+    error?: string;
+  };
   const composerText = useAuiState((s) => s.composer.text);
+  const [decisionComment, setDecisionComment] = useState("");
+  useEffect(() => {
+    setDecisionComment("");
+  }, [routerDecision?.runId]);
   // Toggle-ON flow: after Accept/Decline the parent stores the draft
   // above ChatPane, updates the selected model, then passes the pending
   // send back down. Keeping this pending action above the runtime is
@@ -540,6 +806,91 @@ const ComposerAction: FC<{
     onRecommend(text);
   };
 
+  const appendCodexMessages = (data: CodexRunResponse, fallbackUserText: string) => {
+    const userText = data.userText?.trim() || fallbackUserText;
+    const assistantText = data.assistantText?.trim();
+    if (!assistantText) return;
+    // The new dispatcher surfaces a generic `metadata` block on the
+    // response (carries harness / model / reasoning / provider /
+    // billing paths). Fall back to the legacy `data.metadata` block
+    // for backwards compatibility with older senders.
+    const newMeta = (
+      data as unknown as {
+        metadata?: {
+          harness?: string;
+          harnessLabel?: string;
+          providerPath?: string;
+          billingPath?: string;
+          model?: string;
+          reasoning?: string;
+          durationMs?: number | null;
+          projectName?: string;
+          projectPath?: string;
+          status?: string;
+          exitStatus?: number | null;
+          changedFiles?: string[];
+        };
+      }
+    ).metadata;
+    const harnessLabel = newMeta?.harnessLabel ?? data.metadata?.executor ?? "Codex CLI";
+    const providerPath = newMeta?.providerPath ?? "";
+    const billingPath = newMeta?.billingPath ?? "";
+    const model = newMeta?.model ?? data.metadata?.model ?? "CLI default";
+    const reasoning = newMeta?.reasoning ?? data.metadata?.reasoning ?? "CLI default";
+    const durationMs = newMeta?.durationMs ?? data.metadata?.durationMs ?? null;
+    const projectName =
+      newMeta?.projectName ?? data.metadata?.projectName ?? activeProject?.name ?? null;
+    const projectPathMeta =
+      newMeta?.projectPath ?? data.metadata?.projectPath ?? projectPath ?? null;
+    const status = newMeta?.status ?? data.run?.status ?? null;
+    const changedFiles = newMeta?.changedFiles ?? null;
+    const harnessId = newMeta?.harness ?? null;
+    const metadata = {
+      custom: {
+        // Generic block — read by CodexMetadataLine via the
+        // `custom.harness` field.
+        harness: {
+          harnessId,
+          harnessLabel,
+          providerPath,
+          billingPath,
+          model,
+          reasoning,
+          durationMs,
+          projectName,
+          projectPath: projectPathMeta,
+          status,
+          exitStatus: newMeta?.exitStatus ?? null,
+          changedFiles,
+        },
+        // Legacy block — kept so older persisted messages and
+        // older clients that read `custom.codex` continue to work.
+        codex: {
+          executor: harnessLabel,
+          model,
+          reasoning,
+          durationMs,
+          projectName,
+          projectPath: projectPathMeta,
+          status,
+        },
+      },
+    };
+    const thread = aui.thread();
+    thread.append({
+      role: "user",
+      content: [{ type: "text", text: userText }],
+      metadata,
+      startRun: false,
+    });
+    thread.append({
+      role: "assistant",
+      content: [{ type: "text", text: assistantText }],
+      metadata,
+      startRun: false,
+    });
+  };
+
   const createDraft = async () => {
     if (!worker) {
       onError("This coding task thread is missing a harness.");
@@ -555,22 +906,31 @@ const ComposerAction: FC<{
     setCodexRun(null);
     onError(null);
     try {
-      if (worker === "codex") {
+      if (worker === "codex" || worker === "minimax") {
+        const runThreadId = threadId ?? (await onEnsureCodingThread?.()) ?? null;
+        const harnessId = worker === "minimax" ? "minimax_cli" : "codex_cli";
         const res = await fetch("/api/coding-runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ projectId: activeProjectId, threadId, prompt: instruction }),
+          body: JSON.stringify({
+            projectId: activeProjectId,
+            threadId: runThreadId,
+            prompt: instruction,
+            harnessId,
+          }),
         });
-        const data = (await res.json().catch(() => null)) as
-          | { run?: typeof codexRun; message?: string; error?: string }
-          | null;
-        if (!res.ok) {
-          const message = data?.message ?? data?.run?.stderr ?? data?.error ?? `status ${res.status}`;
-          if (data?.run) setCodexRun(data.run);
-          throw new Error(message);
-        }
+        const data = (await res.json().catch(() => null)) as CodexRunResponse | null;
         if (data?.run) setCodexRun(data.run);
+        if (data) appendCodexMessages(data, instruction);
+        onCodingRunComplete?.(runThreadId);
         aui.composer().setText("");
+        if (!res.ok) {
+          const message =
+            data?.message ?? data?.run?.stderr ?? data?.error ?? `status ${res.status}`;
+          const label = worker === "minimax" ? "MiniMax CLI" : "Codex CLI";
+          onError(`${label} run failed loudly: ${message}`);
+          return;
+        }
         onError(null);
         return;
       }
@@ -590,14 +950,70 @@ const ComposerAction: FC<{
       aui.composer().setText("");
       onError(`Handoff draft created for ${worker}. Execution is not enabled yet.`);
     } catch (err) {
+      const label = worker === "minimax" ? "MiniMax CLI" : worker === "codex" ? "Codex CLI" : null;
       onError(
         err instanceof Error
-          ? worker === "codex"
-            ? `Codex CLI run failed: ${err.message}`
+          ? label
+            ? `${label} run failed: ${err.message}`
             : `Failed to create handoff draft: ${err.message}`
-          : worker === "codex"
-            ? "Codex CLI run failed."
+          : label
+            ? `${label} run failed.`
             : "Failed to create handoff draft.",
+      );
+    } finally {
+      setCreatingDraft(false);
+    }
+  };
+
+  // Dispatch a harness run from the generic approval card. Mirrors
+  // the legacy `createDraft` path but takes the harness/model/
+  // reasoning-level tuple from the parent's recommendation rather
+  // than the thread's stored `harness` value. This is the entry
+  // point that the post-decision harness approval card calls.
+  const sendToCodingHarness = async (input: {
+    harnessId: CodingHarnessId;
+    modelId: string;
+    reasoningLevel: string;
+  }) => {
+    if (!activeProjectId) {
+      onError("Open a project folder before sending coding tasks to a coding harness.");
+      return;
+    }
+    const instruction = composerText.trim();
+    if (!instruction) return;
+    setCreatingDraft(true);
+    setCodexRun(null);
+    onError(null);
+    try {
+      const runThreadId = threadId ?? (await onEnsureCodingThread?.()) ?? null;
+      const res = await fetch("/api/coding-runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: activeProjectId,
+          threadId: runThreadId,
+          prompt: instruction,
+          harnessId: input.harnessId,
+          modelId: input.modelId,
+          reasoningLevel: input.reasoningLevel,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as CodexRunResponse | null;
+      if (data?.run) setCodexRun(data.run);
+      if (data) appendCodexMessages(data, instruction);
+      onCodingRunComplete?.(runThreadId);
+      aui.composer().setText("");
+      if (!res.ok) {
+        const message = data?.message ?? data?.run?.stderr ?? data?.error ?? `status ${res.status}`;
+        const label = input.harnessId === "minimax_cli" ? "MiniMax CLI" : "Codex CLI";
+        onError(`${label} run failed loudly: ${message}`);
+        return;
+      }
+      onError(null);
+    } catch (err) {
+      const label = input.harnessId === "minimax_cli" ? "MiniMax CLI" : "Codex CLI";
+      onError(
+        err instanceof Error ? `${label} run failed: ${err.message}` : `${label} run failed.`,
       );
     } finally {
       setCreatingDraft(false);
@@ -606,9 +1022,63 @@ const ComposerAction: FC<{
 
   const projectPath = activeProject?.repoPath ?? activeProject?.localPath ?? null;
 
+  // Whether the generic coding-harness approval card should render.
+  // The card surfaces after the user has approved or corrected the
+  // first decision gate to `coding_task` AND the parent has fetched
+  // the harness recommendation. Until the recommendation arrives we
+  // render a "fetching harness recommendation…" placeholder that
+  // uses the existing compact timer format.
+  const showCodingHarnessCard =
+    routerDecision?.decision === "coding_task" ||
+    (isCodingTask && (worker === "codex" || worker === "minimax") && codingHarnessRecommendation);
+
   return (
     <div className="aui-composer-action-wrapper relative flex flex-col gap-2">
-      {isCodingTask && worker === "codex" ? (
+      {showCodingHarnessCard ? (
+        <div
+          className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs"
+          data-testid="coding-harness-approval-card"
+        >
+          {!codingHarnessRecommendation && codingHarnessRecommendationLoading ? (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              <CompactEstimateTimer
+                startedAt={codingHarnessRecommendationEta?.started_at ?? new Date().toISOString()}
+                expectedLatencyMs={codingHarnessRecommendationEta?.expected_latency_ms ?? 3000}
+                upperLatencyMs={codingHarnessRecommendationEta?.upper_latency_ms ?? 7500}
+                estimateQuality={codingHarnessRecommendationEta?.estimate_quality ?? "rough"}
+                mode="recommendation"
+              />
+              <span>· picking harness…</span>
+            </div>
+          ) : null}
+          {codingHarnessRecommendation ? (
+            <CodingHarnessApprovalCard
+              recommendation={codingHarnessRecommendation}
+              registry={harnessRegistry}
+              projectPath={projectPath}
+              hasProject={Boolean(activeProjectId)}
+              onSend={(input) => {
+                void sendToCodingHarness(input);
+              }}
+              onAnswerInChatInstead={onAnswerInChatInstead}
+              runState={
+                codexRun
+                  ? {
+                      status: codexRun.status,
+                      exitCode: codexRun.exitCode,
+                      stdout: codexRun.stdout,
+                      stderr: codexRun.stderr,
+                      gitStatusShort: codexRun.gitStatusShort ?? "",
+                      gitDiffStat: codexRun.gitDiffStat ?? "",
+                    }
+                  : null
+              }
+            />
+          ) : null}
+        </div>
+      ) : null}
+      {isCodingTask && worker === "codex" && !codingHarnessRecommendation ? (
         <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
           <div className="font-medium text-foreground">Recommended executor: Codex CLI</div>
           <div className="mt-0.5 text-muted-foreground">Reason: coding task needs repo access</div>
@@ -648,7 +1118,207 @@ const ComposerAction: FC<{
           ) : null}
         </div>
       ) : null}
-      {!isCodingTask && (recommendation || recommendationLoading) ? (
+      {isCodingTask && worker === "minimax" && !codingHarnessRecommendation ? (
+        <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+          <div className="font-medium text-foreground">Recommended executor: MiniMax CLI</div>
+          <div className="mt-0.5 text-muted-foreground">
+            Reason: MiniMax token plan; Codex CLI is unavailable.
+          </div>
+          <div className="mt-0.5 break-all text-muted-foreground">
+            Working directory: {projectPath ?? "No project selected"}
+          </div>
+          <div className="mt-2 text-muted-foreground">
+            Click approve/run to execute MiniMax CLI in the selected project folder. No fallback
+            model or API provider will be used.
+          </div>
+          {codexRun ? (
+            <div className="mt-3 space-y-2 rounded-xl border border-border/60 bg-background/70 p-3">
+              <div className="font-medium text-foreground">
+                Status: {codexRun.status} · Exit code: {codexRun.exitCode ?? "none"}
+              </div>
+              {codexRun.stdout ? (
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+                  {codexRun.stdout}
+                </pre>
+              ) : null}
+              {codexRun.stderr ? (
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-destructive/10 p-2 text-[11px] text-destructive">
+                  {codexRun.stderr}
+                </pre>
+              ) : null}
+              {codexRun.gitStatusShort ? (
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+                  Changed files:\n{codexRun.gitStatusShort}
+                </pre>
+              ) : null}
+              {codexRun.gitDiffStat ? (
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+                  Diff summary:\n{codexRun.gitDiffStat}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {!isCodingTask && (routerDecision || routerDecisionLoading) ? (
+        <div
+          className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs"
+          data-testid="router-decision-card"
+        >
+          {routerDecision ? (
+            <>
+              <div className="font-medium text-foreground">
+                {routerDecision.decision
+                  ? `Router decision: ${routerDecision.decision === "coding_task" ? "Coding task" : "Normal chat"}`
+                  : "Router decision failed."}
+              </div>
+              <div className="mt-0.5 text-muted-foreground">Reason: {routerDecision.reason}</div>
+              {/* Structured per-rung failure breakdown. Rendered
+                  only when the decision failed (decision === null)
+                  so the user can see EXACTLY which recommender
+                  failed and whether fallback was attempted. The
+                  data is sanitized server-side and never contains
+                  secrets — the user said "do not hide failures". */}
+              {!routerDecision.decision && routerDecision.error_details ? (
+                <div
+                  className="mt-2 space-y-1 rounded-md border border-destructive/30 bg-destructive/5 p-2"
+                  data-testid="router-decision-error-details"
+                >
+                  {routerDecision.error_details.primary_recommender_model_id ? (
+                    <div className="text-destructive">
+                      <span className="font-medium">Primary failed:</span>{" "}
+                      <span className="font-mono">
+                        {routerDecision.error_details.primary_recommender_model_id}
+                      </span>{" "}
+                      ({routerDecision.error_details.primary_provider_path})
+                      {routerDecision.error_details.primary_error_type
+                        ? ` · ${routerDecision.error_details.primary_error_type}`
+                        : null}
+                      {routerDecision.error_details.primary_error_message_safe
+                        ? `: ${routerDecision.error_details.primary_error_message_safe}`
+                        : null}
+                    </div>
+                  ) : null}
+                  {routerDecision.error_details.fallback_recommender_model_id ? (
+                    <div
+                      className={
+                        routerDecision.error_details.fallback_attempted
+                          ? "text-destructive"
+                          : "text-muted-foreground"
+                      }
+                    >
+                      <span className="font-medium">
+                        {routerDecision.error_details.fallback_attempted
+                          ? "Fallback attempted:"
+                          : "Fallback was not attempted:"}
+                      </span>{" "}
+                      <span className="font-mono">
+                        {routerDecision.error_details.fallback_recommender_model_id}
+                      </span>{" "}
+                      ({routerDecision.error_details.fallback_provider_path ?? "unknown"})
+                      {routerDecision.error_details.fallback_attempted &&
+                      routerDecision.error_details.fallback_error_type
+                        ? ` · ${routerDecision.error_details.fallback_error_type}`
+                        : null}
+                      {routerDecision.error_details.fallback_error_message_safe
+                        ? `: ${routerDecision.error_details.fallback_error_message_safe}`
+                        : null}
+                    </div>
+                  ) : (
+                    <div className="text-muted-foreground">
+                      <span className="font-medium">Fallback:</span> not configured. Set
+                      Settings → Router → Recommender fallback to add one.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+              {routerDecision.ambiguity ? (
+                <div className="mt-0.5 text-muted-foreground">
+                  Ambiguity: {routerDecision.ambiguity}
+                </div>
+              ) : null}
+              {routerDecision.signals?.length ? (
+                <div className="mt-0.5 text-muted-foreground">
+                  Signals: {routerDecision.signals.join(", ")}
+                </div>
+              ) : null}
+              <div className="mt-1 text-muted-foreground">
+                Decision time: {routerDecision.estimate_quality} · est{" "}
+                {formatTimer(routerDecision.expected_latency_ms)}
+              </div>
+              <input
+                value={decisionComment}
+                onChange={(event) => setDecisionComment(event.target.value)}
+                className="mt-2 h-8 w-full rounded-md border border-border/70 bg-background px-2 text-xs outline-none focus:border-foreground"
+                placeholder="Comment for future routing…"
+                data-testid="router-decision-comment"
+              />
+              <div className="mt-2 flex flex-wrap gap-2">
+                {routerDecision.decision ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 rounded-full px-3"
+                    data-testid="router-decision-approve"
+                    onClick={() => onDecisionAction?.("approved", decisionComment)}
+                  >
+                    Approve
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant={routerDecision.decision ? "outline" : "default"}
+                  size="sm"
+                  className="h-7 rounded-full px-3"
+                  data-testid="router-decision-correct"
+                  onClick={() =>
+                    onDecisionAction?.(
+                      routerDecision.decision === "coding_task"
+                        ? "corrected_to_normal_chat"
+                        : "corrected_to_coding_task",
+                      decisionComment,
+                    )
+                  }
+                >
+                  {routerDecision.decision === "coding_task"
+                    ? "Wrong, normal chat"
+                    : routerDecision.decision === "normal_chat"
+                      ? "Wrong, coding task"
+                      : "Coding task"}
+                </Button>
+                {!routerDecision.decision ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 rounded-full px-3"
+                    data-testid="router-decision-manual-normal"
+                    onClick={() => onDecisionAction?.("corrected_to_normal_chat", decisionComment)}
+                  >
+                    Normal chat
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 rounded-full px-3"
+                  data-testid="router-decision-cancel"
+                  onClick={() => onDecisionAction?.("canceled", decisionComment)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </>
+          ) : (
+            <RecommendationWaitingLine eta={routerDecisionEta} />
+          )}
+        </div>
+      ) : null}
+      {!isCodingTask &&
+      !routerDecision &&
+      !routerDecisionLoading &&
+      (recommendation || recommendationLoading) ? (
         <div
           className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs"
           data-testid="recommender-banner"
@@ -685,7 +1355,11 @@ const ComposerAction: FC<{
                   </div>
                   {recommendation.recommendationTelemetry ? (
                     <div className="mt-1 text-muted-foreground">
-                      Recommendation: {formatSeconds(recommendation.recommendationTelemetry.actual_latency_ms)} · time {compactPct(recommendation.recommendationTelemetry.latency_deviation_pct) ?? "—"}
+                      Recommendation:{" "}
+                      {formatSeconds(recommendation.recommendationTelemetry.actual_latency_ms)} ·
+                      time{" "}
+                      {compactPct(recommendation.recommendationTelemetry.latency_deviation_pct) ??
+                        "—"}
                     </div>
                   ) : null}
                 </>
@@ -792,19 +1466,33 @@ const ComposerAction: FC<{
             </AuiIf>
           </AuiIf>
           {isCodingTask ? (
-            <TooltipIconButton
-              tooltip={worker === "codex" ? "Approve and run Codex CLI" : "Create handoff draft"}
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-send size-7 rounded-full"
-              aria-label={worker === "codex" ? "Approve and run Codex CLI" : "Create handoff draft"}
-              disabled={creatingDraft}
-              onClick={createDraft}
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-            </TooltipIconButton>
+            worker === "codex" ? (
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 rounded-full px-3 text-xs font-medium"
+                aria-label="Send to Codex"
+                disabled={creatingDraft}
+                onClick={createDraft}
+              >
+                {creatingDraft ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
+                Send to Codex
+              </Button>
+            ) : (
+              <TooltipIconButton
+                tooltip="Create handoff draft"
+                side="bottom"
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-send size-7 rounded-full"
+                aria-label="Create handoff draft"
+                disabled={creatingDraft}
+                onClick={createDraft}
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+              </TooltipIconButton>
+            )
           ) : (
             <AuiIf condition={(s) => !s.thread.isRunning}>
               {recommenderEnabled && onRecommend ? (
@@ -816,7 +1504,7 @@ const ComposerAction: FC<{
                   size="icon"
                   className="aui-composer-send size-7 rounded-full"
                   aria-label="Get model recommendation"
-                  disabled={recommendationLoading}
+                  disabled={recommendationLoading || routerDecisionLoading || !!routerDecision}
                   onClick={handleRecommendBeforeSend}
                 >
                   <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
@@ -936,6 +1624,220 @@ const MessageError: FC = () => {
   );
 };
 
+/**
+ * Generic coding-harness approval card.
+ *
+ * Rendered after the first decision gate is approved / corrected to
+ * `coding_task` and the parent has fetched the harness
+ * recommendation from `/api/coding-harness/recommend`. The card
+ * shows:
+ *
+ *   - "This looks like a coding task." (always)
+ *   - Recommended harness + display name + provider path
+ *   - Recommended model id
+ *   - Reasoning / thinking label ("provider default" when the
+ *     harness does not accept a reasoning knob on the CLI surface,
+ *     e.g. MiniMax CLI today)
+ *   - Project folder path (or a clear "no project selected" notice)
+ *   - Reason from the recommender
+ *
+ * Action buttons:
+ *
+ *   - "Send to <recommended harness>"  — primary CTA, dispatches
+ *     `onSend({ harnessId, modelId, reasoningLevel })`.
+ *   - "Use <other harness> instead"    — only rendered when the
+ *     other harness is in the registry AND its `status` is
+ *     `available`. Disabled (with a tooltip) otherwise.
+ *   - "Answer in chat instead"          — drops the user back into
+ *     the normal chat flow without consuming the coding-task
+ *     thread state.
+ *   - "Cancel"                         — no-op for now; the parent
+ *     can decide whether to keep the composer open.
+ *
+ * HARD RULES:
+ *
+ *   - "Open a project folder before sending coding tasks to a
+ *     coding harness." surfaces when `hasProject === false`; both
+ *     Send buttons are disabled.
+ *   - No silent harness fallback: the dispatcher only runs when
+ *     the user clicks Send.
+ *   - No normal-chat / API-billed fallback: when no harness is
+ *     available the card shows a loud failure with the per-harness
+ *     `unavailableReason`.
+ */
+const CodingHarnessApprovalCard: FC<{
+  recommendation: CodingHarnessRecommendation;
+  registry: ReadonlyArray<HarnessRegistryView> | null;
+  projectPath: string | null;
+  hasProject: boolean;
+  onSend: (input: { harnessId: CodingHarnessId; modelId: string; reasoningLevel: string }) => void;
+  onAnswerInChatInstead?: () => void;
+  runState: null | {
+    status: string;
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+    gitStatusShort: string;
+    gitDiffStat: string;
+  };
+}> = ({
+  recommendation,
+  registry,
+  projectPath,
+  hasProject,
+  onSend,
+  onAnswerInChatInstead,
+  runState,
+}) => {
+  const codexEntry = registry?.find((h) => h.id === "codex_cli") ?? null;
+  const minimaxEntry = registry?.find((h) => h.id === "minimax_cli") ?? null;
+  const recommendedEntry =
+    recommendation.recommendedHarness === "codex_cli" ? codexEntry : minimaxEntry;
+  const recommendedDisplayName = recommendedEntry?.displayName ?? "Coding harness";
+  const recommendedProviderPath = recommendedEntry?.providerPath ?? "";
+  const otherEntry = recommendation.recommendedHarness === "codex_cli" ? minimaxEntry : codexEntry;
+  // `provider_default` is the canonical "this harness does not accept
+  // a reasoning knob" label used by MiniMax CLI. Render it literally.
+  const reasoningLabel =
+    recommendation.recommendedReasoningLevel === "provider_default"
+      ? "provider default"
+      : recommendation.recommendedReasoningLevel;
+
+  const recommendedDisabled = !hasProject || recommendedEntry?.status !== "available";
+  const otherDisabled = !hasProject || otherEntry?.status !== "available";
+
+  return (
+    <div className="space-y-2">
+      <div className="font-medium text-foreground">This looks like a coding task.</div>
+      <div className="text-muted-foreground">
+        Recommended harness:{" "}
+        <span className="font-medium text-foreground">{recommendedDisplayName}</span>
+      </div>
+      <div className="text-muted-foreground">Model: {recommendation.recommendedModelId}</div>
+      <div className="text-muted-foreground">Reasoning: {reasoningLabel}</div>
+      <div className="break-all text-muted-foreground">
+        Project folder: {projectPath ?? "No project selected"}
+      </div>
+      <div className="text-muted-foreground">Reason: {recommendation.reason}</div>
+      {recommendedEntry?.providerPath ? (
+        <div className="text-muted-foreground">Access: {recommendedEntry.providerPath}</div>
+      ) : null}
+      {recommendation.fallback ? (
+        <div
+          className="rounded-md border border-amber-500/40 bg-amber-100/40 px-2 py-1 text-amber-900"
+          role="status"
+        >
+          Recommendation fell back to a deterministic pick:{" "}
+          {recommendation.fallbackReason ?? "unknown"}. No silent fallback to a different harness.
+        </div>
+      ) : null}
+      {!hasProject ? (
+        <div
+          className="rounded-md border border-amber-500/40 bg-amber-100/40 px-2 py-1 text-amber-900"
+          role="status"
+          data-testid="coding-harness-needs-project"
+        >
+          Open a project folder before sending coding tasks to a coding harness.
+        </div>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Button
+          type="button"
+          size="sm"
+          className="h-7 rounded-full px-3"
+          data-testid="coding-harness-send"
+          disabled={recommendedDisabled}
+          onClick={() =>
+            onSend({
+              harnessId: recommendation.recommendedHarness,
+              modelId: recommendation.recommendedModelId,
+              reasoningLevel: recommendation.recommendedReasoningLevel,
+            })
+          }
+        >
+          Send to {recommendedDisplayName}
+        </Button>
+        {otherEntry ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 rounded-full px-3"
+            data-testid="coding-harness-use-other"
+            disabled={otherDisabled}
+            title={
+              otherDisabled
+                ? (otherEntry.unavailableReason ?? "Not available")
+                : `Switch to ${otherEntry.displayName}`
+            }
+            onClick={() => {
+              const alt = recommendation.alternatives.find((a) => a.harness === otherEntry.id);
+              onSend({
+                harnessId: otherEntry.id,
+                modelId: alt?.modelId ?? otherEntry.defaultModelId,
+                reasoningLevel: alt?.reasoningLevel ?? otherEntry.defaultReasoningLevel,
+              });
+            }}
+          >
+            Use {otherEntry.displayName} instead
+          </Button>
+        ) : null}
+        {onAnswerInChatInstead ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 rounded-full px-3"
+            data-testid="coding-harness-answer-in-chat"
+            onClick={onAnswerInChatInstead}
+          >
+            Answer in chat instead
+          </Button>
+        ) : null}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 rounded-full px-3"
+          data-testid="coding-harness-cancel"
+          onClick={() => {
+            /* parent-owned: cancellation simply keeps the composer open */
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
+      {runState ? (
+        <div className="mt-3 space-y-2 rounded-xl border border-border/60 bg-background/70 p-3">
+          <div className="font-medium text-foreground">
+            Status: {runState.status} · Exit code: {runState.exitCode ?? "none"}
+          </div>
+          {runState.stdout ? (
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+              {runState.stdout}
+            </pre>
+          ) : null}
+          {runState.stderr ? (
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-destructive/10 p-2 text-[11px] text-destructive">
+              {runState.stderr}
+            </pre>
+          ) : null}
+          {runState.gitStatusShort ? (
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+              Changed files (git status --short):\n{runState.gitStatusShort}
+            </pre>
+          ) : null}
+          {runState.gitDiffStat ? (
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+              Diff summary (git diff --stat):\n{runState.gitDiffStat}
+            </pre>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 type ExecutionEstimateData = {
   runId: string | null;
   model_id?: string;
@@ -975,8 +1877,12 @@ function isDataPart(part: unknown, name: string) {
 }
 
 function executionTelemetryFromParts(parts: readonly unknown[]) {
-  const estimatePart = parts.find((p) => isDataPart(p, "router-execution-estimate")) as { data?: ExecutionEstimateData } | undefined;
-  const outcomePart = parts.find((p) => isDataPart(p, "router-execution-outcome")) as { data?: ExecutionOutcomeData } | undefined;
+  const estimatePart = parts.find((p) => isDataPart(p, "router-execution-estimate")) as
+    | { data?: ExecutionEstimateData }
+    | undefined;
+  const outcomePart = parts.find((p) => isDataPart(p, "router-execution-outcome")) as
+    | { data?: ExecutionOutcomeData }
+    | undefined;
   return { estimate: estimatePart?.data, outcome: outcomePart?.data };
 }
 
@@ -1015,7 +1921,10 @@ const ExecutionTelemetryLine: FC<{ parts: readonly unknown[] }> = ({ parts }) =>
       </div>
     );
   }
-  const deviationText = [compactPct(outcome.latency_deviation_pct), compactPct(outcome.token_deviation_pct)]
+  const deviationText = [
+    compactPct(outcome.latency_deviation_pct),
+    compactPct(outcome.token_deviation_pct),
+  ]
     .map((value, index) => (value ? `${index === 0 ? "time" : "tokens"} ${value}` : null))
     .filter(Boolean)
     .join(" · ");
@@ -1027,21 +1936,112 @@ const ExecutionTelemetryLine: FC<{ parts: readonly unknown[] }> = ({ parts }) =>
         aria-expanded={expanded}
         onClick={() => setExpanded((open) => !open)}
       >
-        {modelName}{reasoning} · {timeText} · {tokenText}{deviationText ? ` · ${deviationText}` : ""}
+        {modelName}
+        {reasoning} · {timeText} · {tokenText}
+        {deviationText ? ` · ${deviationText}` : ""}
       </button>
       {expanded ? (
         <dl className="mt-1 grid gap-x-3 gap-y-0.5 rounded-lg border border-border/40 bg-muted/20 p-2 text-[11px] sm:grid-cols-[max-content_1fr]">
-          <dt>Model</dt><dd>{modelName}</dd>
-          <dt>Reasoning</dt><dd>{estimate.reasoning_level ?? "—"}</dd>
-          <dt>Provider path</dt><dd>{estimate.provider_path ?? "—"}</dd>
-          <dt>Selected / recommended</dt><dd>{estimate.selected_model_id ?? "—"}{estimate.recommended_model_id ? ` / ${estimate.recommended_model_id}` : " / —"}</dd>
-          <dt>Generation time</dt><dd>est {formatSeconds(estimate.expected_execution_latency_ms)} · actual {outcome ? formatSeconds(outcome.actual_execution_latency_ms) : "—"}{outcome ? ` · ${formatDeviation(outcome.latency_deviation_ms, outcome.latency_deviation_pct)}` : ""}</dd>
-          <dt>Input tokens</dt><dd>est {estimate.expected_input_tokens.toLocaleString()} · actual {outcome?.actual_input_tokens.toLocaleString() ?? "—"}</dd>
-          <dt>Output tokens</dt><dd>est {estimate.expected_output_tokens.toLocaleString()} · actual {outcome?.actual_output_tokens.toLocaleString() ?? "—"}</dd>
-          <dt>Total tokens</dt><dd>est {estimate.expected_total_tokens.toLocaleString()} · actual {outcome?.actual_total_tokens.toLocaleString() ?? "—"}{outcome ? ` · ${outcome.token_deviation_count >= 0 ? "+" : ""}${outcome.token_deviation_count.toLocaleString()} / ${compactPct(outcome.token_deviation_pct) ?? "—"}` : ""}</dd>
-          <dt>Cost</dt><dd>est {estimate.estimated_cost_usd == null ? "—" : `$${estimate.estimated_cost_usd.toFixed(6)}`} · actual —</dd>
-          {process.env.NODE_ENV !== "production" ? <><dt>Run ids</dt><dd>recommendation — · execution {estimate.runId ?? outcome?.runId ?? "—"}</dd></> : null}
+          <dt>Model</dt>
+          <dd>{modelName}</dd>
+          <dt>Reasoning</dt>
+          <dd>{estimate.reasoning_level ?? "—"}</dd>
+          <dt>Provider path</dt>
+          <dd>{estimate.provider_path ?? "—"}</dd>
+          <dt>Selected / recommended</dt>
+          <dd>
+            {estimate.selected_model_id ?? "—"}
+            {estimate.recommended_model_id ? ` / ${estimate.recommended_model_id}` : " / —"}
+          </dd>
+          <dt>Generation time</dt>
+          <dd>
+            est {formatSeconds(estimate.expected_execution_latency_ms)} · actual{" "}
+            {outcome ? formatSeconds(outcome.actual_execution_latency_ms) : "—"}
+            {outcome
+              ? ` · ${formatDeviation(outcome.latency_deviation_ms, outcome.latency_deviation_pct)}`
+              : ""}
+          </dd>
+          <dt>Input tokens</dt>
+          <dd>
+            est {estimate.expected_input_tokens.toLocaleString()} · actual{" "}
+            {outcome?.actual_input_tokens.toLocaleString() ?? "—"}
+          </dd>
+          <dt>Output tokens</dt>
+          <dd>
+            est {estimate.expected_output_tokens.toLocaleString()} · actual{" "}
+            {outcome?.actual_output_tokens.toLocaleString() ?? "—"}
+          </dd>
+          <dt>Total tokens</dt>
+          <dd>
+            est {estimate.expected_total_tokens.toLocaleString()} · actual{" "}
+            {outcome?.actual_total_tokens.toLocaleString() ?? "—"}
+            {outcome
+              ? ` · ${outcome.token_deviation_count >= 0 ? "+" : ""}${outcome.token_deviation_count.toLocaleString()} / ${compactPct(outcome.token_deviation_pct) ?? "—"}`
+              : ""}
+          </dd>
+          <dt>Cost</dt>
+          <dd>
+            est{" "}
+            {estimate.estimated_cost_usd == null
+              ? "—"
+              : `$${estimate.estimated_cost_usd.toFixed(6)}`}{" "}
+            · actual —
+          </dd>
+          {process.env.NODE_ENV !== "production" ? (
+            <>
+              <dt>Run ids</dt>
+              <dd>recommendation — · execution {estimate.runId ?? outcome?.runId ?? "—"}</dd>
+            </>
+          ) : null}
         </dl>
+      ) : null}
+    </div>
+  );
+};
+
+/**
+ * Compact metadata pill rendered under each assistant message that
+ * came from a coding harness. Reads either the generic
+ * `custom.harness` block (preferred) or the legacy `custom.codex`
+ * block (for older persisted messages). The display is source-aware
+ * so Codex CLI / MiniMax CLI can be told apart.
+ */
+const CodexMetadataLine: FC<{
+  metadata: {
+    executor?: string;
+    model?: string;
+    reasoning?: string;
+    durationMs?: number | null;
+    projectName?: string | null;
+    projectPath?: string | null;
+    status?: string | null;
+  };
+  harnessLabel?: string | null;
+}> = ({ metadata, harnessLabel }) => {
+  const duration =
+    typeof metadata.durationMs === "number"
+      ? `${(metadata.durationMs / 1000).toFixed(1)}s`
+      : "duration unknown";
+  const project = metadata.projectName || metadata.projectPath || "project unknown";
+  const label = harnessLabel ?? metadata.executor ?? "Codex CLI";
+  return (
+    <div className="mt-2 inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-full border border-primary/25 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary">
+      <span>{label}</span>
+      <span aria-hidden="true">·</span>
+      <span>model {metadata.model ?? "CLI default"}</span>
+      <span aria-hidden="true">·</span>
+      <span>reasoning {metadata.reasoning ?? "CLI default"}</span>
+      <span aria-hidden="true">·</span>
+      <span>{duration}</span>
+      <span aria-hidden="true">·</span>
+      <span className="max-w-64 truncate" title={metadata.projectPath ?? project}>
+        {project}
+      </span>
+      {metadata.status ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span>{metadata.status}</span>
+        </>
       ) : null}
     </div>
   );
@@ -1054,6 +2054,53 @@ const AssistantMessage: FC<{
 }> = ({ threadId, notesDisabled, routerAbOn }) => {
   const messageId = useAuiState((s) => s.message.id);
   const parts = useAuiState((s) => s.message.parts);
+  const codexMetadata = useAuiState((s) => {
+    const custom = (s.message.metadata as { custom?: unknown } | undefined)?.custom;
+    if (!custom || typeof custom !== "object") return null;
+    // Prefer the generic `custom.harness` block (set by the
+    // dispatcher for new runs) and fall back to the legacy
+    // `custom.codex` block for older persisted messages.
+    const harness = (custom as { harness?: unknown }).harness;
+    if (harness && typeof harness === "object") {
+      const h = harness as {
+        harnessLabel?: string;
+        model?: string;
+        reasoning?: string;
+        durationMs?: number | null;
+        projectName?: string | null;
+        projectPath?: string | null;
+        status?: string | null;
+        executor?: string;
+      };
+      return {
+        metadata: {
+          executor: h.executor ?? h.harnessLabel ?? "Codex CLI",
+          model: h.model,
+          reasoning: h.reasoning,
+          durationMs: h.durationMs,
+          projectName: h.projectName,
+          projectPath: h.projectPath,
+          status: h.status,
+        },
+        harnessLabel: h.harnessLabel ?? h.executor ?? null,
+      };
+    }
+    const codex = (custom as { codex?: unknown }).codex;
+    return codex && typeof codex === "object"
+      ? {
+          metadata: codex as {
+            executor?: string;
+            model?: string;
+            reasoning?: string;
+            durationMs?: number | null;
+            projectName?: string | null;
+            projectPath?: string | null;
+            status?: string | null;
+          },
+          harnessLabel: (codex as { executor?: string }).executor ?? null,
+        }
+      : null;
+  });
   const [notesOpen, setNotesOpen] = useState(false);
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
@@ -1087,6 +2134,12 @@ const AssistantMessage: FC<{
             {"●"}
           </span>
         </AuiIf>
+        {codexMetadata ? (
+          <CodexMetadataLine
+            metadata={codexMetadata.metadata}
+            harnessLabel={codexMetadata.harnessLabel}
+          />
+        ) : null}
         <ExecutionTelemetryLine parts={parts} />
         <MessageError />
       </div>

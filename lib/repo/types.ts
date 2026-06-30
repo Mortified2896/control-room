@@ -9,7 +9,22 @@
  */
 
 export type ThreadMode = "chat" | "coding_task";
-export type ThreadHarness = "pi" | "codex" | "opencode";
+export type ThreadHarness = "pi" | "codex" | "opencode" | "minimax";
+
+/**
+ * The canonical executor identifier persisted on `coding_runs.executor`.
+ *
+ * Kept as a string union (not `string`) so the harness registry can
+ * pattern-match on it without consulting the harness id table. The
+ * harness dispatcher always writes one of these three values:
+ *   - `"codex-cli"` — Codex CLI / ChatGPT login
+ *   - `"minimax-cli"` — MiniMax CLI / MiniMax token plan
+ *
+ * Older rows with `executor = "codex-cli"` keep that value forever;
+ * the harness-specific renderer reads `executor` to pick the label
+ * for the answer pill.
+ */
+export type CodingRunExecutor = "codex-cli" | "minimax_cli";
 
 export type ThreadRow = {
   id: string;
@@ -41,7 +56,7 @@ export type CodingRunRow = {
   projectId: string;
   threadId: string | null;
   prompt: string;
-  executor: "codex-cli" | string;
+  executor: CodingRunExecutor | string;
   status: CodingRunStatus;
   stdout: string;
   stderr: string;

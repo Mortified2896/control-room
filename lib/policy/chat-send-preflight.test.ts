@@ -33,6 +33,11 @@ function option(input: {
 }): ModelOption {
   const isOpenAI = input.providerId === "openai";
   const isMiniMax = input.providerId === "minimax";
+  const supportedExecutionTargets = isOpenAI
+    ? (["chat_model"] as const)
+    : isMiniMax
+      ? (["chat_model", "minimax_cli"] as const)
+      : (["codex_cli"] as const);
   return {
     providerId: input.providerId,
     providerLabel: isOpenAI
@@ -55,6 +60,8 @@ function option(input: {
     reasoningCapability: input.capability ?? (isMiniMax ? thinkingBudget : noReasoning),
     reasoningLevels: input.capability?.kind === "effort_levels" ? ["low", "medium"] : [],
     tier: "cheap",
+    supportedExecutionTargets,
+    supportsReasoningLevels: input.capability?.kind === "effort_levels",
   };
 }
 

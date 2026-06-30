@@ -123,6 +123,54 @@ type ModelsResponse = {
 
 type PendingRecommendedSend = { id: number; text: string };
 
+type DecisionErrorType =
+  | "usage_limit"
+  | "auth"
+  | "provider_disabled"
+  | "network"
+  | "schema_parse"
+  | "schema_validation"
+  | "empty_output"
+  | "provider_configuration_error"
+  | "not_attempted"
+  | "unknown";
+
+type RouterDecisionErrorDetails = {
+  primary_recommender_model_id: string | null;
+  primary_provider_path: "openai" | "codex" | "minimax" | "unknown";
+  primary_error_type: DecisionErrorType | null;
+  primary_error_message_safe: string | null;
+  fallback_recommender_model_id: string | null;
+  fallback_provider_path: "openai" | "codex" | "minimax" | "unknown" | null;
+  fallback_attempted: boolean;
+  fallback_error_type: DecisionErrorType | null;
+  fallback_error_message_safe: string | null;
+  final_decision_source: "model" | "manual_after_model_error";
+};
+
+type RouterDecision = {
+  runId: string | null;
+  prompt: string;
+  decision: "normal_chat" | "coding_task" | null;
+  reason: string;
+  ambiguity?: "low" | "medium" | "high" | null;
+  signals?: string[];
+  decision_source?: "model" | "manual_after_model_error";
+  recommender_model_id?: string | null;
+  /**
+   * Structured per-rung failure trace from `/api/router/decision`.
+   * Always present on the wire (even on success) so the failure
+   * card can distinguish "no fallback configured" from "fallback
+   * attempted and failed" from "fallback skipped because primary
+   * succeeded".
+   */
+  error_details?: RouterDecisionErrorDetails;
+  estimate_quality: "likely" | "uncertain" | "rough";
+  expected_latency_ms: number;
+  upper_latency_ms: number;
+  started_at: string;
+};
+
 type ModelRecommendation = {
   recommendedModelId: string;
   recommendedProvider: string;
@@ -204,7 +252,7 @@ type RouterSettingsLiteResponse = {
   };
 };
 
-type ThreadHarness = "pi" | "codex" | "opencode";
+type ThreadHarness = "pi" | "codex" | "opencode" | "minimax";
 type ThreadMode = "chat" | "coding_task";
 
 type ThreadListItem = {
@@ -317,6 +365,7 @@ const CodexChatPane: FC<{
   threadMode?: ThreadMode;
   harness?: ThreadHarness | null;
   onFinish: () => void;
+  onEnsureCodingThread?: () => Promise<string | null>;
   /**
    * Recommender props are forwarded to the inner `Thread` so the
    * Codex pane honors the chat-level "Recommend on" toggle. Without
@@ -330,6 +379,14 @@ const CodexChatPane: FC<{
    */
   recommenderEnabled?: boolean;
   onToggleRecommender?: (next: boolean) => void;
+  routerDecision?: RouterDecision | null;
+  routerDecisionLoading?: boolean;
+  routerDecisionEta?: {
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: {
@@ -341,11 +398,45 @@ const CodexChatPane: FC<{
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
+  onDecisionAction?: (
+    action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
+    comment: string,
+  ) => void;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  onCodingRunComplete?: (threadId: string | null) => void;
+  harnessRegistry?: ReadonlyArray<{
+    id: "codex_cli" | "minimax_cli";
+    displayName: string;
+    providerPath: string;
+    billingPath: string;
+    requiresProjectFolder: boolean;
+    canModifyFiles: boolean;
+    supportsTokenUsage: boolean;
+    supportsReasoningLevels: boolean;
+    defaultModelId: string;
+    allowedModelIds: ReadonlyArray<string>;
+    defaultReasoningLevel: string;
+    status: "available" | "unavailable" | "unknown";
+    unavailableReason: string | null;
+  }> | null;
+  codingHarnessRecommendation?: CodingHarnessRecommendation | null;
+  codingHarnessRecommendationLoading?: boolean;
+  codingHarnessRecommendationEta?: {
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null;
+  onSendToCodingHarness?: (input: {
+    harnessId: "codex_cli" | "minimax_cli";
+    modelId: string;
+    reasoningLevel: string;
+  }) => void;
+  onAnswerInChatInstead?: () => void;
 }> = ({
   modelId,
   threadId,
@@ -359,17 +450,29 @@ const CodexChatPane: FC<{
   onFinish,
   recommenderEnabled = false,
   onToggleRecommender,
+  routerDecision = null,
+  routerDecisionLoading = false,
+  routerDecisionEta = null,
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
+  onDecisionAction,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onEnsureCodingThread,
+  harnessRegistry = null,
+  codingHarnessRecommendation = null,
+  codingHarnessRecommendationLoading = false,
+  codingHarnessRecommendationEta = null,
+  onSendToCodingHarness,
+  onAnswerInChatInstead,
+  onCodingRunComplete,
 }) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
@@ -436,17 +539,29 @@ const CodexChatPane: FC<{
         routerAbOn={routerAbOn}
         recommenderEnabled={recommenderEnabled}
         onToggleRecommender={onToggleRecommender}
+        routerDecision={routerDecision}
+        routerDecisionLoading={routerDecisionLoading}
+        routerDecisionEta={routerDecisionEta}
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
         recommendationEta={recommendationEta}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
+        onDecisionAction={onDecisionAction}
         onRecommend={onRecommend}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
         pendingRecommendedSend={pendingRecommendedSend}
         onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+        onEnsureCodingThread={onEnsureCodingThread}
+        onCodingRunComplete={onCodingRunComplete}
+        harnessRegistry={harnessRegistry}
+        codingHarnessRecommendation={codingHarnessRecommendation}
+        codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
+        codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+        onSendToCodingHarness={onSendToCodingHarness}
+        onAnswerInChatInstead={onAnswerInChatInstead}
       />
     </AssistantRuntimeProvider>
   );
@@ -469,6 +584,14 @@ const ChatPane: FC<{
   onFinish: () => void;
   recommenderEnabled?: boolean;
   onToggleRecommender?: (next: boolean) => void;
+  routerDecision?: RouterDecision | null;
+  routerDecisionLoading?: boolean;
+  routerDecisionEta?: {
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: {
@@ -480,11 +603,52 @@ const ChatPane: FC<{
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
+  onDecisionAction?: (
+    action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
+    comment: string,
+  ) => void;
   onRecommend?: (message: string) => void;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  onEnsureCodingThread?: () => Promise<string | null>;
+  onCodingRunComplete?: (threadId: string | null) => void;
+  /**
+   * Live harness registry snapshot. Passed through to the inner
+   * `Thread` / `CodexChatPane` so the generic coding-harness
+   * approval card can render Codex CLI / MiniMax CLI with current
+   * install + auth status.
+   */
+  harnessRegistry?: ReadonlyArray<{
+    id: "codex_cli" | "minimax_cli";
+    displayName: string;
+    providerPath: string;
+    billingPath: string;
+    requiresProjectFolder: boolean;
+    canModifyFiles: boolean;
+    supportsTokenUsage: boolean;
+    supportsReasoningLevels: boolean;
+    defaultModelId: string;
+    allowedModelIds: ReadonlyArray<string>;
+    defaultReasoningLevel: string;
+    status: "available" | "unavailable" | "unknown";
+    unavailableReason: string | null;
+  }> | null;
+  codingHarnessRecommendation?: CodingHarnessRecommendation | null;
+  codingHarnessRecommendationLoading?: boolean;
+  codingHarnessRecommendationEta?: {
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null;
+  onSendToCodingHarness?: (input: {
+    harnessId: "codex_cli" | "minimax_cli";
+    modelId: string;
+    reasoningLevel: string;
+  }) => void;
+  onAnswerInChatInstead?: () => void;
 }> = ({
   modelId,
   threadId,
@@ -502,17 +666,29 @@ const ChatPane: FC<{
   onFinish,
   recommenderEnabled = false,
   onToggleRecommender,
+  routerDecision = null,
+  routerDecisionLoading = false,
+  routerDecisionEta = null,
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
+  onDecisionAction,
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onEnsureCodingThread,
+  onCodingRunComplete,
+  harnessRegistry = null,
+  codingHarnessRecommendation = null,
+  codingHarnessRecommendationLoading = false,
+  codingHarnessRecommendationEta = null,
+  onSendToCodingHarness,
+  onAnswerInChatInstead,
 }) => {
   const selectedModel = models.find((m) => m.modelId === modelId) ?? null;
   if (selectedModel?.providerId === "codex") {
@@ -533,17 +709,29 @@ const ChatPane: FC<{
         // docstring for the full rationale.
         recommenderEnabled={recommenderEnabled}
         onToggleRecommender={onToggleRecommender}
+        routerDecision={routerDecision}
+        routerDecisionLoading={routerDecisionLoading}
+        routerDecisionEta={routerDecisionEta}
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
         recommendationEta={recommendationEta}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
+        onDecisionAction={onDecisionAction}
         onRecommend={onRecommend}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
         pendingRecommendedSend={pendingRecommendedSend}
         onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+        onEnsureCodingThread={onEnsureCodingThread}
+        onCodingRunComplete={onCodingRunComplete}
+        harnessRegistry={harnessRegistry}
+        codingHarnessRecommendation={codingHarnessRecommendation}
+        codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
+        codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+        onSendToCodingHarness={onSendToCodingHarness}
+        onAnswerInChatInstead={onAnswerInChatInstead}
       />
     );
   }
@@ -602,16 +790,29 @@ const ChatPane: FC<{
         routerAbOn={effectiveRouterAbOn}
         recommenderEnabled={recommenderEnabled}
         onToggleRecommender={onToggleRecommender}
+        routerDecision={routerDecision}
+        routerDecisionLoading={routerDecisionLoading}
+        routerDecisionEta={routerDecisionEta}
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
+        recommendationEta={recommendationEta}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
+        onDecisionAction={onDecisionAction}
         onRecommend={onRecommend}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
         pendingRecommendedSend={pendingRecommendedSend}
         onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+        onEnsureCodingThread={onEnsureCodingThread}
+        onCodingRunComplete={onCodingRunComplete}
+        harnessRegistry={harnessRegistry}
+        codingHarnessRecommendation={codingHarnessRecommendation}
+        codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
+        codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+        onSendToCodingHarness={onSendToCodingHarness}
+        onAnswerInChatInstead={onAnswerInChatInstead}
       />
     </AssistantRuntimeProvider>
   );
@@ -975,12 +1176,65 @@ const SidebarPanel: FC<{
 };
 
 const harnessLabel = (harness: ThreadHarness) =>
-  harness === "opencode" ? "OpenCode" : harness === "codex" ? "Codex" : "Pi";
+  harness === "opencode"
+    ? "OpenCode"
+    : harness === "codex"
+      ? "Codex"
+      : harness === "minimax"
+        ? "MiniMax"
+        : "Pi";
 
 type HarnessRecommendation = {
   recommendedHarness: ThreadHarness;
   reasoning: string;
   alternatives?: Array<{ harness: ThreadHarness; reason: string }>;
+};
+
+/**
+ * Generic coding-harness recommendation returned by
+ * `/api/coding-harness/recommend`. Distinct from `HarnessRecommendation`
+ * (which is the NewChatDialog payload from `/api/harness/recommend`):
+ * the generic recommendation carries the model id + reasoning level
+ * the harness should run with, the task type, and a `fallback` flag.
+ */
+type CodingHarnessRecommendation = {
+  taskType: "coding" | "debugging" | "repo_edit" | "code_review" | "other";
+  executionTarget: "coding_harness";
+  recommendedHarness: "codex_cli" | "minimax_cli";
+  recommendedModelId: string;
+  recommendedReasoningLevel: string;
+  reason: string;
+  requiresProjectFolder: true;
+  requiresUserApproval: true;
+  alternatives: Array<{
+    harness: "codex_cli" | "minimax_cli";
+    modelId: string;
+    reasoningLevel: string;
+    reason: string;
+  }>;
+  fallback?: boolean;
+  fallbackReason?: "model_not_listed" | "provider_call_failed" | "no_harness_available" | null;
+};
+
+/**
+ * Snapshot of one registered coding harness returned by the
+ * `/api/coding-runs` GET endpoint. Mirrors the
+ * `HarnessRegistryEntry` shape from `lib/harness/registry.ts`.
+ */
+type HarnessRegistryView = {
+  id: "codex_cli" | "minimax_cli";
+  displayName: string;
+  providerPath: string;
+  billingPath: string;
+  requiresProjectFolder: boolean;
+  canModifyFiles: boolean;
+  supportsTokenUsage: boolean;
+  supportsReasoningLevels: boolean;
+  defaultModelId: string;
+  allowedModelIds: ReadonlyArray<string>;
+  defaultReasoningLevel: string;
+  status: "available" | "unavailable" | "unknown";
+  unavailableReason: string | null;
 };
 
 const NewChatDialog: FC<{
@@ -1116,7 +1370,7 @@ const NewChatDialog: FC<{
                 </div>
               ) : null}
               <div className="flex flex-wrap gap-2 text-sm">
-                {(["pi", "codex", "opencode"] as const).map((harness) => (
+                {(["pi", "codex", "opencode", "minimax"] as const).map((harness) => (
                   <Button
                     key={harness}
                     type="button"
@@ -1162,6 +1416,7 @@ export const Assistant = () => {
   const [threadMessages, setThreadMessages] = useState<UIMessage[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesReloadNonce, setMessagesReloadNonce] = useState(0);
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [deletingThreads, setDeletingThreads] = useState(false);
   const [dbConfigured, setDbConfigured] = useState(true);
@@ -1208,8 +1463,23 @@ export const Assistant = () => {
     }
     // Toggling off clears any in-flight recommendation banner so the
     // composer returns to a clean state.
-    if (!next) setRecommendation(null);
+    if (!next) {
+      setRecommendation(null);
+      setRouterDecision(null);
+      setThreadModeOverride(null);
+      setHarnessOverride(null);
+    }
   }, []);
+  const [routerDecision, setRouterDecision] = useState<RouterDecision | null>(null);
+  const [routerDecisionLoading, setRouterDecisionLoading] = useState(false);
+  const [routerDecisionEta, setRouterDecisionEta] = useState<{
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null>(null);
+  const [threadModeOverride, setThreadModeOverride] = useState<ThreadMode | null>(null);
+  const [harnessOverride, setHarnessOverride] = useState<ThreadHarness | null>(null);
   const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
   const [recommendationEta, setRecommendationEta] = useState<{
@@ -1223,6 +1493,91 @@ export const Assistant = () => {
   const pendingRecommendedSendCounter = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCoarsePointer = useMediaQuery("(pointer: coarse)");
+
+  // -------------------------------------------------------------------------
+  // Generic coding-harness registry + per-thread harness recommendation.
+  //
+  // After the first decision gate is approved / corrected to
+  // `coding_task`, we fetch the harness recommendation from
+  // `/api/coding-harness/recommend` so the chat composer can render a
+  // generic coding-harness approval card with both Codex CLI and
+  // MiniMax CLI as candidates. The user picks one explicitly — there is
+  // NO silent fallback between harnesses.
+  // -------------------------------------------------------------------------
+  const [harnessRegistry, setHarnessRegistry] = useState<ReadonlyArray<HarnessRegistryView> | null>(
+    null,
+  );
+  const [codingHarnessRecommendation, setCodingHarnessRecommendation] =
+    useState<CodingHarnessRecommendation | null>(null);
+  const [codingHarnessRecommendationLoading, setCodingHarnessRecommendationLoading] =
+    useState(false);
+  const [codingHarnessRecommendationEta, setCodingHarnessRecommendationEta] = useState<{
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null>(null);
+
+  // Refresh the harness registry whenever the composer mounts so the
+  // approval card surfaces current install / auth state.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/coding-runs", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { harnesses?: HarnessRegistryView[] };
+        if (!cancelled && Array.isArray(data.harnesses)) {
+          setHarnessRegistry(data.harnesses);
+        }
+      } catch {
+        // Best-effort: leave the registry as `null` and let the
+        // composer render the loader placeholder.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const fetchCodingHarnessRecommendation = useCallback(async (prompt: string) => {
+    setCodingHarnessRecommendation(null);
+    setCodingHarnessRecommendationLoading(true);
+    setCodingHarnessRecommendationEta({
+      expected_latency_ms: 1500,
+      upper_latency_ms: 4000,
+      estimate_quality: "rough",
+      started_at: new Date().toISOString(),
+    });
+    try {
+      const res = await fetch("/api/coding-harness/recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction: prompt }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = (await res.json()) as CodingHarnessRecommendation;
+      setCodingHarnessRecommendation(data);
+    } catch {
+      // Best-effort: leave the recommendation as `null`. The card
+      // renders the legacy "Recommended executor: Codex CLI" pill
+      // until the user re-clicks Approve / Correct.
+    } finally {
+      setCodingHarnessRecommendationLoading(false);
+      setCodingHarnessRecommendationEta(null);
+    }
+  }, []);
+
+  // Drop the harness recommendation whenever the user cancels or
+  // switches to normal chat, so a stale recommendation cannot
+  // bleed into the next decision.
+  useEffect(() => {
+    if (!routerDecision) {
+      setCodingHarnessRecommendation(null);
+      setCodingHarnessRecommendationLoading(false);
+      setCodingHarnessRecommendationEta(null);
+    }
+  }, [routerDecision]);
   const newChatCounter = useRef(0);
 
   const refreshThreads = useCallback(async () => {
@@ -1529,7 +1884,7 @@ export const Assistant = () => {
     return () => {
       cancelled = true;
     };
-  }, [mounted, activeThreadId, models]);
+  }, [mounted, activeThreadId, models, messagesReloadNonce]);
 
   const handleCreateThread = useCallback(
     async (input?: {
@@ -1559,7 +1914,7 @@ export const Assistant = () => {
           setThreads((prev) => [data.thread, ...prev.filter((t) => t.id !== data.thread.id)]);
           setActiveThreadId(data.thread.id);
           setThreadMessages([]);
-          return;
+          return data.thread.id;
         } catch {
           setDbConfigured(false);
         }
@@ -1576,6 +1931,7 @@ export const Assistant = () => {
       setThreads((prev) => [newThread, ...prev]);
       setActiveThreadId(newThread.id);
       setThreadMessages([]);
+      return newThread.id;
     },
     [dbConfigured, selectedModelId, activeProjectId],
   );
@@ -1654,7 +2010,7 @@ export const Assistant = () => {
     [refreshProjects],
   );
 
-  const handleRecommendModel = useCallback(
+  const handleRecommendNormalChat = useCallback(
     async (message: string) => {
       const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
       const trimmed = message.trim();
@@ -1709,6 +2065,118 @@ export const Assistant = () => {
     },
     [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
   );
+
+  const handleRecommendModel = useCallback(
+    async (message: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      setRecommendation(null);
+      setRouterDecision(null);
+      setThreadModeOverride(null);
+      setHarnessOverride(null);
+      setRouterDecisionLoading(true);
+      setRouterDecisionEta({
+        expected_latency_ms: 750,
+        upper_latency_ms: 2000,
+        estimate_quality: "rough",
+        started_at: new Date().toISOString(),
+      });
+      try {
+        const res = await fetch("/api/router/decision", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
+            projectId: activeProjectId,
+            message: trimmed,
+          }),
+        });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data = (await res.json()) as Omit<RouterDecision, "prompt">;
+        setRouterDecision({ ...data, prompt: trimmed });
+      } finally {
+        setRouterDecisionLoading(false);
+        setRouterDecisionEta(null);
+      }
+    },
+    [activeProjectId, activeThreadId],
+  );
+
+  const handleDecisionAction = useCallback(
+    (
+      action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
+      comment: string,
+    ) => {
+      if (!routerDecision) return;
+      const finalDecision =
+        action === "corrected_to_coding_task"
+          ? "coding_task"
+          : action === "corrected_to_normal_chat"
+            ? "normal_chat"
+            : action === "approved"
+              ? routerDecision.decision
+              : null;
+      void fetch("/api/router/decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          runId: routerDecision.runId,
+          userAction: action,
+          userComment: comment.trim() || null,
+          finalDecision,
+        }),
+      });
+      const prompt = routerDecision.prompt;
+      setRouterDecision(null);
+      if (action === "canceled") return;
+      if (finalDecision === "coding_task") {
+        // Switch to coding-task thread mode WITHOUT forcing a
+        // specific harness. The user picks the harness explicitly
+        // from the generic coding-harness approval card (Codex CLI
+        // vs MiniMax CLI). The `harnessOverride` is updated only
+        // when the user actually sends via one of the harness
+        // buttons so the legacy Codex-only pill keeps working for
+        // users who never open the new card.
+        setThreadModeOverride("coding_task");
+        setHarnessOverride(null);
+        void fetchCodingHarnessRecommendation(prompt);
+        return;
+      }
+      setThreadModeOverride(null);
+      setHarnessOverride(null);
+      void handleRecommendNormalChat(prompt);
+    },
+    [fetchCodingHarnessRecommendation, handleRecommendNormalChat, routerDecision],
+  );
+
+  const handleSendToCodingHarness = useCallback(
+    (input: {
+      harnessId: "codex_cli" | "minimax_cli";
+      modelId: string;
+      reasoningLevel: string;
+    }) => {
+      // Persist the user pick on the thread-level `harnessOverride`
+      // so the composer's "Coding task · <harness>" pill reflects
+      // the harness the user actually sent to. We do NOT auto-run
+      // anything else — the composer handles the actual `fetch`
+      // through `sendToCodingHarness`. The user must explicitly
+      // click Send.
+      setHarnessOverride(input.harnessId === "minimax_cli" ? "minimax" : "codex");
+      // Drop the recommendation so the next decision starts fresh.
+      setCodingHarnessRecommendation(null);
+    },
+    [],
+  );
+
+  const handleAnswerInChatInstead = useCallback(() => {
+    // The user picked "Answer in chat instead" on the generic
+    // harness approval card. Switch back to normal-chat thread
+    // mode WITHOUT executing the harness; the next send goes
+    // through the chat path.
+    setThreadModeOverride(null);
+    setHarnessOverride(null);
+    setCodingHarnessRecommendation(null);
+  }, []);
 
   const handleUseRecommendation = useCallback(
     (draftText?: string) => {
@@ -1797,6 +2265,8 @@ export const Assistant = () => {
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeThreadTitle = activeThread?.title ?? "New chat";
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
+  const effectiveThreadMode = threadModeOverride ?? activeThread?.threadMode ?? "chat";
+  const effectiveHarness = harnessOverride ?? activeThread?.harness ?? null;
   const manualModelSummary = (() => {
     const selected = models.find((m) => m.modelId === selectedModelId);
     const label = selected?.modelLabel ?? selectedModelId ?? "No manual model selected";
@@ -1924,16 +2394,20 @@ export const Assistant = () => {
               models={models}
               activeProjectId={activeProjectId}
               activeProject={activeProject}
-              threadMode={activeThread?.threadMode ?? "chat"}
-              harness={activeThread?.harness ?? null}
+              threadMode={effectiveThreadMode}
+              harness={effectiveHarness}
               recommenderEnabled={recommenderEnabled}
               onToggleRecommender={toggleRecommender}
+              routerDecision={routerDecision}
+              routerDecisionLoading={routerDecisionLoading}
+              routerDecisionEta={routerDecisionEta}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
               recommendationEta={recommendationEta}
               manualModelSummary={manualModelSummary}
               recommenderEngineSummary={recommenderEngineSummary}
               fallbackEngineSummary={fallbackEngineSummary}
+              onDecisionAction={handleDecisionAction}
               onRecommend={handleRecommendModel}
               onUseRecommendation={handleUseRecommendation}
               onKeepCurrent={handleKeepCurrent}
@@ -1941,7 +2415,23 @@ export const Assistant = () => {
               onPendingRecommendedSendConsumed={(id) =>
                 setPendingRecommendedSend((pending) => (pending?.id === id ? null : pending))
               }
+              onEnsureCodingThread={() =>
+                activeThreadId && !isLocalThreadId(activeThreadId)
+                  ? Promise.resolve(activeThreadId)
+                  : handleCreateThread({ threadMode: "coding_task", harness: "codex" })
+              }
+              onCodingRunComplete={(threadId) => {
+                if (threadId) setActiveThreadId(threadId);
+                setMessagesReloadNonce((n) => n + 1);
+                void refreshThreads();
+              }}
               onFinish={() => void refreshThreads()}
+              harnessRegistry={harnessRegistry}
+              codingHarnessRecommendation={codingHarnessRecommendation}
+              codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
+              codingHarnessRecommendationEta={codingHarnessRecommendationEta}
+              onSendToCodingHarness={handleSendToCodingHarness}
+              onAnswerInChatInstead={handleAnswerInChatInstead}
             />
           )}
         </div>

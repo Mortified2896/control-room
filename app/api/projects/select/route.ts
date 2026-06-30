@@ -5,7 +5,8 @@ import { getProject } from "@/lib/repo/projects";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
-  if (!isDbConfigured()) return NextResponse.json({ error: "database_not_configured" }, { status: 503 });
+  if (!isDbConfigured())
+    return NextResponse.json({ error: "database_not_configured" }, { status: 503 });
   const body = (await req.json().catch(() => null)) as { projectId?: unknown } | null;
   const projectId = typeof body?.projectId === "string" ? body.projectId : null;
   if (!projectId) return NextResponse.json({ error: "no_project_selected" }, { status: 400 });

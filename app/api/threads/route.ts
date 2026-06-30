@@ -134,7 +134,12 @@ export async function POST(req: Request) {
   const threadMode: ThreadMode = threadModeRaw === "coding_task" ? "coding_task" : "chat";
   const harnessRaw = b.harness;
   const harness: ThreadHarness | null =
-    harnessRaw === "pi" || harnessRaw === "codex" || harnessRaw === "opencode" ? harnessRaw : null;
+    harnessRaw === "pi" ||
+    harnessRaw === "codex" ||
+    harnessRaw === "opencode" ||
+    harnessRaw === "minimax"
+      ? harnessRaw
+      : null;
   const firstMessage = typeof b.firstMessage === "string" ? b.firstMessage.trim() : "";
 
   if (threadMode === "chat" && harness) {

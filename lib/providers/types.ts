@@ -24,6 +24,15 @@ export type ReasoningLevel = "low" | "medium" | "high";
 export type ModelTier = "cheap" | "expensive";
 
 export type AccessPath = "openai_api" | "minimax_api" | "codex_chatgpt";
+
+/**
+ * Re-export of the per-model execution-target discriminator. The
+ * canonical definition lives in `lib/providers/codex-catalog.ts`
+ * (`SupportedExecutionTarget`) so the harness registry and the
+ * catalog share one type. We re-export here so consumers of
+ * `ModelOption` don't need a second import.
+ */
+export type { SupportedExecutionTarget } from "./codex-catalog";
 /**
  * Coarse billing discriminator used by the no-API-billing-fallback
  * policy and by UI labels. Mirrors the `BillingType` union in
@@ -76,6 +85,30 @@ export type ModelOption = {
   billingLabel: BillingLabel;
   capabilityKind: CapabilityKind;
   description: string;
+  /**
+   * Execution targets the harness registry may route this model id
+   * to. Populated by `lib/providers/{codex-catalog,minimax}.ts` and
+   * surfaced through `lib/providers/registry.ts`. The harness
+   * registry uses this field to filter eligible model ids so adding
+   * a new harness never requires editing the per-provider catalogs.
+   *
+   * Defaults are inferred by `lib/providers/registry.ts` when the
+   * catalog does not provide a value:
+   *   - OpenAI API models        → `["chat_model"]`
+   *   - Codex catalog ids        → `["codex_cli"]`
+   *   - MiniMax catalog + default M3 → `["chat_model", "minimax_cli"]`
+   */
+  supportedExecutionTargets: ReadonlyArray<import("./codex-catalog").SupportedExecutionTarget>;
+  /**
+   * True when the model supports provider-native reasoning / thinking
+   * controls (`reasoning_effort` for OpenAI / Codex, `thinking` for
+   * MiniMax). Mirrored on the chat-picker DTO so the chat composer
+   * can hide the reasoning picker for models that do not actually
+   * consume the value. The harness registry reads the same field on
+   * its own entries so the approval card renders "provider default"
+   * for harnesses that do not accept a level.
+   */
+  supportsReasoningLevels: boolean;
   /**
    * Canonical reasoning / thinking capability for this model. See
    * `lib/providers/capability.ts` for the full capability model and
@@ -156,6 +189,20 @@ export type ModelMeta = {
    * correctly.
    */
   billingSource: BillingSource;
+  /**
+   * Execution targets the harness registry may route this model id
+   * to. Optional on `ModelMeta` (older callers that construct a
+   * `ModelMeta` by hand may omit it); the registry falls back to
+   * `["chat_model"]` when missing.
+   */
+  supportedExecutionTargets?: ReadonlyArray<import("./codex-catalog").SupportedExecutionTarget>;
+  /**
+   * Mirrors `supportsReasoning` for the harness approval card. The
+   * default for known Codex / MiniMax catalog rows is `true`;
+   * OpenAI rows inherit `reasoningLevels.length > 0`. The field is
+   * optional on `ModelMeta` so existing call sites compile.
+   */
+  supportsReasoningLevels?: boolean;
 };
 
 /**

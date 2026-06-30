@@ -539,6 +539,356 @@ export function AgentBackendsPage({ embedded = false }: { embedded?: boolean } =
           <ExternalLink className="size-3" />
         </Link>
       </p>
+
+      <MiniMaxBackendSection />
     </div>
+  );
+}
+
+/**
+ * MiniMax CLI backend test surface. Mirrors the Codex card but
+ * talks to `/api/agent-backends/minimax/{status,chat}` and surfaces
+ * the MiniMax token-plan balance.
+ *
+ * Hard constraints:
+ *   - The MiniMax CLI is invoked via `mmx --version` / `mmx quota`
+ *     / `mmx run --json --prompt <text>`. The prompt is a single
+ *     positional argument via `execFile`, never a shell.
+ *   - Auth uses an operator-supplied `MINIMAX_API_KEY` (the
+ *     token-plan secret). The route never echoes the key, never
+ *     logs it, and never forwards it to the client.
+ *   - No fallback to OpenAI / Codex under any failure.
+ */
+type MiniMaxStatus = "not_installed" | "not_authenticated" | "logged_in" | "error";
+type MiniMaxAuthState = "authenticated" | "not_authenticated" | "unknown";
+
+type MiniMaxStatusDto = {
+  status: MiniMaxStatus;
+  binary: {
+    path: string | null;
+    version: string | null;
+    resolvedFrom: "env" | "PATH" | null;
+  };
+  region: string | null;
+  authenticated: boolean;
+  quotaSummary: {
+    remainingTokens: number | null;
+    lastCheckedAt: string | null;
+  };
+  lastCheckedAt: string;
+  errorMessage: string | null;
+};
+
+type MiniMaxChatResponse = {
+  ok: boolean;
+  responseText: string | null;
+  error: string | null;
+  errorKind: string | null;
+  exitCode: number | null;
+  durationMs: number | null;
+  tokenUsage: null | {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
+};
+
+const MINIMAX_STATUS_PILL: Record<
+  MiniMaxStatus,
+  { label: string; classes: string; icon: FC<{ className?: string }> }
+> = {
+  logged_in: {
+    label: "Connected",
+    classes: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30",
+    icon: CheckCircle2,
+  },
+  not_authenticated: {
+    label: "Not authenticated",
+    classes: "bg-amber-500/10 text-amber-700 dark:text-amber-300 ring-amber-500/30",
+    icon: AlertTriangle,
+  },
+  not_installed: {
+    label: "Not installed",
+    classes: "bg-muted text-muted-foreground ring-border",
+    icon: XCircle,
+  },
+  error: {
+    label: "Error",
+    classes: "bg-destructive/10 text-destructive ring-destructive/30",
+    icon: AlertTriangle,
+  },
+};
+
+function MiniMaxBackendSection() {
+  const [status, setStatus] = useState<MiniMaxStatusDto | null>(null);
+  const [refresh, setRefresh] = useState<
+    | { kind: "idle" }
+    | { kind: "refreshing" }
+    | { kind: "refreshed"; at: number }
+    | { kind: "error"; at: number; message: string }
+  >({ kind: "idle" });
+  const [chat, setChat] = useState<
+    | { kind: "idle" }
+    | { kind: "sending"; message: string }
+    | { kind: "ok"; at: number; payload: MiniMaxChatResponse }
+    | { kind: "error"; at: number; payload: MiniMaxChatResponse }
+  >({ kind: "idle" });
+  const [draft, setDraft] = useState<string>("Reply with only: pong");
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  const loadStatus = useCallback(async () => {
+    setRefresh({ kind: "refreshing" });
+    try {
+      const r = await fetch("/api/agent-backends/minimax/status", {
+        cache: "no-store",
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const dto = (await r.json()) as MiniMaxStatusDto;
+      setStatus(dto);
+      setRefresh({ kind: "refreshed", at: Date.now() });
+    } catch (err) {
+      setRefresh({
+        kind: "error",
+        at: Date.now(),
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  const sendChat = useCallback(async () => {
+    const message = draft.trim();
+    if (!message) return;
+    setChat({ kind: "sending", message });
+    try {
+      const r = await fetch("/api/agent-backends/minimax/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          model: "MiniMax-M3",
+          reasoningLevel: "provider_default",
+          cwd: "/tmp",
+        }),
+      });
+      const payload = (await r.json()) as MiniMaxChatResponse;
+      if (r.ok && payload.ok) {
+        setChat({ kind: "ok", at: Date.now(), payload });
+      } else {
+        setChat({ kind: "error", at: Date.now(), payload });
+      }
+    } catch (err) {
+      setChat({
+        kind: "error",
+        at: Date.now(),
+        payload: {
+          ok: false,
+          responseText: null,
+          error: err instanceof Error ? err.message : String(err),
+          errorKind: "internal",
+          exitCode: null,
+          durationMs: null,
+          tokenUsage: null,
+        },
+      });
+    }
+  }, [draft]);
+
+  const chatDisabled = chat.kind === "sending";
+  const PillIcon = status ? MINIMAX_STATUS_PILL[status.status].icon : null;
+
+  return (
+    <section className="rounded-lg border bg-card p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-1">
+          <h2 className="text-base font-semibold">MiniMax CLI backend</h2>
+          <p className="text-xs text-muted-foreground">
+            Test the operator-installed <code className="font-mono">mmx-cli</code> against a scratch
+            directory. This page does not touch the control-room repo or your projects.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            data-testid="minimax-status-pill"
+            data-status={status?.status ?? "unknown"}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1",
+              status
+                ? MINIMAX_STATUS_PILL[status.status].classes
+                : "bg-muted text-muted-foreground ring-border",
+            )}
+          >
+            {PillIcon ? (
+              <PillIcon className="size-3.5" />
+            ) : (
+              <Loader2 className="size-3.5 animate-spin" />
+            )}
+            {status ? MINIMAX_STATUS_PILL[status.status].label : "Loading…"}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void loadStatus()}
+            disabled={refresh.kind === "refreshing"}
+            data-testid="minimax-refresh"
+          >
+            {refresh.kind === "refreshing" ? (
+              <Loader2 className="mr-1 size-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1 size-3.5" />
+            )}
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="rounded-md border border-border/60 bg-muted/30 p-3 text-xs">
+          <div className="font-medium uppercase tracking-wider text-muted-foreground">
+            CLI binary
+          </div>
+          <div className="mt-1 font-mono">
+            {status?.binary?.path ?? "—"}
+            {status?.binary?.version ? (
+              <span className="text-muted-foreground"> · {status.binary.version}</span>
+            ) : null}
+          </div>
+          <div className="mt-1 text-muted-foreground">
+            Resolved from: {status?.binary?.resolvedFrom ?? "—"}
+          </div>
+        </div>
+        <div className="rounded-md border border-border/60 bg-muted/30 p-3 text-xs">
+          <div className="font-medium uppercase tracking-wider text-muted-foreground">
+            Authentication
+          </div>
+          <div className="mt-1">Region: {status?.region ?? "auto-detected"}</div>
+          <div className="mt-1">Authenticated: {status?.authenticated ? "yes" : "no"}</div>
+          <div className="mt-1">
+            Token plan remaining:{" "}
+            {status?.quotaSummary?.remainingTokens != null
+              ? `${status.quotaSummary.remainingTokens.toLocaleString()} tokens`
+              : "unknown"}
+          </div>
+          <div className="mt-1 text-muted-foreground">
+            Last checked: {status?.lastCheckedAt ? relativeTime(status.lastCheckedAt, now) : "—"}
+          </div>
+        </div>
+      </div>
+
+      {status?.errorMessage ? (
+        <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+          {status.errorMessage}
+        </div>
+      ) : null}
+      {status?.status === "not_installed" ? (
+        <div className="mt-3 rounded-md border border-border/60 bg-muted/30 p-3 text-xs">
+          <div className="font-medium">Install MiniMax CLI</div>
+          <p className="mt-1 text-muted-foreground">
+            Run <code className="font-mono">npm install -g mmx-cli</code>, then{" "}
+            <code className="font-mono">mmx auth login --api-key &lt;MINIMAX_API_KEY&gt;</code>.
+          </p>
+        </div>
+      ) : null}
+      {status?.status === "not_authenticated" ? (
+        <div className="mt-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+          MiniMax CLI is installed but not authenticated. Run{" "}
+          <code className="font-mono">mmx auth login --api-key &lt;MINIMAX_API_KEY&gt;</code> from a
+          secure shell. If calls return 401, set the region with{" "}
+          <code className="font-mono">mmx config set --key region --value global</code>.
+        </div>
+      ) : null}
+
+      <div className="mt-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="font-medium">Send test message</div>
+            <p className="text-xs text-muted-foreground">
+              Sends the prompt below to <code className="font-mono">mmx run --json --prompt</code>{" "}
+              with cwd <code className="font-mono">/tmp</code>. No project is touched. Token usage
+              is surfaced when the CLI exposes it; null otherwise.
+            </p>
+          </div>
+        </div>
+
+        <form
+          className="mt-4 space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void sendChat();
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="minimax-prompt">Prompt</Label>
+            <Input
+              id="minimax-prompt"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="Reply with only: pong"
+              maxLength={4000}
+              disabled={chatDisabled}
+            />
+            <p className="text-xs text-muted-foreground">
+              Access: MiniMax CLI / MiniMax token plan. Not API-billed.
+            </p>
+          </div>
+          <Button type="submit" disabled={chatDisabled || !draft.trim()} data-testid="minimax-send">
+            {chat.kind === "sending" ? (
+              <Loader2 className="mr-1 size-3.5 animate-spin" />
+            ) : (
+              <Send className="mr-1 size-3.5" />
+            )}
+            Send to MiniMax CLI
+          </Button>
+        </form>
+
+        {chat.kind === "sending" ? (
+          <div className="mt-4 rounded-md border border-border/60 bg-muted/30 p-3 text-sm">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Sending to MiniMax (MiniMax-M3)…
+            </div>
+            <p className="mt-2 font-mono text-xs text-muted-foreground">&gt; {chat.message}</p>
+          </div>
+        ) : chat.kind === "ok" ? (
+          <div className="mt-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 className="size-4" />
+              MiniMax responded (exit {chat.payload.exitCode})
+              {chat.payload.durationMs != null
+                ? ` · ${(chat.payload.durationMs / 1000).toFixed(1)}s`
+                : ""}
+            </div>
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-background/60 p-2 font-mono text-xs">
+              {chat.payload.responseText || "(empty response)"}
+            </pre>
+            {chat.payload.tokenUsage ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Tokens: {chat.payload.tokenUsage.inputTokens.toLocaleString()} in ·{" "}
+                {chat.payload.tokenUsage.outputTokens.toLocaleString()} out ·{" "}
+                {chat.payload.tokenUsage.totalTokens.toLocaleString()} total
+              </p>
+            ) : null}
+          </div>
+        ) : chat.kind === "error" ? (
+          <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium text-destructive">
+              <XCircle className="size-4" />
+              MiniMax did not produce a response
+              {chat.payload.exitCode != null ? ` (exit ${chat.payload.exitCode})` : ""}
+            </div>
+            <p className="mt-2 text-xs text-destructive/90">{chat.payload.error}</p>
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }
