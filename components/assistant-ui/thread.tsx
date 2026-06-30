@@ -526,8 +526,12 @@ const ComposerAction: FC<{
     onUseRecommendation?.(recommenderEnabled ? composerText : undefined);
   };
 
-  const handleDeclineRecommendation = () => {
+  const handleDeclineAndSendRecommendation = () => {
     onKeepCurrent?.(recommenderEnabled ? composerText : undefined);
+  };
+
+  const handleDeclineRecommendation = () => {
+    onKeepCurrent?.();
   };
 
   const handleRecommendBeforeSend = () => {
@@ -718,7 +722,7 @@ const ComposerAction: FC<{
                   size="sm"
                   className="h-7 rounded-full px-3"
                   data-testid="recommender-decline"
-                  onClick={handleDeclineRecommendation}
+                  onClick={handleDeclineAndSendRecommendation}
                 >
                   {recommendation.loudFailure
                     ? "Keep current"
@@ -726,6 +730,18 @@ const ComposerAction: FC<{
                       ? "Decline & send"
                       : "Keep current"}
                 </Button>
+                {!recommendation.loudFailure && recommenderEnabled ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 rounded-full px-3"
+                    data-testid="recommender-decline-only"
+                    onClick={handleDeclineRecommendation}
+                  >
+                    Decline
+                  </Button>
+                ) : null}
               </div>
             </>
           ) : (
