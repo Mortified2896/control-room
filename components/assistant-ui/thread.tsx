@@ -289,6 +289,10 @@ function formatEta(ms: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function formatTimer(ms: number): string {
+  return formatEta(ms);
+}
+
 function formatSeconds(ms: number | null | undefined): string {
   return ms == null ? "—" : `${(ms / 1000).toFixed(1)}s`;
 }
@@ -677,7 +681,7 @@ const ComposerAction: FC<{
                   </div>
                   {recommendation.recommendationTelemetry ? (
                     <div className="mt-1 text-muted-foreground">
-                      Estimated recommendation time: {formatSeconds(recommendation.recommendationTelemetry.expected_latency_ms)} · Actual recommendation time: {formatSeconds(recommendation.recommendationTelemetry.actual_latency_ms)} · Deviation: {formatDeviation(recommendation.recommendationTelemetry.latency_deviation_ms, recommendation.recommendationTelemetry.latency_deviation_pct)} · Timing result: {recommendation.recommendationTelemetry.latency_result ?? "—"}
+                      Recommendation: {formatSeconds(recommendation.recommendationTelemetry.actual_latency_ms)} · time {compactPct(recommendation.recommendationTelemetry.latency_deviation_pct) ?? "—"}
                     </div>
                   ) : null}
                 </>
@@ -838,34 +842,60 @@ const ComposerAction: FC<{
 };
 
 const RecommendationWaitingLine: FC<{ eta: RecommendationEta | null }> = ({ eta }) => {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(id);
-  }, []);
-  if (!eta) {
-    return (
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" />
-        <span>Expected in 00:03 · rough</span>
-      </div>
-    );
-  }
-  const elapsed = now - new Date(eta.started_at).getTime();
-  let text: string;
-  if (elapsed < eta.expected_latency_ms) {
-    text = `Expected in ${formatEta(eta.expected_latency_ms)} · ${eta.estimate_quality}`;
-  } else if (elapsed < eta.upper_latency_ms) {
-    text = "Still waiting · late";
-  } else {
-    text = "Taking longer · unusual";
-  }
+  const fallbackStartedAtRef = useRef(new Date().toISOString());
+  const timer = eta ?? {
+    expected_latency_ms: 3_000,
+    upper_latency_ms: 7_500,
+    estimate_quality: "rough" as const,
+    started_at: fallbackStartedAtRef.current,
+  };
   return (
     <div className="flex items-center gap-2 text-muted-foreground">
       <Loader2 className="size-3.5 animate-spin" />
-      <span>{text}</span>
+      <CompactEstimateTimer
+        startedAt={timer.started_at}
+        expectedLatencyMs={timer.expected_latency_ms}
+        upperLatencyMs={timer.upper_latency_ms}
+        estimateQuality={timer.estimate_quality}
+        mode="recommendation"
+      />
     </div>
   );
+};
+
+type CompactEstimateTimerProps = {
+  startedAt: string;
+  expectedLatencyMs: number;
+  upperLatencyMs: number;
+  estimateQuality: "likely" | "uncertain" | "rough";
+  mode: "recommendation" | "execution";
+};
+
+const CompactEstimateTimer: FC<CompactEstimateTimerProps> = ({
+  startedAt,
+  expectedLatencyMs,
+  upperLatencyMs,
+  estimateQuality,
+}) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const elapsedMs = Math.max(0, now - new Date(startedAt).getTime());
+  const remainingMs = Math.max(0, expectedLatencyMs - elapsedMs);
+  if (elapsedMs < expectedLatencyMs) {
+    return (
+      <span>
+        Expected in {formatTimer(remainingMs)} · elapsed {formatTimer(elapsedMs)} · {estimateQuality}
+      </span>
+    );
+  }
+  if (elapsedMs < upperLatencyMs) {
+    return <span>Expected now · elapsed {formatTimer(elapsedMs)} · late</span>;
+  }
+  return <span>Taking longer · elapsed {formatTimer(elapsedMs)} · unusual</span>;
 };
 
 const MessageError: FC = () => {
@@ -893,10 +923,12 @@ type ExecutionEstimateData = {
   recommended_model_id?: string | null;
   estimated_cost_usd?: number | null;
   expected_execution_latency_ms: number;
+  upper_execution_latency_ms: number;
   expected_input_tokens: number;
   expected_output_tokens: number;
   expected_total_tokens: number;
   estimate_quality: "likely" | "uncertain" | "rough";
+  started_at: string;
 };
 
 type ExecutionOutcomeData = {
@@ -946,12 +978,24 @@ const ExecutionTelemetryLine: FC<{ parts: readonly unknown[] }> = ({ parts }) =>
   const tokenText = outcome
     ? `${compactTokens(outcome.actual_total_tokens)} tokens`
     : `~${compactTokens(estimate.expected_total_tokens)} tokens`;
-  const deviationText = outcome
-    ? [compactPct(outcome.latency_deviation_pct), compactPct(outcome.token_deviation_pct)]
-        .map((value, index) => (value ? `${index === 0 ? "time" : "tokens"} ${value}` : null))
-        .filter(Boolean)
-        .join(" · ")
-    : "";
+  if (!outcome) {
+    return (
+      <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground/75">
+        <Loader2 className="size-3.5 animate-spin" />
+        <CompactEstimateTimer
+          startedAt={estimate.started_at}
+          expectedLatencyMs={estimate.expected_execution_latency_ms}
+          upperLatencyMs={estimate.upper_execution_latency_ms}
+          estimateQuality={estimate.estimate_quality}
+          mode="execution"
+        />
+      </div>
+    );
+  }
+  const deviationText = [compactPct(outcome.latency_deviation_pct), compactPct(outcome.token_deviation_pct)]
+    .map((value, index) => (value ? `${index === 0 ? "time" : "tokens"} ${value}` : null))
+    .filter(Boolean)
+    .join(" · ");
   return (
     <div className="mt-2 text-xs text-muted-foreground/75">
       <button
