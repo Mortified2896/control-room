@@ -883,9 +883,45 @@ const MessageError: FC = () => {
   );
 };
 
+type ExecutionEstimateData = {
+  runId: string | null;
+  model_id?: string;
+  model_name?: string;
+  reasoning_level?: string | null;
+  provider_path?: string;
+  selected_model_id?: string;
+  recommended_model_id?: string | null;
+  estimated_cost_usd?: number | null;
+  expected_execution_latency_ms: number;
+  expected_input_tokens: number;
+  expected_output_tokens: number;
+  expected_total_tokens: number;
+  estimate_quality: "likely" | "uncertain" | "rough";
+};
+
+type ExecutionOutcomeData = {
+  runId: string | null;
+  actual_execution_latency_ms: number;
+  actual_input_tokens: number;
+  actual_output_tokens: number;
+  actual_total_tokens: number;
+  latency_deviation_ms: number;
+  latency_deviation_pct: number | null;
+  token_deviation_count: number;
+  token_deviation_pct: number | null;
+  latency_result: string;
+  token_result: string;
+};
+
+function isDataPart(part: unknown, name: string) {
+  if (typeof part !== "object" || part === null) return false;
+  const p = part as { type?: string; name?: string };
+  return p.type === `data-${name}` || (p.type === "data" && p.name === name);
+}
+
 function executionTelemetryFromParts(parts: readonly unknown[]) {
-  const estimatePart = parts.find((p) => typeof p === "object" && p !== null && (p as { type?: string }).type === "data-router-execution-estimate") as { data?: { expected_execution_latency_ms: number; expected_total_tokens: number; estimate_quality: "likely" | "uncertain" | "rough" } } | undefined;
-  const outcomePart = parts.find((p) => typeof p === "object" && p !== null && (p as { type?: string }).type === "data-router-execution-outcome") as { data?: { actual_execution_latency_ms: number; actual_total_tokens: number; latency_deviation_ms: number; latency_deviation_pct: number | null; token_deviation_count: number; token_deviation_pct: number | null; latency_result: string; token_result: string } } | undefined;
+  const estimatePart = parts.find((p) => isDataPart(p, "router-execution-estimate")) as { data?: ExecutionEstimateData } | undefined;
+  const outcomePart = parts.find((p) => isDataPart(p, "router-execution-outcome")) as { data?: ExecutionOutcomeData } | undefined;
   return { estimate: estimatePart?.data, outcome: outcomePart?.data };
 }
 
@@ -893,19 +929,53 @@ function compactTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+function compactPct(n: number | null): string | null {
+  if (n == null) return null;
+  return `${n >= 0 ? "+" : ""}${Math.round(n)}%`;
+}
+
 const ExecutionTelemetryLine: FC<{ parts: readonly unknown[] }> = ({ parts }) => {
   const { estimate, outcome } = executionTelemetryFromParts(parts);
+  const [expanded, setExpanded] = useState(false);
   if (!estimate) return null;
-  if (!outcome) {
-    return (
-      <div className="mt-2 text-xs text-muted-foreground">
-        Expected answer: ~{formatEta(estimate.expected_execution_latency_ms)} · ~{compactTokens(estimate.expected_total_tokens)} tokens · {estimate.estimate_quality}
-      </div>
-    );
-  }
+  const modelName = estimate.model_name ?? estimate.model_id ?? "Model";
+  const reasoning = estimate.reasoning_level ? ` · reasoning ${estimate.reasoning_level}` : "";
+  const timeText = outcome
+    ? formatSeconds(outcome.actual_execution_latency_ms)
+    : `~${formatEta(estimate.expected_execution_latency_ms)}`;
+  const tokenText = outcome
+    ? `${compactTokens(outcome.actual_total_tokens)} tokens`
+    : `~${compactTokens(estimate.expected_total_tokens)} tokens`;
+  const deviationText = outcome
+    ? [compactPct(outcome.latency_deviation_pct), compactPct(outcome.token_deviation_pct)]
+        .map((value, index) => (value ? `${index === 0 ? "time" : "tokens"} ${value}` : null))
+        .filter(Boolean)
+        .join(" · ")
+    : "";
   return (
-    <div className="mt-2 text-xs text-muted-foreground">
-      Estimated answer time: {formatSeconds(estimate.expected_execution_latency_ms)} · Actual answer time: {formatSeconds(outcome.actual_execution_latency_ms)} · Time deviation: {formatDeviation(outcome.latency_deviation_ms, outcome.latency_deviation_pct)} · Estimated tokens: {estimate.expected_total_tokens.toLocaleString()} · Actual tokens: {outcome.actual_total_tokens.toLocaleString()} · Token deviation: {outcome.token_deviation_count >= 0 ? "+" : ""}{outcome.token_deviation_count.toLocaleString()} / {outcome.token_deviation_pct == null ? "—" : `${outcome.token_deviation_pct >= 0 ? "+" : ""}${Math.round(outcome.token_deviation_pct)}%`} · Timing result: {outcome.latency_result} · Token result: {outcome.token_result}
+    <div className="mt-2 text-xs text-muted-foreground/75">
+      <button
+        type="button"
+        className="text-left hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((open) => !open)}
+      >
+        {modelName}{reasoning} · {timeText} · {tokenText}{deviationText ? ` · ${deviationText}` : ""}
+      </button>
+      {expanded ? (
+        <dl className="mt-1 grid gap-x-3 gap-y-0.5 rounded-lg border border-border/40 bg-muted/20 p-2 text-[11px] sm:grid-cols-[max-content_1fr]">
+          <dt>Model</dt><dd>{modelName}</dd>
+          <dt>Reasoning</dt><dd>{estimate.reasoning_level ?? "—"}</dd>
+          <dt>Provider path</dt><dd>{estimate.provider_path ?? "—"}</dd>
+          <dt>Selected / recommended</dt><dd>{estimate.selected_model_id ?? "—"}{estimate.recommended_model_id ? ` / ${estimate.recommended_model_id}` : " / —"}</dd>
+          <dt>Generation time</dt><dd>est {formatSeconds(estimate.expected_execution_latency_ms)} · actual {outcome ? formatSeconds(outcome.actual_execution_latency_ms) : "—"}{outcome ? ` · ${formatDeviation(outcome.latency_deviation_ms, outcome.latency_deviation_pct)}` : ""}</dd>
+          <dt>Input tokens</dt><dd>est {estimate.expected_input_tokens.toLocaleString()} · actual {outcome?.actual_input_tokens.toLocaleString() ?? "—"}</dd>
+          <dt>Output tokens</dt><dd>est {estimate.expected_output_tokens.toLocaleString()} · actual {outcome?.actual_output_tokens.toLocaleString() ?? "—"}</dd>
+          <dt>Total tokens</dt><dd>est {estimate.expected_total_tokens.toLocaleString()} · actual {outcome?.actual_total_tokens.toLocaleString() ?? "—"}{outcome ? ` · ${outcome.token_deviation_count >= 0 ? "+" : ""}${outcome.token_deviation_count.toLocaleString()} / ${compactPct(outcome.token_deviation_pct) ?? "—"}` : ""}</dd>
+          <dt>Cost</dt><dd>est {estimate.estimated_cost_usd == null ? "—" : `$${estimate.estimated_cost_usd.toFixed(6)}`} · actual —</dd>
+          {process.env.NODE_ENV !== "production" ? <><dt>Run ids</dt><dd>recommendation — · execution {estimate.runId ?? outcome?.runId ?? "—"}</dd></> : null}
+        </dl>
+      ) : null}
     </div>
   );
 };

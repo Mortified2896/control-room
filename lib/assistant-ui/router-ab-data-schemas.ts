@@ -57,6 +57,13 @@ const routerAbSideBSchema = z.object({
 
 const routerExecutionEstimateSchema = z.object({
   runId: z.string().nullable(),
+  model_id: z.string(),
+  model_name: z.string(),
+  reasoning_level: z.string().nullable(),
+  provider_path: z.string(),
+  selected_model_id: z.string(),
+  recommended_model_id: z.string().nullable(),
+  estimated_cost_usd: z.number().nullable(),
   expected_execution_latency_ms: z.number().int().nonnegative(),
   upper_execution_latency_ms: z.number().int().nonnegative(),
   expected_input_tokens: z.number().int().nonnegative(),

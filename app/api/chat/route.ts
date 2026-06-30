@@ -116,6 +116,13 @@ export type RouterAbDataParts = {
   };
   "router-execution-estimate": {
     runId: string | null;
+    model_id: string;
+    model_name: string;
+    reasoning_level: string | null;
+    provider_path: string;
+    selected_model_id: string;
+    recommended_model_id: string | null;
+    estimated_cost_usd: number | null;
     expected_execution_latency_ms: number;
     upper_execution_latency_ms: number;
     expected_input_tokens: number;
@@ -451,6 +458,8 @@ export async function POST(req: Request) {
     contextTokenEstimate: executionContextTokens,
     stepId: "normal_chat",
   });
+  const executionModelName = getModelMeta(result.resolved.modelId)?.modelLabel ?? result.resolved.modelId;
+  const recommendedModelId = rawSelectionSource === "user_accepted" ? result.resolved.modelId : null;
   const executionStartedAtMs = Date.now();
   const executionStartedAt = new Date(executionStartedAtMs).toISOString();
   const executionRunId = await createExecutionRun({
@@ -505,6 +514,13 @@ export async function POST(req: Request) {
         type: "data-router-execution-estimate",
         data: {
           runId: executionRunId,
+          model_id: result.resolved.modelId,
+          model_name: executionModelName,
+          reasoning_level: reasoningOption ?? null,
+          provider_path: result.resolved.providerId,
+          selected_model_id: result.resolved.modelId,
+          recommended_model_id: recommendedModelId,
+          estimated_cost_usd: executionEstimate.estimatedCostUsd,
           expected_execution_latency_ms: executionEstimate.expectedLatencyMs,
           upper_execution_latency_ms: executionEstimate.upperLatencyMs,
           expected_input_tokens: executionEstimate.expectedInputTokens,
