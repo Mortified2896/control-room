@@ -45,7 +45,7 @@ import {
   ThumbsDownIcon,
   ThumbsUpIcon,
 } from "lucide-react";
-import { useEffect, useState, type FC, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -68,6 +68,8 @@ type HandoffTaskType = "implement" | "debug" | "inspect" | "refactor" | "test" |
  * model's `reasoningCapability.options`.
  */
 type ReasoningLevel = string;
+
+type PendingRecommendedSend = { id: number; text: string };
 
 type ModelRecommendation = {
   recommendedModelId: string;
@@ -110,8 +112,10 @@ export const Thread: FC<{
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
   onRecommend?: (message: string) => void;
-  onUseRecommendation?: () => void;
-  onKeepCurrent?: () => void;
+  onUseRecommendation?: (draftText?: string) => void;
+  onKeepCurrent?: (draftText?: string) => void;
+  pendingRecommendedSend?: PendingRecommendedSend | null;
+  onPendingRecommendedSendConsumed?: (id: number) => void;
 }> = ({
   threadId,
   activeProjectId = null,
@@ -131,6 +135,8 @@ export const Thread: FC<{
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
+  pendingRecommendedSend = null,
+  onPendingRecommendedSendConsumed,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -194,6 +200,8 @@ export const Thread: FC<{
               onRecommend={onRecommend}
               onUseRecommendation={onUseRecommendation}
               onKeepCurrent={onKeepCurrent}
+              pendingRecommendedSend={pendingRecommendedSend}
+              onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
             />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
@@ -281,8 +289,10 @@ const Composer: FC<{
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
   onRecommend?: (message: string) => void;
-  onUseRecommendation?: () => void;
-  onKeepCurrent?: () => void;
+  onUseRecommendation?: (draftText?: string) => void;
+  onKeepCurrent?: (draftText?: string) => void;
+  pendingRecommendedSend?: PendingRecommendedSend | null;
+  onPendingRecommendedSendConsumed?: (id: number) => void;
 }> = ({
   threadId,
   activeProjectId,
@@ -298,6 +308,8 @@ const Composer: FC<{
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
+  pendingRecommendedSend = null,
+  onPendingRecommendedSendConsumed,
 }) => {
   const [error, setError] = useState<string | null>(null);
   const composerText = useAuiState((s) => s.composer.text);
@@ -363,6 +375,8 @@ const Composer: FC<{
             fallbackEngineSummary={fallbackEngineSummary}
             onUseRecommendation={onUseRecommendation}
             onKeepCurrent={onKeepCurrent}
+            pendingRecommendedSend={pendingRecommendedSend}
+            onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
           />
           {isCodingTask && error ? (
             <div className="px-2 text-xs font-medium text-destructive" role="alert">
@@ -389,8 +403,10 @@ const ComposerAction: FC<{
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
-  onUseRecommendation?: () => void;
-  onKeepCurrent?: () => void;
+  onUseRecommendation?: (draftText?: string) => void;
+  onKeepCurrent?: (draftText?: string) => void;
+  pendingRecommendedSend?: PendingRecommendedSend | null;
+  onPendingRecommendedSendConsumed?: (id: number) => void;
 }> = ({
   isCodingTask,
   worker,
@@ -407,46 +423,46 @@ const ComposerAction: FC<{
   fallbackEngineSummary,
   onUseRecommendation,
   onKeepCurrent,
+  pendingRecommendedSend = null,
+  onPendingRecommendedSendConsumed,
 }) => {
   const aui = useAui();
   const [creatingDraft, setCreatingDraft] = useState(false);
   const composerText = useAuiState((s) => s.composer.text);
-  // Toggle-ON flow: after Accept/Decline we need to programmatically
-  // trigger the actual send (the intercept in `ComposerPrimitive.Root.onSubmit`
-  // swallowed the initial Send so we cannot rely on the runtime's
-  // built-in send). We schedule it via a useEffect so the parent's
-  // model/recommendation state updates land before `send()` runs
-  // (React 18 batches both setState calls in the same handler).
-  const [pendingSendAfterRecommend, setPendingSendAfterRecommend] = useState(false);
+  // Toggle-ON flow: after Accept/Decline the parent stores the draft
+  // above ChatPane, updates the selected model, then passes the pending
+  // send back down. Keeping this pending action above the runtime is
+  // important: accepting a recommendation can swap between the AI SDK
+  // and Codex panes, which otherwise unmounts this component and loses
+  // the scheduled send.
+  const lastConsumedPendingSendId = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!pendingSendAfterRecommend) return;
-    setPendingSendAfterRecommend(false);
+    if (!pendingRecommendedSend) return;
+    if (lastConsumedPendingSendId.current === pendingRecommendedSend.id) return;
+    lastConsumedPendingSendId.current = pendingRecommendedSend.id;
+
     try {
-      aui.composer().send();
+      const composer = aui.composer();
+      composer.setText(pendingRecommendedSend.text);
+      composer.send();
     } catch (err) {
       // Surfacing send errors here would interrupt the user's flow;
       // the runtime already surfaces them via the assistant message
       // status. Log and bail.
       // eslint-disable-next-line no-console
       console.error("[composer] post-recommend send failed:", err);
+    } finally {
+      onPendingRecommendedSendConsumed?.(pendingRecommendedSend.id);
     }
-  }, [pendingSendAfterRecommend, aui]);
+  }, [pendingRecommendedSend, aui, onPendingRecommendedSendConsumed]);
 
   const handleAcceptRecommendation = () => {
-    onUseRecommendation?.();
-    if (recommenderEnabled) {
-      // Trigger send on the next render so the model change has
-      // committed before the runtime reads it.
-      setPendingSendAfterRecommend(true);
-    }
+    onUseRecommendation?.(recommenderEnabled ? composerText : undefined);
   };
 
   const handleDeclineRecommendation = () => {
-    onKeepCurrent?.();
-    if (recommenderEnabled) {
-      setPendingSendAfterRecommend(true);
-    }
+    onKeepCurrent?.(recommenderEnabled ? composerText : undefined);
   };
 
   const createDraft = async () => {

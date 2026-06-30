@@ -302,6 +302,33 @@ test("OpenAI API / OpenRouter-like API billing are never selected as fallback", 
   );
 });
 
+test("accepted discovered MiniMax subscription model executes exact selection when sync resolver lacks it", () => {
+  const discoveredMiniMax = option({
+    providerId: "minimax",
+    modelId: "MiniMax-M2.1-highspeed",
+    capability: { kind: "thinking_budget", control: "unknown" },
+  });
+  const knownModels = baseModels;
+  const res = preflightChatModel({
+    modelId: "MiniMax-M2.1-highspeed",
+    reasoningOption: "low",
+    thinkingMode: "provider_default",
+    selectionSource: "user_accepted",
+    availableModels: [discoveredMiniMax, ...knownModels],
+    resolveModel: resolver(knownModels),
+    getModelMeta: metaLookup(knownModels),
+  });
+
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.metadata.modelId, "MiniMax-M2.1-highspeed");
+    assert.equal(res.metadata.providerId, "minimax");
+    assert.equal(res.metadata.selectionSource, "user_accepted");
+    assert.equal(res.metadata.billingSource, "subscription");
+    assert.deepEqual(res.reasoningCapability, discoveredMiniMax.reasoningCapability);
+  }
+});
+
 test("accepted subscription proposal is represented as explicit user-accepted selection, not fallback", () => {
   const res = preflightChatModel({
     modelId: "MiniMax-M3",

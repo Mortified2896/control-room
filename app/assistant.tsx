@@ -121,6 +121,8 @@ type ModelsResponse = {
   defaultReasoningLevel: ReasoningLevel;
 };
 
+type PendingRecommendedSend = { id: number; text: string };
+
 type ModelRecommendation = {
   recommendedModelId: string;
   recommendedProvider: string;
@@ -301,8 +303,10 @@ const CodexChatPane: FC<{
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
   onRecommend?: (message: string) => void;
-  onUseRecommendation?: () => void;
-  onKeepCurrent?: () => void;
+  onUseRecommendation?: (draftText?: string) => void;
+  onKeepCurrent?: (draftText?: string) => void;
+  pendingRecommendedSend?: PendingRecommendedSend | null;
+  onPendingRecommendedSendConsumed?: (id: number) => void;
 }> = ({
   modelId,
   threadId,
@@ -323,6 +327,8 @@ const CodexChatPane: FC<{
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
+  pendingRecommendedSend = null,
+  onPendingRecommendedSendConsumed,
 }) => {
   const codexModel = modelId?.startsWith("codex:")
     ? modelId.slice("codex:".length)
@@ -396,6 +402,8 @@ const CodexChatPane: FC<{
         onRecommend={onRecommend}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
+        pendingRecommendedSend={pendingRecommendedSend}
+        onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
       />
     </AssistantRuntimeProvider>
   );
@@ -423,8 +431,10 @@ const ChatPane: FC<{
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
   onRecommend?: (message: string) => void;
-  onUseRecommendation?: () => void;
-  onKeepCurrent?: () => void;
+  onUseRecommendation?: (draftText?: string) => void;
+  onKeepCurrent?: (draftText?: string) => void;
+  pendingRecommendedSend?: PendingRecommendedSend | null;
+  onPendingRecommendedSendConsumed?: (id: number) => void;
 }> = ({
   modelId,
   threadId,
@@ -449,6 +459,8 @@ const ChatPane: FC<{
   onRecommend,
   onUseRecommendation,
   onKeepCurrent,
+  pendingRecommendedSend = null,
+  onPendingRecommendedSendConsumed,
 }) => {
   const selectedModel = models.find((m) => m.modelId === modelId) ?? null;
   if (selectedModel?.providerId === "codex") {
@@ -476,6 +488,8 @@ const ChatPane: FC<{
         onRecommend={onRecommend}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
+        pendingRecommendedSend={pendingRecommendedSend}
+        onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
       />
     );
   }
@@ -541,6 +555,8 @@ const ChatPane: FC<{
         onRecommend={onRecommend}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
+        pendingRecommendedSend={pendingRecommendedSend}
+        onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
       />
     </AssistantRuntimeProvider>
   );
@@ -1141,6 +1157,9 @@ export const Assistant = () => {
   }, []);
   const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [pendingRecommendedSend, setPendingRecommendedSend] =
+    useState<PendingRecommendedSend | null>(null);
+  const pendingRecommendedSendCounter = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCoarsePointer = useMediaQuery("(pointer: coarse)");
   const newChatCounter = useRef(0);
@@ -1626,21 +1645,34 @@ export const Assistant = () => {
     [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
   );
 
-  const handleUseRecommendation = useCallback(() => {
-    if (!recommendation) return;
-    const proposed = recommendation.loudFailure
-      ? (recommendation.proposedSubscriptionFallbacks?.[0] ?? null)
-      : null;
-    setSelectedModelId(proposed?.toModelId ?? recommendation.recommendedModelId);
-    setSelectedModelSelectionSource("user_accepted");
-    if (!proposed && recommendation.recommendedReasoningLevel) {
-      setSelectedReasoningLevel(recommendation.recommendedReasoningLevel);
-    }
-    // TODO: persist accepted recommendation history in run/message metadata.
-    setRecommendation(null);
-  }, [recommendation]);
+  const handleUseRecommendation = useCallback(
+    (draftText?: string) => {
+      if (!recommendation) return;
+      const proposed = recommendation.loudFailure
+        ? (recommendation.proposedSubscriptionFallbacks?.[0] ?? null)
+        : null;
+      setSelectedModelId(proposed?.toModelId ?? recommendation.recommendedModelId);
+      setSelectedModelSelectionSource("user_accepted");
+      if (!proposed && recommendation.recommendedReasoningLevel) {
+        setSelectedReasoningLevel(recommendation.recommendedReasoningLevel);
+      }
+      if (draftText?.trim()) {
+        pendingRecommendedSendCounter.current += 1;
+        setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
+      }
+      // TODO: persist accepted recommendation history in run/message metadata.
+      setRecommendation(null);
+    },
+    [recommendation],
+  );
 
-  const handleKeepCurrent = useCallback(() => setRecommendation(null), []);
+  const handleKeepCurrent = useCallback((draftText?: string) => {
+    if (draftText?.trim()) {
+      pendingRecommendedSendCounter.current += 1;
+      setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
+    }
+    setRecommendation(null);
+  }, []);
 
   // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
   // full registry. The typing guard (isTypingTarget) is enforced here for
@@ -1838,6 +1870,10 @@ export const Assistant = () => {
               onRecommend={handleRecommendModel}
               onUseRecommendation={handleUseRecommendation}
               onKeepCurrent={handleKeepCurrent}
+              pendingRecommendedSend={pendingRecommendedSend}
+              onPendingRecommendedSendConsumed={(id) =>
+                setPendingRecommendedSend((pending) => (pending?.id === id ? null : pending))
+              }
               onFinish={() => void refreshThreads()}
             />
           )}

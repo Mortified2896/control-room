@@ -227,30 +227,46 @@ export function preflightChatModel(input: {
     });
   }
 
-  const resolved = input.resolveModel(input.modelId);
-  if (!resolved.ok) {
-    const err = resolved.error;
-    return buildChatLoudFailure({
-      kind: err.kind === "provider_disabled" ? "provider_access_blocked" : "unknown_model",
-      status: err.kind === "unknown_model" ? 400 : 503,
-      message:
-        err.kind === "no_models_available"
-          ? "No models are available. Configure a provider in Settings."
-          : err.kind === "provider_disabled"
-            ? err.reason
-            : "The selected model is hidden, unavailable, or not configured. Re-enable it in Settings or choose another model.",
-      requestedModelId: input.modelId,
-      requestedProviderId,
-      selectionSource,
-      billingSource: requestedBillingSource,
-      availableModels: input.availableModels,
-    });
+  const resolverResult = input.resolveModel(input.modelId);
+  if (!resolverResult.ok) {
+    const err = resolverResult.error;
+    if (err.kind !== "unknown_model") {
+      return buildChatLoudFailure({
+        kind: err.kind === "provider_disabled" ? "provider_access_blocked" : "unknown_model",
+        status: 503,
+        message:
+          err.kind === "no_models_available"
+            ? "No models are available. Configure a provider in Settings."
+            : err.reason,
+        requestedModelId: input.modelId,
+        requestedProviderId,
+        selectionSource,
+        billingSource: requestedBillingSource,
+        availableModels: input.availableModels,
+      });
+    }
   }
 
+  // `availableModels` is the effective async registry used by the chat UI and
+  // recommender. It can include subscription-backed discovered models (for
+  // example MiniMax IDs from provider discovery) that the older synchronous
+  // resolver does not know about. If the effective registry says the exact
+  // selected model is enabled, execute that exact model instead of failing and
+  // proposing a different fallback. This is not a silent substitution: the
+  // model id/provider/billing source all come from the user's explicit or
+  // accepted selection above.
+  const resolved: ResolvedModel = resolverResult.ok
+    ? resolverResult.resolved
+    : {
+        providerId: requestedProviderId,
+        modelId: selected.modelId,
+        billingSource: requestedBillingSource,
+      };
+
   if (
-    resolved.resolved.providerId !== requestedProviderId ||
-    resolved.resolved.modelId !== selected.modelId ||
-    resolved.resolved.billingSource !== requestedBillingSource
+    resolved.providerId !== requestedProviderId ||
+    resolved.modelId !== selected.modelId ||
+    resolved.billingSource !== requestedBillingSource
   ) {
     return buildChatLoudFailure({
       kind: "model_unavailable",
@@ -267,19 +283,18 @@ export function preflightChatModel(input: {
 
   const reasoningOption = parseChatReasoningOption(input.reasoningOption);
   const thinkingMode = parseChatThinkingMode(input.thinkingMode);
-  const meta = input.getModelMeta(resolved.resolved.modelId);
-  const reasoningCapability =
-    meta?.reasoningCapability ?? ({ kind: "unknown", control: "unknown" } as const);
+  const meta = input.getModelMeta(resolved.modelId);
+  const reasoningCapability = meta?.reasoningCapability ?? selected.reasoningCapability;
 
   if (thinkingMode === "__invalid__") {
     return buildChatLoudFailure({
       kind: "thinking_mode_unsupported",
       status: 400,
       message: "Invalid thinking mode. Control Room will not silently use a provider default.",
-      requestedModelId: resolved.resolved.modelId,
-      requestedProviderId: resolved.resolved.providerId,
+      requestedModelId: resolved.modelId,
+      requestedProviderId: resolved.providerId,
       selectionSource,
-      billingSource: resolved.resolved.billingSource,
+      billingSource: resolved.billingSource,
       availableModels: input.availableModels,
     });
   }
@@ -294,27 +309,27 @@ export function preflightChatModel(input: {
     return buildChatLoudFailure({
       kind: "thinking_mode_unsupported",
       status: 400,
-      message: `Thinking mode ${thinkingMode} is not supported by ${resolved.resolved.modelId}.`,
-      requestedModelId: resolved.resolved.modelId,
-      requestedProviderId: resolved.resolved.providerId,
+      message: `Thinking mode ${thinkingMode} is not supported by ${resolved.modelId}.`,
+      requestedModelId: resolved.modelId,
+      requestedProviderId: resolved.providerId,
       selectionSource,
-      billingSource: resolved.resolved.billingSource,
+      billingSource: resolved.billingSource,
       availableModels: input.availableModels,
     });
   }
 
   return {
     ok: true,
-    resolved: resolved.resolved,
+    resolved,
     selectedModel: selected,
     selectionSource,
     reasoningOption,
     thinkingMode,
     reasoningCapability,
     metadata: {
-      providerId: resolved.resolved.providerId,
-      modelId: resolved.resolved.modelId,
-      billingSource: resolved.resolved.billingSource,
+      providerId: resolved.providerId,
+      modelId: resolved.modelId,
+      billingSource: resolved.billingSource,
       selectionSource,
       path: selected.accessPath,
     },
