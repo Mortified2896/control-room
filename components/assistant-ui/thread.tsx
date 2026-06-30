@@ -893,25 +893,32 @@ const CompactEstimateTimer: FC<CompactEstimateTimerProps> = ({
   upperLatencyMs,
   estimateQuality,
 }) => {
+  const originalEstimateRef = useRef({ startedAt, expectedLatencyMs });
+  if (originalEstimateRef.current.startedAt !== startedAt) {
+    originalEstimateRef.current = { startedAt, expectedLatencyMs };
+  }
+
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
 
+  const originalEstimateMs = originalEstimateRef.current.expectedLatencyMs;
   const elapsedMs = Math.max(0, now - new Date(startedAt).getTime());
   const remainingMs = Math.max(0, expectedLatencyMs - elapsedMs);
+  const elapsedEstimateText = `elapsed ${formatTimer(elapsedMs)} / est ${formatTimer(originalEstimateMs)}`;
   if (elapsedMs < expectedLatencyMs) {
     return (
       <span>
-        Expected in {formatTimer(remainingMs)} · elapsed {formatTimer(elapsedMs)} · {estimateQuality}
+        Expected in {formatTimer(remainingMs)} · {elapsedEstimateText} · {estimateQuality}
       </span>
     );
   }
   if (elapsedMs < upperLatencyMs) {
-    return <span>Expected now · elapsed {formatTimer(elapsedMs)} · late</span>;
+    return <span>Expected now · {elapsedEstimateText} · late</span>;
   }
-  return <span>Taking longer · elapsed {formatTimer(elapsedMs)} · unusual</span>;
+  return <span>Taking longer · {elapsedEstimateText} · unusual</span>;
 };
 
 const MessageError: FC = () => {
