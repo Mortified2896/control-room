@@ -55,8 +55,9 @@ export async function GET(_req: Request) {
     configured?: boolean;
     reasoningCapability: import("@/lib/providers/capability").ReasoningCapability;
   }>;
+  const allowOpenAiApiRouter = data.effective?.allowOpenAiApiRouter === true;
   const openaiOptions: RecommenderModelOptionDto[] = registryModels
-    .filter((m) => m.providerId === "openai" && (m.configured ?? false))
+    .filter((m) => m.providerId === "openai" && (m.configured ?? false) && allowOpenAiApiRouter)
     .map((m) => ({
       modelId: m.modelId,
       displayLabel: m.displayLabel,

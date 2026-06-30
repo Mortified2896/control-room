@@ -27,6 +27,7 @@ function toProjectRow(r: RawProject): ProjectRow {
     id: r.id,
     name: r.name,
     localPath: r.local_path,
+    repoPath: r.local_path,
     gitRemoteUrl: r.git_remote_url,
     gitBranch: r.git_branch,
     createdAt: r.created_at.toISOString(),
@@ -188,17 +189,34 @@ export async function openProject(localPath: string): Promise<ProjectRow> {
   const gitBranch = await gitValue(normalized, ["branch", "--show-current"]);
 
   return withClient(async (c) => {
-    const { rows } = await c.query<RawProject>(
-      `INSERT INTO projects (name, local_path, git_remote_url, git_branch, last_opened_at)
-       VALUES ($1, $2, $3, $4, now())
-       ON CONFLICT (local_path) DO UPDATE SET
-         name = EXCLUDED.name,
-         git_remote_url = EXCLUDED.git_remote_url,
-         git_branch = EXCLUDED.git_branch,
-         last_opened_at = now()
-       RETURNING id, name, local_path, git_remote_url, git_branch, created_at, updated_at, last_opened_at`,
-      [name, normalized, gitRemoteUrl, gitBranch],
-    );
-    return toProjectRow(rows[0]);
+    try {
+      const { rows } = await c.query<RawProject>(
+        `INSERT INTO projects (name, local_path, repo_path, git_remote_url, git_branch, last_opened_at)
+         VALUES ($1, $2, $2, $3, $4, now())
+         ON CONFLICT (local_path) DO UPDATE SET
+           name = EXCLUDED.name,
+           repo_path = EXCLUDED.repo_path,
+           git_remote_url = EXCLUDED.git_remote_url,
+           git_branch = EXCLUDED.git_branch,
+           last_opened_at = now()
+         RETURNING id, name, local_path, git_remote_url, git_branch, created_at, updated_at, last_opened_at`,
+        [name, normalized, gitRemoteUrl, gitBranch],
+      );
+      return toProjectRow(rows[0]);
+    } catch (err) {
+      if ((err as { code?: string }).code !== "42703") throw err;
+      const { rows } = await c.query<RawProject>(
+        `INSERT INTO projects (name, local_path, git_remote_url, git_branch, last_opened_at)
+         VALUES ($1, $2, $3, $4, now())
+         ON CONFLICT (local_path) DO UPDATE SET
+           name = EXCLUDED.name,
+           git_remote_url = EXCLUDED.git_remote_url,
+           git_branch = EXCLUDED.git_branch,
+           last_opened_at = now()
+         RETURNING id, name, local_path, git_remote_url, git_branch, created_at, updated_at, last_opened_at`,
+        [name, normalized, gitRemoteUrl, gitBranch],
+      );
+      return toProjectRow(rows[0]);
+    }
   });
 }

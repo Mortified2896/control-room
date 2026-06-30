@@ -55,7 +55,7 @@ const EXEC_TIMEOUT_MS = 120_000;
 export function resolveCodexBinary(): string | null {
   // 1. Explicit override (used for testing / pinning a path).
   const explicit = process.env.CODEX_BIN_PATH?.trim();
-  if (explicit && existsSync(explicit)) {
+  if (explicit && existsSync(/* turbopackIgnore: true */ explicit)) {
     return explicit;
   }
   // 2. PATH lookup (cached on first miss so we don't re-spawn `which`
@@ -68,7 +68,7 @@ export function resolveCodexBinary(): string | null {
     "/usr/bin/codex",
   ];
   for (const c of candidates) {
-    if (existsSync(c)) return c;
+    if (existsSync(/* turbopackIgnore: true */ c)) return c;
   }
   return null;
 }
@@ -76,7 +76,7 @@ export function resolveCodexBinary(): string | null {
 /** Resolved scratch directory, created on demand. */
 export function resolveScratchDir(): string {
   const dir = process.env.CODEX_SMOKE_DIR?.trim() || DEFAULT_SCRATCH_DIR;
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(/* turbopackIgnore: true */ dir, { recursive: true });
   return dir;
 }
 

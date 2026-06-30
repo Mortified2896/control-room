@@ -55,12 +55,42 @@ const routerAbSideBSchema = z.object({
   actual_latency_ms: z.number().int().nonnegative(),
 });
 
+const routerExecutionEstimateSchema = z.object({
+  runId: z.string().nullable(),
+  expected_execution_latency_ms: z.number().int().nonnegative(),
+  upper_execution_latency_ms: z.number().int().nonnegative(),
+  expected_input_tokens: z.number().int().nonnegative(),
+  expected_output_tokens: z.number().int().nonnegative(),
+  expected_total_tokens: z.number().int().nonnegative(),
+  estimate_quality: z.enum(["likely", "uncertain", "rough"]),
+  started_at: z.string(),
+});
+
+const routerExecutionOutcomeSchema = z.object({
+  runId: z.string().nullable(),
+  actual_execution_latency_ms: z.number().int().nonnegative(),
+  actual_input_tokens: z.number().int().nonnegative(),
+  actual_output_tokens: z.number().int().nonnegative(),
+  actual_total_tokens: z.number().int().nonnegative(),
+  latency_deviation_ms: z.number().int(),
+  latency_deviation_pct: z.number().nullable(),
+  token_deviation_count: z.number().int(),
+  token_deviation_pct: z.number().nullable(),
+  latency_result: z.string(),
+  token_result: z.string(),
+  completed_at: z.string(),
+});
+
 export const routerAbDataSchemas: {
   "router-ab": typeof routerAbSchema;
   "router-ab-side-b": typeof routerAbSideBSchema;
+  "router-execution-estimate": typeof routerExecutionEstimateSchema;
+  "router-execution-outcome": typeof routerExecutionOutcomeSchema;
 } = {
   "router-ab": routerAbSchema,
   "router-ab-side-b": routerAbSideBSchema,
+  "router-execution-estimate": routerExecutionEstimateSchema,
+  "router-execution-outcome": routerExecutionOutcomeSchema,
 };
 
 // Re-export so consumers don't need to import from `@/app/api/chat/route`.

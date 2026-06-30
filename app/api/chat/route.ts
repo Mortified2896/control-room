@@ -41,6 +41,8 @@ import {
   recordSideBOutput,
 } from "@/lib/repo/router-ab";
 import type { AbTaskType } from "@/lib/repo/types";
+import { classifyTokens, estimateExecution, estimateTokens, latencyOutcome, promptHash } from "@/lib/router/telemetry";
+import { completeExecutionRun, createExecutionRun } from "@/lib/repo/router-telemetry";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -111,6 +113,30 @@ export type RouterAbDataParts = {
     sideBLatencyMs: number;
     completed_at: string;
     actual_latency_ms: number;
+  };
+  "router-execution-estimate": {
+    runId: string | null;
+    expected_execution_latency_ms: number;
+    upper_execution_latency_ms: number;
+    expected_input_tokens: number;
+    expected_output_tokens: number;
+    expected_total_tokens: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  };
+  "router-execution-outcome": {
+    runId: string | null;
+    actual_execution_latency_ms: number;
+    actual_input_tokens: number;
+    actual_output_tokens: number;
+    actual_total_tokens: number;
+    latency_deviation_ms: number;
+    latency_deviation_pct: number | null;
+    token_deviation_count: number;
+    token_deviation_pct: number | null;
+    latency_result: string;
+    token_result: string;
+    completed_at: string;
   };
 };
 
@@ -416,6 +442,34 @@ export async function POST(req: Request) {
     }
   }
 
+  const executionPromptTokens = estimateTokens(latestText);
+  const executionContextTokens = estimateTokens(effectiveSystem ?? "") + Math.max(0, modelMessages.length - 1) * 64;
+  const executionEstimate = await estimateExecution({
+    selectedModelId: result.resolved.modelId,
+    providerPath: result.resolved.providerId,
+    promptTokenEstimate: executionPromptTokens,
+    contextTokenEstimate: executionContextTokens,
+    stepId: "normal_chat",
+  });
+  const executionStartedAtMs = Date.now();
+  const executionStartedAt = new Date(executionStartedAtMs).toISOString();
+  const executionRunId = await createExecutionRun({
+    stepId: "normal_chat",
+    selectedModelId: result.resolved.modelId,
+    providerPath: result.resolved.providerId,
+    promptHash: promptHash(latestText),
+    promptTokenEstimate: executionPromptTokens,
+    contextTokenEstimate: executionContextTokens,
+    expectedInputTokens: executionEstimate.expectedInputTokens,
+    expectedOutputTokens: executionEstimate.expectedOutputTokens,
+    expectedTotalTokens: executionEstimate.expectedTotalTokens,
+    expectedExecutionLatencyMs: executionEstimate.expectedLatencyMs,
+    upperExecutionLatencyMs: executionEstimate.upperLatencyMs,
+    executionEstimateQuality: executionEstimate.estimateQuality,
+    estimatedCostUsd: executionEstimate.estimatedCostUsd,
+    startedAt: executionStartedAt,
+  });
+
   // Build the streaming Side A as before.
   //
   // Fake-LLM mode: when CONTROL_ROOM_FAKE_LLM=1, we route through a
@@ -447,6 +501,20 @@ export async function POST(req: Request) {
         ? "MiniMax provider error. Check MINIMAX_API_KEY, MINIMAX_BASE_URL, and MINIMAX_DEFAULT_MODEL."
         : "An error occurred.",
     execute: async ({ writer }) => {
+      writer.write({
+        type: "data-router-execution-estimate",
+        data: {
+          runId: executionRunId,
+          expected_execution_latency_ms: executionEstimate.expectedLatencyMs,
+          upper_execution_latency_ms: executionEstimate.upperLatencyMs,
+          expected_input_tokens: executionEstimate.expectedInputTokens,
+          expected_output_tokens: executionEstimate.expectedOutputTokens,
+          expected_total_tokens: executionEstimate.expectedTotalTokens,
+          estimate_quality: executionEstimate.estimateQuality,
+          started_at: executionStartedAt,
+        },
+      });
+
       // Emit the initial router decision as soon as we have it, BEFORE
       // Side A starts streaming. This lets the panel render the
       // "Router says:" line and the "Side B generating…" placeholder
@@ -584,11 +652,64 @@ export async function POST(req: Request) {
       }
     },
     onFinish: async ({ responseMessage, isAborted }) => {
+      const completedAt = new Date().toISOString();
+      const actualExecutionLatencyMs = Date.now() - executionStartedAtMs;
+      const assistantText = uiMessageText(responseMessage);
+      const actualInputTokens = executionEstimate.expectedInputTokens;
+      const actualOutputTokens = estimateTokens(assistantText);
+      const actualTotalTokens = actualInputTokens + actualOutputTokens;
+      const latency = latencyOutcome(
+        actualExecutionLatencyMs,
+        executionEstimate.expectedLatencyMs,
+        executionEstimate.upperLatencyMs,
+      );
+      const tokenDeviationCount = actualTotalTokens - executionEstimate.expectedTotalTokens;
+      const tokenDeviationPct = executionEstimate.expectedTotalTokens > 0
+        ? (tokenDeviationCount / executionEstimate.expectedTotalTokens) * 100
+        : null;
+      const tokenResult = classifyTokens(actualTotalTokens, executionEstimate.expectedTotalTokens);
+      await completeExecutionRun(executionRunId, {
+        completedAt,
+        actualInputTokens,
+        actualOutputTokens,
+        actualTotalTokens,
+        actualExecutionLatencyMs,
+        latencyDeviationMs: latency.deviationMs,
+        latencyDeviationPct: latency.deviationPct,
+        tokenDeviationCount,
+        tokenDeviationPct,
+        latencyResult: latency.result,
+        tokenResult,
+        success: !isAborted,
+      });
+      const responseWithTelemetry = {
+        ...responseMessage,
+        parts: [
+          ...responseMessage.parts,
+          {
+            type: "data-router-execution-outcome",
+            data: {
+              runId: executionRunId,
+              actual_execution_latency_ms: actualExecutionLatencyMs,
+              actual_input_tokens: actualInputTokens,
+              actual_output_tokens: actualOutputTokens,
+              actual_total_tokens: actualTotalTokens,
+              latency_deviation_ms: latency.deviationMs,
+              latency_deviation_pct: latency.deviationPct,
+              token_deviation_count: tokenDeviationCount,
+              token_deviation_pct: tokenDeviationPct,
+              latency_result: latency.result,
+              token_result: tokenResult,
+              completed_at: completedAt,
+            },
+          },
+        ],
+      } as UIMessage;
       if (!threadId || !isDbConfigured()) return;
       try {
         const persistedAssistant = await persistAssistantMessage(
           threadId,
-          responseMessage,
+          responseWithTelemetry,
           result.resolved.modelId,
         );
         if (sessionId) {

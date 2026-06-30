@@ -88,6 +88,27 @@ When in doubt, the answer is _ask first_, not _add it and see_.
   the repo. Real credentials live in `/etc/hermes/control_room_postgres.env`
   (or equivalent).
 
+## Build tracing convention
+
+Turbopack/NFT output tracing can warn with `Encountered unexpected file in NFT list`
+when server code performs dynamic filesystem probes for external runtime paths
+(for example locating an installed CLI binary). These probes can make the tracer
+conservatively include too much of the project.
+
+Accepted fix: use targeted `/* turbopackIgnore: true */` annotations only around
+external runtime filesystem probes, as in `lib/codex/runner.ts`. Do not add broad
+Turbopack/Next warning suppression unless the exact warning is understood and
+documented.
+
+Validation for tracing fixes:
+
+```bash
+npm run typecheck
+npm run build
+```
+
+Confirm no Turbopack/NFT trace warning remains.
+
 ## Production safety
 
 After API route, migration, env, or server-side changes, agents must follow

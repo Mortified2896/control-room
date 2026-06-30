@@ -146,6 +146,18 @@ type ModelRecommendation = {
     reason: string;
   }>;
   loudFailure?: boolean;
+  recommendationTelemetry?: {
+    runId: string | null;
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+    completed_at: string | null;
+    actual_latency_ms: number | null;
+    latency_deviation_ms: number | null;
+    latency_deviation_pct: number | null;
+    latency_result: string | null;
+  };
   diagnostics: {
     recommenderProvider?: string;
     recommenderModelId: string;
@@ -154,6 +166,25 @@ type ModelRecommendation = {
     attemptedCandidateModel?: string | null;
   };
 };
+
+function apiErrorReason(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === "object") {
+    const obj = payload as { reason?: unknown; error?: unknown; errors?: unknown };
+    if (typeof obj.reason === "string" && obj.reason.trim()) return obj.reason;
+    if (Array.isArray(obj.errors)) {
+      const messages = obj.errors
+        .map((e) =>
+          e && typeof e === "object" && typeof (e as { message?: unknown }).message === "string"
+            ? (e as { message: string }).message
+            : null,
+        )
+        .filter(Boolean);
+      if (messages.length) return messages.join(" ");
+    }
+    if (typeof obj.error === "string" && obj.error.trim()) return obj.error;
+  }
+  return fallback;
+}
 
 type RouterSettingsLiteResponse = {
   normalChatRouterProvider: string;
@@ -191,6 +222,7 @@ type ProjectListItem = {
   id: string;
   name: string;
   localPath: string;
+  repoPath?: string;
   gitRemoteUrl: string | null;
   gitBranch: string | null;
 };
@@ -281,6 +313,7 @@ const CodexChatPane: FC<{
   notesDisabled: boolean;
   routerAbOn: boolean;
   activeProjectId: string | null;
+  activeProject: ProjectListItem | null;
   threadMode?: ThreadMode;
   harness?: ThreadHarness | null;
   onFinish: () => void;
@@ -299,6 +332,12 @@ const CodexChatPane: FC<{
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  recommendationEta?: {
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -314,6 +353,7 @@ const CodexChatPane: FC<{
   notesDisabled,
   routerAbOn,
   activeProjectId,
+  activeProject,
   threadMode,
   harness,
   onFinish,
@@ -321,6 +361,7 @@ const CodexChatPane: FC<{
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -388,6 +429,7 @@ const CodexChatPane: FC<{
       <Thread
         threadId={threadId}
         activeProjectId={activeProjectId}
+        activeProject={activeProject}
         threadMode={threadMode}
         harness={harness}
         notesDisabled={notesDisabled}
@@ -396,6 +438,7 @@ const CodexChatPane: FC<{
         onToggleRecommender={onToggleRecommender}
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
+        recommendationEta={recommendationEta}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
@@ -420,6 +463,7 @@ const ChatPane: FC<{
   selectionSource: SelectionSource;
   models: ModelOption[];
   activeProjectId: string | null;
+  activeProject: ProjectListItem | null;
   threadMode?: ThreadMode;
   harness?: ThreadHarness | null;
   onFinish: () => void;
@@ -427,6 +471,12 @@ const ChatPane: FC<{
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  recommendationEta?: {
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -446,6 +496,7 @@ const ChatPane: FC<{
   selectionSource,
   models,
   activeProjectId,
+  activeProject,
   threadMode,
   harness,
   onFinish,
@@ -453,6 +504,7 @@ const ChatPane: FC<{
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -472,6 +524,7 @@ const ChatPane: FC<{
         notesDisabled={notesDisabled}
         routerAbOn={false}
         activeProjectId={activeProjectId}
+        activeProject={activeProject}
         threadMode={threadMode}
         harness={harness}
         onFinish={onFinish}
@@ -482,6 +535,7 @@ const ChatPane: FC<{
         onToggleRecommender={onToggleRecommender}
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
+        recommendationEta={recommendationEta}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
@@ -541,6 +595,7 @@ const ChatPane: FC<{
       <Thread
         threadId={threadId}
         activeProjectId={activeProjectId}
+        activeProject={activeProject}
         threadMode={threadMode}
         harness={harness}
         notesDisabled={notesDisabled}
@@ -1157,6 +1212,12 @@ export const Assistant = () => {
   }, []);
   const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationEta, setRecommendationEta] = useState<{
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    started_at: string;
+  } | null>(null);
   const [pendingRecommendedSend, setPendingRecommendedSend] =
     useState<PendingRecommendedSend | null>(null);
   const pendingRecommendedSendCounter = useRef(0);
@@ -1299,11 +1360,8 @@ export const Assistant = () => {
           }),
         });
         if (!res.ok) {
-          const reason = await res
-            .json()
-            .catch(() => ({ reason: `status ${res.status}` }))
-            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
-          throw new Error(reason);
+          const payload = await res.json().catch(() => null);
+          throw new Error(apiErrorReason(payload, `status ${res.status}`));
         }
       } catch (err) {
         // Roll back so the picker reflects what the server actually saved.
@@ -1333,11 +1391,8 @@ export const Assistant = () => {
           body: JSON.stringify({ normalChatRecommenderReasoningLevel: nextLevel }),
         });
         if (!res.ok) {
-          const reason = await res
-            .json()
-            .catch(() => ({ reason: `status ${res.status}` }))
-            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
-          throw new Error(reason);
+          const payload = await res.json().catch(() => null);
+          throw new Error(apiErrorReason(payload, `status ${res.status}`));
         }
       } catch (err) {
         setRecommenderReasoningLevel(previousLevel);
@@ -1377,11 +1432,8 @@ export const Assistant = () => {
           }),
         });
         if (!res.ok) {
-          const reason = await res
-            .json()
-            .catch(() => ({ reason: `status ${res.status}` }))
-            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
-          throw new Error(reason);
+          const payload = await res.json().catch(() => null);
+          throw new Error(apiErrorReason(payload, `status ${res.status}`));
         }
       } catch (err) {
         setRecommenderFallbackModelId(previousId);
@@ -1410,11 +1462,8 @@ export const Assistant = () => {
           body: JSON.stringify({ normalChatRecommenderFallbackReasoningLevel: nextLevel }),
         });
         if (!res.ok) {
-          const reason = await res
-            .json()
-            .catch(() => ({ reason: `status ${res.status}` }))
-            .then((j: { reason?: string }) => j.reason ?? `status ${res.status}`);
-          throw new Error(reason);
+          const payload = await res.json().catch(() => null);
+          throw new Error(apiErrorReason(payload, `status ${res.status}`));
         }
       } catch (err) {
         setRecommenderFallbackReasoningLevel(previousLevel);
@@ -1577,6 +1626,13 @@ export const Assistant = () => {
     setActiveProjectId(id);
     setActiveThreadId(null);
     setThreadMessages([]);
+    if (id) {
+      void fetch("/api/projects/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: id }),
+      });
+    }
   }, []);
 
   const handleOpenProject = useCallback(
@@ -1604,6 +1660,14 @@ export const Assistant = () => {
       const trimmed = message.trim();
       if (!trimmed) return;
       setRecommendationLoading(true);
+      const promptTokens = Math.max(1, Math.ceil(trimmed.length / 4));
+      const expectedMs = Math.min(15_000, Math.max(3_000, 2_000 + promptTokens * 3));
+      setRecommendationEta({
+        expected_latency_ms: expectedMs,
+        upper_latency_ms: Math.round(expectedMs * 2.5),
+        estimate_quality: promptTokens > 2_000 ? "uncertain" : "likely",
+        started_at: new Date().toISOString(),
+      });
       try {
         const res = await fetch("/api/model/recommend", {
           method: "POST",
@@ -1640,6 +1704,7 @@ export const Assistant = () => {
         });
       } finally {
         setRecommendationLoading(false);
+        setRecommendationEta(null);
       }
     },
     [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
@@ -1858,12 +1923,14 @@ export const Assistant = () => {
               selectionSource={selectedModelSelectionSource}
               models={models}
               activeProjectId={activeProjectId}
+              activeProject={activeProject}
               threadMode={activeThread?.threadMode ?? "chat"}
               harness={activeThread?.harness ?? null}
               recommenderEnabled={recommenderEnabled}
               onToggleRecommender={toggleRecommender}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
+              recommendationEta={recommendationEta}
               manualModelSummary={manualModelSummary}
               recommenderEngineSummary={recommenderEngineSummary}
               fallbackEngineSummary={fallbackEngineSummary}

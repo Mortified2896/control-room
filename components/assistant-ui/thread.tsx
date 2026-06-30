@@ -71,6 +71,15 @@ type ReasoningLevel = string;
 
 type PendingRecommendedSend = { id: number; text: string };
 
+type ProjectSummary = { id: string; name: string; localPath: string; repoPath?: string | null };
+
+type RecommendationEta = {
+  expected_latency_ms: number;
+  upper_latency_ms: number;
+  estimate_quality: "likely" | "uncertain" | "rough";
+  started_at: string;
+};
+
 type ModelRecommendation = {
   recommendedModelId: string;
   recommendedProvider: string;
@@ -83,12 +92,20 @@ type ModelRecommendation = {
     reason: string;
   }>;
   loudFailure?: boolean;
+  recommendationTelemetry?: (RecommendationEta & {
+    completed_at: string | null;
+    actual_latency_ms: number | null;
+    latency_deviation_ms: number | null;
+    latency_deviation_pct: number | null;
+    latency_result: string | null;
+  });
   diagnostics?: { fallback?: boolean; fallbackReason?: string | null; recommenderModelId?: string };
 };
 
 export const Thread: FC<{
   threadId: string | null;
   activeProjectId?: string | null;
+  activeProject?: ProjectSummary | null;
   threadMode?: ThreadMode;
   harness?: HandoffWorker | null;
   notesDisabled?: boolean;
@@ -108,6 +125,7 @@ export const Thread: FC<{
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  recommendationEta?: RecommendationEta | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -119,6 +137,7 @@ export const Thread: FC<{
 }> = ({
   threadId,
   activeProjectId = null,
+  activeProject = null,
   threadMode = "chat",
   harness = null,
   notesDisabled = false,
@@ -129,6 +148,7 @@ export const Thread: FC<{
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -188,12 +208,14 @@ export const Thread: FC<{
             <Composer
               threadId={threadId}
               activeProjectId={activeProjectId}
+              activeProject={activeProject}
               threadMode={threadMode}
               harness={harness}
               recommenderEnabled={recommenderEnabled}
               onToggleRecommender={onToggleRecommender}
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
+              recommendationEta={recommendationEta}
               manualModelSummary={manualModelSummary}
               recommenderEngineSummary={recommenderEngineSummary}
               fallbackEngineSummary={fallbackEngineSummary}
@@ -260,6 +282,23 @@ const ThreadSuggestions: FC = () => {
   );
 };
 
+function formatEta(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatSeconds(ms: number | null | undefined): string {
+  return ms == null ? "—" : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatDeviation(ms: number | null | undefined, pct: number | null | undefined): string {
+  if (ms == null || pct == null) return "—";
+  const sign = ms >= 0 ? "+" : "";
+  return `${sign}${(ms / 1000).toFixed(1)}s / ${sign}${Math.round(pct)}%`;
+}
+
 const ThreadSuggestionItem: FC = () => {
   return (
     <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both w-full duration-200 sm:w-auto">
@@ -279,12 +318,14 @@ const ThreadSuggestionItem: FC = () => {
 const Composer: FC<{
   threadId: string | null;
   activeProjectId: string | null;
+  activeProject: ProjectSummary | null;
   threadMode: ThreadMode;
   harness: HandoffWorker | null;
   recommenderEnabled?: boolean;
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  recommendationEta?: RecommendationEta | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -296,12 +337,14 @@ const Composer: FC<{
 }> = ({
   threadId,
   activeProjectId,
+  activeProject,
   threadMode,
   harness,
   recommenderEnabled = false,
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -365,14 +408,17 @@ const Composer: FC<{
             taskType="implement"
             threadId={threadId}
             activeProjectId={activeProjectId}
+            activeProject={activeProject}
             onError={setError}
             recommenderEnabled={recommenderEnabled}
             onToggleRecommender={onToggleRecommender}
             recommendation={recommendation}
             recommendationLoading={recommendationLoading}
+            recommendationEta={recommendationEta}
             manualModelSummary={manualModelSummary}
             recommenderEngineSummary={recommenderEngineSummary}
             fallbackEngineSummary={fallbackEngineSummary}
+            onRecommend={onRecommend}
             onUseRecommendation={onUseRecommendation}
             onKeepCurrent={onKeepCurrent}
             pendingRecommendedSend={pendingRecommendedSend}
@@ -395,14 +441,17 @@ const ComposerAction: FC<{
   taskType: HandoffTaskType;
   threadId: string | null;
   activeProjectId: string | null;
+  activeProject: ProjectSummary | null;
   onError: (message: string | null) => void;
   recommenderEnabled?: boolean;
   onToggleRecommender?: (next: boolean) => void;
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
+  recommendationEta?: RecommendationEta | null;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
+  onRecommend?: (message: string) => void;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
@@ -413,14 +462,17 @@ const ComposerAction: FC<{
   taskType,
   threadId,
   activeProjectId,
+  activeProject,
   onError,
   recommenderEnabled = false,
   onToggleRecommender,
   recommendation = null,
   recommendationLoading = false,
+  recommendationEta = null,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
+  onRecommend,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
@@ -428,6 +480,15 @@ const ComposerAction: FC<{
 }) => {
   const aui = useAui();
   const [creatingDraft, setCreatingDraft] = useState(false);
+  const [codexRun, setCodexRun] = useState<null | {
+    id: string;
+    status: string;
+    stdout: string;
+    stderr: string;
+    exitCode: number | null;
+    gitStatusShort?: string;
+    gitDiffStat?: string;
+  }>(null);
   const composerText = useAuiState((s) => s.composer.text);
   // Toggle-ON flow: after Accept/Decline the parent stores the draft
   // above ChatPane, updates the selected model, then passes the pending
@@ -465,6 +526,12 @@ const ComposerAction: FC<{
     onKeepCurrent?.(recommenderEnabled ? composerText : undefined);
   };
 
+  const handleRecommendBeforeSend = () => {
+    const text = composerText.trim();
+    if (!text || !onRecommend) return;
+    onRecommend(text);
+  };
+
   const createDraft = async () => {
     if (!worker) {
       onError("This coding task thread is missing a harness.");
@@ -477,8 +544,29 @@ const ComposerAction: FC<{
     const instruction = composerText.trim();
     if (!instruction) return;
     setCreatingDraft(true);
+    setCodexRun(null);
     onError(null);
     try {
+      if (worker === "codex") {
+        const res = await fetch("/api/coding-runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: activeProjectId, threadId, prompt: instruction }),
+        });
+        const data = (await res.json().catch(() => null)) as
+          | { run?: typeof codexRun; message?: string; error?: string }
+          | null;
+        if (!res.ok) {
+          const message = data?.message ?? data?.run?.stderr ?? data?.error ?? `status ${res.status}`;
+          if (data?.run) setCodexRun(data.run);
+          throw new Error(message);
+        }
+        if (data?.run) setCodexRun(data.run);
+        aui.composer().setText("");
+        onError(null);
+        return;
+      }
+
       const res = await fetch("/api/handoffs/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -496,16 +584,62 @@ const ComposerAction: FC<{
     } catch (err) {
       onError(
         err instanceof Error
-          ? `Failed to create handoff draft: ${err.message}`
-          : "Failed to create handoff draft.",
+          ? worker === "codex"
+            ? `Codex CLI run failed: ${err.message}`
+            : `Failed to create handoff draft: ${err.message}`
+          : worker === "codex"
+            ? "Codex CLI run failed."
+            : "Failed to create handoff draft.",
       );
     } finally {
       setCreatingDraft(false);
     }
   };
 
+  const projectPath = activeProject?.repoPath ?? activeProject?.localPath ?? null;
+
   return (
     <div className="aui-composer-action-wrapper relative flex flex-col gap-2">
+      {isCodingTask && worker === "codex" ? (
+        <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs">
+          <div className="font-medium text-foreground">Recommended executor: Codex CLI</div>
+          <div className="mt-0.5 text-muted-foreground">Reason: coding task needs repo access</div>
+          <div className="mt-0.5 break-all text-muted-foreground">
+            Working directory: {projectPath ?? "No project selected"}
+          </div>
+          <div className="mt-2 text-muted-foreground">
+            Click approve/run to execute Codex CLI in the selected project folder. No fallback model
+            or API provider will be used.
+          </div>
+          {codexRun ? (
+            <div className="mt-3 space-y-2 rounded-xl border border-border/60 bg-background/70 p-3">
+              <div className="font-medium text-foreground">
+                Status: {codexRun.status} · Exit code: {codexRun.exitCode ?? "none"}
+              </div>
+              {codexRun.stdout ? (
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+                  {codexRun.stdout}
+                </pre>
+              ) : null}
+              {codexRun.stderr ? (
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-destructive/10 p-2 text-[11px] text-destructive">
+                  {codexRun.stderr}
+                </pre>
+              ) : null}
+              {codexRun.gitStatusShort ? (
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+                  Changed files:\n{codexRun.gitStatusShort}
+                </pre>
+              ) : null}
+              {codexRun.gitDiffStat ? (
+                <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px]">
+                  Diff summary:\n{codexRun.gitDiffStat}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {!isCodingTask && (recommendation || recommendationLoading) ? (
         <div
           className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs"
@@ -541,6 +675,11 @@ const ComposerAction: FC<{
                   <div className="mt-0.5 text-muted-foreground">
                     Reason: {recommendation.reasoning}
                   </div>
+                  {recommendation.recommendationTelemetry ? (
+                    <div className="mt-1 text-muted-foreground">
+                      Estimated recommendation time: {formatSeconds(recommendation.recommendationTelemetry.expected_latency_ms)} · Actual recommendation time: {formatSeconds(recommendation.recommendationTelemetry.actual_latency_ms)} · Deviation: {formatDeviation(recommendation.recommendationTelemetry.latency_deviation_ms, recommendation.recommendationTelemetry.latency_deviation_pct)} · Timing result: {recommendation.recommendationTelemetry.latency_result ?? "—"}
+                    </div>
+                  ) : null}
                 </>
               )}
               {recommendation.loudFailure &&
@@ -586,10 +725,7 @@ const ComposerAction: FC<{
               </div>
             </>
           ) : (
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <Loader2 className="size-3.5 animate-spin" />
-              <span>Finding a model recommendation…</span>
-            </div>
+            <RecommendationWaitingLine eta={recommendationEta} />
           )}
         </div>
       ) : null}
@@ -637,13 +773,13 @@ const ComposerAction: FC<{
           </AuiIf>
           {isCodingTask ? (
             <TooltipIconButton
-              tooltip="Create handoff draft"
+              tooltip={worker === "codex" ? "Approve and run Codex CLI" : "Create handoff draft"}
               side="bottom"
               type="button"
               variant="default"
               size="icon"
               className="aui-composer-send size-7 rounded-full"
-              aria-label="Create handoff draft"
+              aria-label={worker === "codex" ? "Approve and run Codex CLI" : "Create handoff draft"}
               disabled={creatingDraft}
               onClick={createDraft}
             >
@@ -651,19 +787,35 @@ const ComposerAction: FC<{
             </TooltipIconButton>
           ) : (
             <AuiIf condition={(s) => !s.thread.isRunning}>
-              <ComposerPrimitive.Send asChild>
+              {recommenderEnabled && onRecommend ? (
                 <TooltipIconButton
-                  tooltip="Send message"
+                  tooltip="Get model recommendation"
                   side="bottom"
                   type="button"
                   variant="default"
                   size="icon"
                   className="aui-composer-send size-7 rounded-full"
-                  aria-label="Send message"
+                  aria-label="Get model recommendation"
+                  disabled={recommendationLoading}
+                  onClick={handleRecommendBeforeSend}
                 >
                   <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
                 </TooltipIconButton>
-              </ComposerPrimitive.Send>
+              ) : (
+                <ComposerPrimitive.Send asChild>
+                  <TooltipIconButton
+                    tooltip="Send message"
+                    side="bottom"
+                    type="button"
+                    variant="default"
+                    size="icon"
+                    className="aui-composer-send size-7 rounded-full"
+                    aria-label="Send message"
+                  >
+                    <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+                  </TooltipIconButton>
+                </ComposerPrimitive.Send>
+              )}
             </AuiIf>
           )}
           <AuiIf condition={(s) => s.thread.isRunning}>
@@ -685,6 +837,37 @@ const ComposerAction: FC<{
   );
 };
 
+const RecommendationWaitingLine: FC<{ eta: RecommendationEta | null }> = ({ eta }) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, []);
+  if (!eta) {
+    return (
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" />
+        <span>Expected in 00:03 · rough</span>
+      </div>
+    );
+  }
+  const elapsed = now - new Date(eta.started_at).getTime();
+  let text: string;
+  if (elapsed < eta.expected_latency_ms) {
+    text = `Expected in ${formatEta(eta.expected_latency_ms)} · ${eta.estimate_quality}`;
+  } else if (elapsed < eta.upper_latency_ms) {
+    text = "Still waiting · late";
+  } else {
+    text = "Taking longer · unusual";
+  }
+  return (
+    <div className="flex items-center gap-2 text-muted-foreground">
+      <Loader2 className="size-3.5 animate-spin" />
+      <span>{text}</span>
+    </div>
+  );
+};
+
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
@@ -697,6 +880,33 @@ const MessageError: FC = () => {
         </div>
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
+  );
+};
+
+function executionTelemetryFromParts(parts: readonly unknown[]) {
+  const estimatePart = parts.find((p) => typeof p === "object" && p !== null && (p as { type?: string }).type === "data-router-execution-estimate") as { data?: { expected_execution_latency_ms: number; expected_total_tokens: number; estimate_quality: "likely" | "uncertain" | "rough" } } | undefined;
+  const outcomePart = parts.find((p) => typeof p === "object" && p !== null && (p as { type?: string }).type === "data-router-execution-outcome") as { data?: { actual_execution_latency_ms: number; actual_total_tokens: number; latency_deviation_ms: number; latency_deviation_pct: number | null; token_deviation_count: number; token_deviation_pct: number | null; latency_result: string; token_result: string } } | undefined;
+  return { estimate: estimatePart?.data, outcome: outcomePart?.data };
+}
+
+function compactTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+const ExecutionTelemetryLine: FC<{ parts: readonly unknown[] }> = ({ parts }) => {
+  const { estimate, outcome } = executionTelemetryFromParts(parts);
+  if (!estimate) return null;
+  if (!outcome) {
+    return (
+      <div className="mt-2 text-xs text-muted-foreground">
+        Expected answer: ~{formatEta(estimate.expected_execution_latency_ms)} · ~{compactTokens(estimate.expected_total_tokens)} tokens · {estimate.estimate_quality}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 text-xs text-muted-foreground">
+      Estimated answer time: {formatSeconds(estimate.expected_execution_latency_ms)} · Actual answer time: {formatSeconds(outcome.actual_execution_latency_ms)} · Time deviation: {formatDeviation(outcome.latency_deviation_ms, outcome.latency_deviation_pct)} · Estimated tokens: {estimate.expected_total_tokens.toLocaleString()} · Actual tokens: {outcome.actual_total_tokens.toLocaleString()} · Token deviation: {outcome.token_deviation_count >= 0 ? "+" : ""}{outcome.token_deviation_count.toLocaleString()} / {outcome.token_deviation_pct == null ? "—" : `${outcome.token_deviation_pct >= 0 ? "+" : ""}${Math.round(outcome.token_deviation_pct)}%`} · Timing result: {outcome.latency_result} · Token result: {outcome.token_result}
+    </div>
   );
 };
 
@@ -740,6 +950,7 @@ const AssistantMessage: FC<{
             {"●"}
           </span>
         </AuiIf>
+        <ExecutionTelemetryLine parts={parts} />
         <MessageError />
       </div>
 

@@ -19,6 +19,8 @@ import {
 } from "@/lib/policy/no-api-billing-fallback";
 import { isCodexModelId, resolveCodexBinary, runCodexExec } from "@/lib/codex/runner";
 import { walkRecommenderChain } from "./recommender-chain";
+import { estimateRecommendation, estimateTokens, latencyOutcome, promptHash } from "@/lib/router/telemetry";
+import { completeRecommendationRun, createRecommendationRun } from "@/lib/repo/router-telemetry";
 
 export const dynamic = "force-dynamic";
 
@@ -58,6 +60,21 @@ type RecommendationResponse = {
    * chat composer must surface `reason` to the user.
    */
   loudFailure?: boolean;
+  recommendationTelemetry?: {
+    runId: string | null;
+    expected_latency_ms: number;
+    upper_latency_ms: number;
+    estimate_quality: "likely" | "uncertain" | "rough";
+    latency_policy: string;
+    latency_basis: string;
+    historical_sample_count: number;
+    started_at: string;
+    completed_at: string | null;
+    actual_latency_ms: number | null;
+    latency_deviation_ms: number | null;
+    latency_deviation_pct: number | null;
+    latency_result: string | null;
+  };
   diagnostics: {
     recommenderProvider: string;
     recommenderModelId: string;
@@ -365,6 +382,47 @@ export async function POST(request: Request) {
     reason: string;
   }> = [];
 
+  const telemetryPromptTokens = estimateTokens(input.message);
+  const telemetryContextTokens = estimateTokens(JSON.stringify({ projectId: input.projectId, threadId: input.threadId }));
+  const telemetryRecommender = chain[0] ?? chain[1] ?? {
+    providerId: "unknown" as const,
+    modelId: settings.normalChatRecommenderModelId ?? "unknown",
+  };
+  const recommendationStartedAtMs = Date.now();
+  const recommendationStartedAt = new Date(recommendationStartedAtMs).toISOString();
+  const recommendationEstimate = await estimateRecommendation({
+    recommenderModelId: telemetryRecommender.modelId,
+    providerPath: telemetryRecommender.providerId,
+    promptTokenEstimate: telemetryPromptTokens,
+    contextTokenEstimate: telemetryContextTokens,
+    stepId: "normal_chat",
+  });
+  const recommendationRunId = await createRecommendationRun({
+    stepId: "normal_chat",
+    recommenderModelId: telemetryRecommender.modelId,
+    providerPath: telemetryRecommender.providerId,
+    promptHash: promptHash(input.message),
+    promptTokenEstimate: telemetryPromptTokens,
+    contextTokenEstimate: telemetryContextTokens,
+    expectedLatencyMs: recommendationEstimate.expectedLatencyMs,
+    upperLatencyMs: recommendationEstimate.upperLatencyMs,
+    estimateQuality: recommendationEstimate.estimateQuality,
+    latencyPolicy: recommendationEstimate.latencyPolicy,
+    latencyBasis: recommendationEstimate.latencyBasis,
+    historicalSampleCount: recommendationEstimate.historicalSampleCount,
+    startedAt: recommendationStartedAt,
+  });
+  const recommendationTelemetryBase = () => ({
+    runId: recommendationRunId,
+    expected_latency_ms: recommendationEstimate.expectedLatencyMs,
+    upper_latency_ms: recommendationEstimate.upperLatencyMs,
+    estimate_quality: recommendationEstimate.estimateQuality,
+    latency_policy: recommendationEstimate.latencyPolicy,
+    latency_basis: recommendationEstimate.latencyBasis,
+    historical_sample_count: recommendationEstimate.historicalSampleCount,
+    started_at: recommendationStartedAt,
+  });
+
   try {
     const modelsPayload = await getEffectiveModelsResponse();
     // Apply the user-curated allowlist (if any) before building the
@@ -608,12 +666,39 @@ export async function POST(request: Request) {
         rung.source === "configured_fallback"
           ? "Using the user-configured recommender fallback (primary engine unavailable)."
           : "Using the configured recommender engine.";
+      const completedAt = new Date().toISOString();
+      const actualLatencyMs = Date.now() - recommendationStartedAtMs;
+      const latency = latencyOutcome(
+        actualLatencyMs,
+        recommendationEstimate.expectedLatencyMs,
+        recommendationEstimate.upperLatencyMs,
+      );
+      const filteredAlternatives = value.alternatives?.filter((a) =>
+        availableModels.some((m) => m.modelId === a.modelId && m.provider === a.provider),
+      );
+      await completeRecommendationRun(recommendationRunId, {
+        completedAt,
+        actualLatencyMs,
+        latencyDeviationMs: latency.deviationMs,
+        latencyDeviationPct: latency.deviationPct,
+        latencyResult: latency.result,
+        recommendedModelId: value.recommendedModelId,
+        alternativesJson: filteredAlternatives,
+        reasoning: value.reasoning,
+        fallbackUsed: false,
+      });
       return Response.json({
         ...value,
         recommendedReasoningLevel: level,
-        alternatives: value.alternatives?.filter((a) =>
-          availableModels.some((m) => m.modelId === a.modelId && m.provider === a.provider),
-        ),
+        alternatives: filteredAlternatives,
+        recommendationTelemetry: {
+          ...recommendationTelemetryBase(),
+          completed_at: completedAt,
+          actual_latency_ms: actualLatencyMs,
+          latency_deviation_ms: latency.deviationMs,
+          latency_deviation_pct: latency.deviationPct,
+          latency_result: latency.result,
+        },
         diagnostics: {
           recommenderProvider: activeRecommender!.provider,
           recommenderModelId: activeRecommender!.modelId,
@@ -744,9 +829,36 @@ export async function POST(request: Request) {
       buildLoudFailureReason(callAttempts, chain),
       buildLoudFailureReason(callAttempts, chain),
     );
+    const completedAt = new Date().toISOString();
+    const actualLatencyMs = Date.now() - recommendationStartedAtMs;
+    const latency = latencyOutcome(
+      actualLatencyMs,
+      recommendationEstimate.expectedLatencyMs,
+      recommendationEstimate.upperLatencyMs,
+    );
+    await completeRecommendationRun(recommendationRunId, {
+      completedAt,
+      actualLatencyMs,
+      latencyDeviationMs: latency.deviationMs,
+      latencyDeviationPct: latency.deviationPct,
+      latencyResult: latency.result,
+      recommendedModelId: response.recommendedModelId,
+      alternativesJson: null,
+      reasoning: response.reasoning,
+      fallbackUsed: true,
+      errorJson: { reason: err instanceof Error ? err.message : String(err) },
+    });
     return Response.json({
       ...response,
       proposedSubscriptionFallbacks: proposals,
+      recommendationTelemetry: {
+        ...recommendationTelemetryBase(),
+        completed_at: completedAt,
+        actual_latency_ms: actualLatencyMs,
+        latency_deviation_ms: latency.deviationMs,
+        latency_deviation_pct: latency.deviationPct,
+        latency_result: latency.result,
+      },
       diagnostics: {
         ...response.diagnostics,
         // The per-rung trace is part of the loud-failure surface.

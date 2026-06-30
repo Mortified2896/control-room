@@ -26,11 +26,31 @@ export type ProjectRow = {
   id: string;
   name: string;
   localPath: string;
+  repoPath: string;
   gitRemoteUrl: string | null;
   gitBranch: string | null;
   createdAt: string;
   updatedAt: string;
   lastOpenedAt: string | null;
+};
+
+export type CodingRunStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type CodingRunRow = {
+  id: string;
+  projectId: string;
+  threadId: string | null;
+  prompt: string;
+  executor: "codex-cli" | string;
+  status: CodingRunStatus;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  gitStatusShort: string;
+  gitDiffStat: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
 };
 
 export type MessageRole = "user" | "assistant" | "system";
