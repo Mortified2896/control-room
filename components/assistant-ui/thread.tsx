@@ -32,6 +32,7 @@ import {
   SuggestionPrimitive,
   ThreadPrimitive,
   useAui,
+  useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
 import {
@@ -52,7 +53,8 @@ import {
   ThumbsDownIcon,
   ThumbsUpIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FC, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FC, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 
 // Startup exposes a loading placeholder thread; treat it as a new chat so
 // the composer mounts centered. Loads after startup keep the docked layout.
@@ -494,7 +496,8 @@ function formatTimer(ms: number): string {
 }
 
 function formatSeconds(ms: number | null | undefined): string {
-  return ms == null ? "—" : `${(ms / 1000).toFixed(1)}s`;
+  if (ms == null || Number.isNaN(ms)) return "—";
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function formatDeviation(ms: number | null | undefined, pct: number | null | undefined): string {
@@ -595,6 +598,65 @@ const Composer: FC<{
 }) => {
   const [error, setError] = useState<string | null>(null);
   const composerText = useAuiState((s) => s.composer.text);
+  // useAuiState uses useSyncExternalStore, which reads the current store value
+  // synchronously. Also keep an event-driven flag so the lock engages as soon as
+  // runStart fires, before any textarea mutation can race the store render.
+  const storeIsRunning = useAuiState((s) => s.thread.isRunning);
+  const [eventIsRunning, setEventIsRunning] = useState(false);
+  const [submitLocked, setSubmitLocked] = useState(false);
+  const sawAsyncWorkAfterSubmitLockRef = useRef(false);
+  const asyncWorkInProgress =
+    routerDecisionLoading || recommendationLoading || codingHarnessRecommendationLoading;
+  useAuiEvent("thread.runStart", () => setEventIsRunning(true));
+  useAuiEvent("thread.runEnd", () => {
+    setEventIsRunning(false);
+    setSubmitLocked(false);
+    sawAsyncWorkAfterSubmitLockRef.current = false;
+  });
+  useEffect(() => {
+    if (!submitLocked) return;
+    if (asyncWorkInProgress) {
+      sawAsyncWorkAfterSubmitLockRef.current = true;
+      return;
+    }
+    if (sawAsyncWorkAfterSubmitLockRef.current && !storeIsRunning && !eventIsRunning) {
+      sawAsyncWorkAfterSubmitLockRef.current = false;
+      setSubmitLocked(false);
+    }
+  }, [asyncWorkInProgress, eventIsRunning, storeIsRunning, submitLocked]);
+  const isComposerLocked =
+    storeIsRunning || eventIsRunning || submitLocked || asyncWorkInProgress;
+  const preventComposerMutationWhenLocked = useCallback(
+    (event: { preventDefault(): void; stopPropagation(): void }) => {
+      if (!isComposerLocked) return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    [isComposerLocked],
+  );
+  const preventComposerEditKeyWhenLocked = useCallback(
+    (event: {
+      key: string;
+      ctrlKey?: boolean;
+      metaKey?: boolean;
+      preventDefault(): void;
+      stopPropagation(): void;
+    }) => {
+      if (!isComposerLocked) return;
+      const key = event.key.toLowerCase();
+      const mutatingShortcut = (event.ctrlKey || event.metaKey) && ["x", "v", "z", "y"].includes(key);
+      if (
+        key === "backspace" ||
+        key === "delete" ||
+        key === "enter" ||
+        mutatingShortcut
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [isComposerLocked],
+  );
   const isCodingTask = threadMode === "coding_task";
   const worker = isCodingTask ? harness : null;
 
@@ -613,9 +675,14 @@ const Composer: FC<{
         // We always re-fetch (even if a banner is already showing)
         // because the user might have edited the draft text after
         // seeing the previous recommendation.
+        // Engage the lock in the same event turn as submit. Waiting for
+        // thread.runStart/store/loading propagation leaves a window where the
+        // textarea can still process Backspace/Delete before React re-renders.
+        flushSync(() => setSubmitLocked(true));
         if (recommenderEnabled && composerText.trim().length > 0 && onRecommend) {
           event.preventDefault();
           onRecommend(composerText);
+          return;
         }
       }}
     >
@@ -646,6 +713,21 @@ const Composer: FC<{
             rows={1}
             autoFocus
             aria-label="Message input (press C to focus)"
+            aria-disabled={isComposerLocked}
+            disabled={isComposerLocked}
+            readOnly={isComposerLocked}
+            onBeforeInputCapture={preventComposerMutationWhenLocked}
+            onBeforeInput={preventComposerMutationWhenLocked}
+            onInputCapture={preventComposerMutationWhenLocked}
+            onChange={preventComposerMutationWhenLocked}
+            onPasteCapture={preventComposerMutationWhenLocked}
+            onPaste={preventComposerMutationWhenLocked}
+            onCutCapture={preventComposerMutationWhenLocked}
+            onCut={preventComposerMutationWhenLocked}
+            onDropCapture={preventComposerMutationWhenLocked}
+            onDrop={preventComposerMutationWhenLocked}
+            onKeyDownCapture={preventComposerEditKeyWhenLocked}
+            onKeyDown={preventComposerEditKeyWhenLocked}
           />
           <ComposerAction
             isCodingTask={isCodingTask}
@@ -1780,8 +1862,30 @@ const CompactEstimateTimer: FC<CompactEstimateTimerProps> = ({
   }
 
   const [now, setNow] = useState(() => Date.now());
+  // Track whether the run is active so the interval stops immediately on completion.
+  // Using a ref avoids stale closure issues: the interval callback always reads the
+  // current isRunning value without needing to re-create the interval on every render.
+  const isRunningRef = useRef(true);
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  isRunningRef.current = isRunning;
+
+  // Stop the timer when the run completes so the countdown freezes immediately
+  // instead of continuing to tick after the assistant message is done. Also stops
+  // stale timers left running after a thread switch.
+  useAuiEvent("thread.runEnd", () => {
+    isRunningRef.current = false;
+    setNow(Date.now());
+  });
+
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    // Guard: stop creating intervals after the run has ended. This prevents
+    // a new interval from being created when the runEnd-triggered re-render
+    // causes this effect to re-run (the cleanup clears the old interval first,
+    // then this body would create a new one — the guard prevents that).
+    if (!isRunningRef.current) return;
+    const id = window.setInterval(() => {
+      if (isRunningRef.current) setNow(Date.now());
+    }, 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -2727,21 +2831,69 @@ const UserActionBar: FC = () => {
 };
 
 const EditComposer: FC = () => {
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const preventEditMutationWhenRunning = useCallback(
+    (event: { preventDefault(): void; stopPropagation(): void }) => {
+      if (!isRunning) return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    [isRunning],
+  );
+  const preventEditKeyWhenRunning = useCallback(
+    (event: {
+      key: string;
+      ctrlKey?: boolean;
+      metaKey?: boolean;
+      preventDefault(): void;
+      stopPropagation(): void;
+    }) => {
+      if (!isRunning) return;
+      const key = event.key.toLowerCase();
+      const mutatingShortcut = (event.ctrlKey || event.metaKey) && ["x", "v", "z", "y"].includes(key);
+      if (
+        key === "backspace" ||
+        key === "delete" ||
+        key === "enter" ||
+        mutatingShortcut
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    [isRunning],
+  );
+
   return (
     <MessagePrimitive.Root data-slot="aui_edit-composer-wrapper" className="flex flex-col px-2">
       <ComposerPrimitive.Root className="aui-edit-composer-root bg-background border-border/60 dark:border-muted-foreground/15 dark:bg-muted/30 ms-auto flex w-full max-w-[85%] flex-col rounded-3xl border shadow-[0_4px_16px_-8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)] dark:shadow-none">
         <ComposerPrimitive.Input
           className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none"
           autoFocus
+          aria-disabled={isRunning}
+          disabled={isRunning}
+          readOnly={isRunning}
+          onBeforeInputCapture={preventEditMutationWhenRunning}
+          onBeforeInput={preventEditMutationWhenRunning}
+          onInputCapture={preventEditMutationWhenRunning}
+          onChange={preventEditMutationWhenRunning}
+          onPasteCapture={preventEditMutationWhenRunning}
+          onPaste={preventEditMutationWhenRunning}
+          onCutCapture={preventEditMutationWhenRunning}
+          onCut={preventEditMutationWhenRunning}
+          onDropCapture={preventEditMutationWhenRunning}
+          onDrop={preventEditMutationWhenRunning}
+          onKeyDownCapture={preventEditKeyWhenRunning}
+          onKeyDown={preventEditKeyWhenRunning}
         />
         <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">
           <ComposerPrimitive.Cancel asChild>
-            <Button variant="ghost" size="sm" className="h-8 rounded-full px-3.5">
+            <Button variant="ghost" size="sm" className="h-8 rounded-full px-3.5" disabled={isRunning}>
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
           <ComposerPrimitive.Send asChild>
-            <Button size="sm" className="h-8 rounded-full px-3.5">
+            <Button size="sm" className="h-8 rounded-full px-3.5" disabled={isRunning}>
               Update
             </Button>
           </ComposerPrimitive.Send>
