@@ -2198,7 +2198,10 @@ function compactPct(n: number | null): string | null {
   return `${n >= 0 ? "+" : ""}${Math.round(n)}%`;
 }
 
-const ExecutionTelemetryLine: FC<{ parts: readonly unknown[] }> = ({ parts }) => {
+const ExecutionTelemetryLine: FC<{ parts: readonly unknown[]; statusType?: string }> = ({
+  parts,
+  statusType,
+}) => {
   const { estimate, outcome } = executionTelemetryFromParts(parts);
   const [expanded, setExpanded] = useState(false);
   if (!estimate) return null;
@@ -2211,16 +2214,24 @@ const ExecutionTelemetryLine: FC<{ parts: readonly unknown[] }> = ({ parts }) =>
     ? `${compactTokens(outcome.actual_total_tokens)} tokens`
     : `~${compactTokens(estimate.expected_total_tokens)} tokens`;
   if (!outcome) {
+    const running = statusType === "running";
     return (
       <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground/75">
-        <Loader2 className="size-3.5 animate-spin" />
-        <CompactEstimateTimer
-          startedAt={estimate.started_at}
-          expectedLatencyMs={estimate.expected_execution_latency_ms}
-          upperLatencyMs={estimate.upper_execution_latency_ms}
-          estimateQuality={estimate.estimate_quality}
-          mode="execution"
-        />
+        {running ? <Loader2 className="size-3.5 animate-spin" /> : null}
+        {running ? (
+          <CompactEstimateTimer
+            startedAt={estimate.started_at}
+            expectedLatencyMs={estimate.expected_execution_latency_ms}
+            upperLatencyMs={estimate.upper_execution_latency_ms}
+            estimateQuality={estimate.estimate_quality}
+            mode="execution"
+          />
+        ) : (
+          <span>
+            {modelName}
+            {reasoning} · completed · estimated {formatEta(estimate.expected_execution_latency_ms)}
+          </span>
+        )}
       </div>
     );
   }
@@ -2409,6 +2420,7 @@ const AssistantMessage: FC<{
 }> = ({ threadId, notesDisabled, routerAbOn }) => {
   const messageId = useAuiState((s) => s.message.id);
   const parts = useAuiState((s) => s.message.parts);
+  const messageStatusType = useAuiState((s) => s.message.status?.type);
   const routingDecision = useAuiState((s) => routingDecisionFromMessage(s.message));
   const codexMetadata = useAuiState((s) => {
     const custom = (s.message.metadata as { custom?: unknown } | undefined)?.custom;
@@ -2500,7 +2512,7 @@ const AssistantMessage: FC<{
             harnessLabel={codexMetadata.harnessLabel}
           />
         ) : null}
-        <ExecutionTelemetryLine parts={parts} />
+        <ExecutionTelemetryLine parts={parts} statusType={messageStatusType} />
         <MessageError />
       </div>
 
