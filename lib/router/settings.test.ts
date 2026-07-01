@@ -2007,7 +2007,7 @@ test("migrateStaleAllowedCombos: OpenAI combos are NOT migrated", () => {
   assert.deepEqual(migrated.allowedCombos, settings.allowedCombos);
 });
 
-test("parseRouterSettingsForSave: explicit stale legacy default is preserved", () => {
+test("parseRouterSettingsForSave: explicit single-combo policy is preserved by validator", () => {
   const result = parseRouterSettingsForSave(
     {
       allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],

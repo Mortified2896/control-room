@@ -370,7 +370,9 @@ export async function GET() {
   // One-time migration: if the DB has the old stale default shape,
   // upgrade it to the new safe defaults (all Codex models × all
   // supported reasoning levels). Custom user policies are not touched.
+  const beforeStaleMigration = effective;
   effective = migrateStaleAllowedCombos(effective);
+  const didMigrateStaleAllowedCombos = effective !== beforeStaleMigration;
 
   let registry: Awaited<ReturnType<typeof getEffectiveModelsRegistry>>;
   try {
@@ -382,6 +384,29 @@ export async function GET() {
     );
     registry = getFallbackEffectiveRegistry();
   }
+  if (didMigrateStaleAllowedCombos && isDbConfigured()) {
+    try {
+      const writeResult = await upsertRouterSettingsRow({
+        settings: effective,
+        updatedBy: "stale-allowed-combos-migration",
+        registry,
+      });
+      if (writeResult.ok) {
+        effective = await reloadEffectiveRouterSettings();
+      } else {
+        console.error(
+          "[api/router-settings GET] stale allowedCombos migration failed validation:",
+          writeResult.errors,
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[api/router-settings GET] stale allowedCombos migration failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   const minimaxDiscovery = await getMiniMaxDiscoverySnapshot();
   const providerAccess = await getProviderAccessSettings();
   const openaiAccess = providerAccess.find((p) => p.provider_id === "openai_api");
