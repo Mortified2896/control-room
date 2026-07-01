@@ -6,6 +6,7 @@ import {
 } from "@/lib/router/settings-store";
 import {
   DEFAULT_ROUTER_SETTINGS,
+  migrateStaleAllowedCombos,
   parseRouterSettingsForSave,
   type RouterSettings,
 } from "@/lib/router/schema";
@@ -69,6 +70,7 @@ type RouterSettingsDto = {
       providerLabel: string;
       modelId: string;
       displayLabel: string;
+      billingSource: "subscription" | "api_billing";
       configured: boolean;
       available: boolean;
       stale: boolean;
@@ -173,10 +175,15 @@ async function serializeRegistryModels(
     if (!next || next === m.reasoningCapability) return m;
     return { ...m, reasoningCapability: next };
   }
-  const openaiRows = registry.models.map((m) => ({
+  const registryRows = registry.models.map((m) => ({
     ...m,
-    providerId: "openai" as const,
-    providerLabel: "OpenAI API",
+    providerLabel:
+      m.providerId === "openai"
+        ? "OpenAI API"
+        : m.providerId === "codex"
+          ? "Codex CLI / ChatGPT login"
+          : "MiniMax subscription",
+    billingSource: m.providerId === "openai" ? ("api_billing" as const) : ("subscription" as const),
   }));
   const minimaxConfig = getMiniMaxConfig();
   const minimaxSnapshot = await getMiniMaxDiscoverySnapshot();
@@ -193,6 +200,7 @@ async function serializeRegistryModels(
       providerLabel: "MiniMax subscription",
       modelId: m.modelId,
       displayLabel: m.modelLabel,
+      billingSource: "subscription" as const,
       configured: true,
       available: m.enabled,
       stale: minimaxSnapshot.fetchedAt
@@ -219,36 +227,10 @@ async function serializeRegistryModels(
       ...(!minimaxConfig.apiKeySet ? { available: false, usableForChat: false } : {}),
     };
   });
-  const codexRows = CODEX_CATALOG_MODELS.map((m) => {
-    const refreshedCodex = applyRefreshed(m, `codex:${m.id}`);
-    return {
-      providerId: "codex" as const,
-      providerLabel: "Codex CLI / ChatGPT login",
-      modelId: `codex:${m.id}`,
-      displayLabel: `Codex · ${m.label}`,
-      configured: true,
-      available: true,
-      stale: false,
-      reasoningCapability: refreshedCodex.reasoningCapability,
-      supportsReasoning: hasReasoningControls(refreshedCodex.reasoningCapability),
-      supportedReasoningLevels: getEffectiveReasoningLevels(refreshedCodex.reasoningCapability),
-      tier: m.tier === "expensive" ? ("expensive" as const) : ("standard" as const),
-      usableForChat: true,
-      manualSelectorVisible: true,
-      manuallyOverridden: false,
-      routerEligible: false,
-      capabilities: {
-        reasoning: hasReasoningControls(refreshedCodex.reasoningCapability),
-        vision: false,
-        images: false,
-        functionCalling: false,
-        structuredOutput: false,
-        streaming: true,
-      },
-      provenance: "env_static" as const,
-    };
-  });
-  return [...openaiRows, ...codexRows, ...minimaxRows];
+  // Codex catalog models are now appended directly in `getEffectiveModelsRegistry`
+  // (`lib/providers/registry.ts`), so `registry.models` already contains them.
+  // Do NOT build a separate Codex block here to avoid duplicates.
+  return [...registryRows, ...minimaxRows];
 }
 
 function serializeDiscovery(
@@ -385,6 +367,10 @@ export async function GET() {
     );
     effective = DEFAULT_ROUTER_SETTINGS;
   }
+  // One-time migration: if the DB has the old stale default shape,
+  // upgrade it to the new safe defaults (all Codex models × all
+  // supported reasoning levels). Custom user policies are not touched.
+  effective = migrateStaleAllowedCombos(effective);
 
   let registry: Awaited<ReturnType<typeof getEffectiveModelsRegistry>>;
   try {
@@ -494,7 +480,7 @@ export async function PUT(req: Request) {
   // Read the effective settings so we can merge unknown/missing fields
   // from the partial payload (the UI only ships the fields it lets the
   // user touch; everything else must persist unchanged).
-  const current = await getEffectiveRouterSettings();
+  const current = migrateStaleAllowedCombos(await getEffectiveRouterSettings());
   const b = body as Record<string, unknown>;
   // Reject obviously-wrong ids up-front so the strict validator doesn't
   // have to surface them later.
@@ -532,7 +518,11 @@ export async function PUT(req: Request) {
     failureBehavior: b.failureBehavior ?? current.failureBehavior,
     fallbackModelId: b.fallbackModelId ?? current.fallbackModelId,
     fallbackReasoningLevel: b.fallbackReasoningLevel ?? current.fallbackReasoningLevel,
-    allowedCombos: b.allowedCombos ?? current.allowedCombos,
+    // Belt-and-suspenders: if the current DB value is the old stale default
+    // and the PUT body didn't explicitly override it (so the stale value
+    // would flow into merged.allowedCombos), normalize it here. The GET
+    // handler migrates on load so this is rarely reached — but it covers
+    // the edge case where a PUT lands before any GET has run after deploy.
     routerModelId: b.routerModelId ?? current.routerModelId,
     normalChatRecommenderModelId:
       b.normalChatRecommenderModelId ?? current.normalChatRecommenderModelId,
@@ -559,6 +549,23 @@ export async function PUT(req: Request) {
       b.normalChatRecommenderAllowedModels === undefined
         ? current.normalChatRecommenderAllowedModels
         : b.normalChatRecommenderAllowedModels,
+    // Long-prompt lane fields
+    longPromptThresholdTokens:
+      b.longPromptThresholdTokens === undefined
+        ? current.longPromptThresholdTokens
+        : b.longPromptThresholdTokens,
+    longPromptRecommenderModelId:
+      b.longPromptRecommenderModelId ?? current.longPromptRecommenderModelId,
+    longPromptRecommenderReasoningLevel:
+      b.longPromptRecommenderReasoningLevel ?? current.longPromptRecommenderReasoningLevel,
+    longPromptRecommenderFallbackModelId:
+      b.longPromptRecommenderFallbackModelId === undefined
+        ? current.longPromptRecommenderFallbackModelId
+        : b.longPromptRecommenderFallbackModelId,
+    longPromptRecommenderFallbackReasoningLevel:
+      b.longPromptRecommenderFallbackReasoningLevel === undefined
+        ? current.longPromptRecommenderFallbackReasoningLevel
+        : b.longPromptRecommenderFallbackReasoningLevel,
     // Non-UI-managed fields round-trip from the existing effective
     // payload so a Save does not silently reset them to defaults.
     maxCostPerRecommendationUsd: current.maxCostPerRecommendationUsd,

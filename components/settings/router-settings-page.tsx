@@ -89,6 +89,7 @@ type RouterSettingsDto = {
       providerLabel: string;
       modelId: string;
       displayLabel: string;
+      billingSource?: "subscription" | "api_billing";
       configured: boolean;
       available: boolean;
       stale: boolean;
@@ -171,7 +172,11 @@ function toRow(
     stale: entry.stale,
     reasoningCapability: entry.reasoningCapability,
     supportedReasoningLevels: entry.supportedReasoningLevels,
-    billingSource: entry.providerId === "openai" ? "api_billing" : "subscription",
+    billingSource:
+      entry.billingSource ??
+      (entry.providerId === "openai" && !entry.modelId.startsWith("codex:")
+        ? "api_billing"
+        : "subscription"),
   };
 }
 
@@ -180,28 +185,34 @@ function comboKey(modelId: string, reasoningLevel: string): string {
 }
 
 type FormState = {
-  /** Editor for the engine model id. Persists via /api/router-settings. */
+  // ===== Default / lower-cost recommender lane =====
+  /** Primary recommender engine model id for the default lane. */
   normalChatRecommenderModelId: string;
-  /** Editor for the engine reasoning/thinking option. Persists via /api/router-settings. */
+  /** Primary recommender reasoning/thinking option for the default lane. */
   normalChatRecommenderReasoningLevel: string;
-  /**
-   * Optional user-configured single-model fallback for the recommender
-   * engine. `null` = no fallback (chain uses deterministic Codex →
-   * MiniMax → OpenAI API defaults). Non-null = tried right after the
-   * primary engine fails.
-   */
+  /** Paired fallback recommender model id for the default lane. `null` = no fallback. */
   normalChatRecommenderFallbackModelId: string | null;
-  /**
-   * Reasoning / thinking level for the fallback model. `null` when no
-   * fallback is configured (the validator enforces this invariant).
-   */
+  /** Paired fallback reasoning/thinking option for the default lane. */
   normalChatRecommenderFallbackReasoningLevel: string | null;
+  // ===== Long-prompt recommender lane =====
+  /** Token threshold at or above which the long-prompt lane is used. */
+  longPromptThresholdTokens: string;
+  /** Primary recommender engine model id for the long-prompt lane. */
+  longPromptRecommenderModelId: string;
+  /** Primary recommender reasoning/thinking option for the long-prompt lane. */
+  longPromptRecommenderReasoningLevel: string;
+  /** Paired fallback recommender model id for the long-prompt lane. `null` = no fallback. */
+  longPromptRecommenderFallbackModelId: string | null;
+  /** Paired fallback reasoning/thinking option for the long-prompt lane. */
+  longPromptRecommenderFallbackReasoningLevel: string | null;
+  // ===== Legacy fields =====
   /** A/B router model id (legacy Router A/B knob, persists via /api/router-settings). */
   routerModelId: string;
   /** Failure behavior of the Side B A/B router (legacy). */
   failureBehavior: RouterFailureBehavior;
   /** Long-prompt threshold for the legacy Side B guard. */
   longPromptThresholdChars: string;
+  // ===== Tab C fields =====
   /** Per-row (model, reasoning) option allowlist for Tab C. */
   allowedComboKeys: Set<string>;
   /** Model allowlist for Tab C; null = no restriction. */
@@ -210,12 +221,22 @@ type FormState = {
 
 function initialForm(dto: RouterSettingsDto): FormState {
   return {
+    // Default / lower-cost lane
     normalChatRecommenderModelId: dto.effective.normalChatRecommenderModelId,
     normalChatRecommenderReasoningLevel: dto.effective.normalChatRecommenderReasoningLevel,
     normalChatRecommenderFallbackModelId:
       dto.effective.normalChatRecommenderFallbackModelId ?? null,
     normalChatRecommenderFallbackReasoningLevel:
       dto.effective.normalChatRecommenderFallbackReasoningLevel ?? null,
+    // Long-prompt lane
+    longPromptThresholdTokens: String(dto.effective.longPromptThresholdTokens),
+    longPromptRecommenderModelId: dto.effective.longPromptRecommenderModelId,
+    longPromptRecommenderReasoningLevel: dto.effective.longPromptRecommenderReasoningLevel,
+    longPromptRecommenderFallbackModelId:
+      dto.effective.longPromptRecommenderFallbackModelId ?? null,
+    longPromptRecommenderFallbackReasoningLevel:
+      dto.effective.longPromptRecommenderFallbackReasoningLevel ?? null,
+    // Legacy
     routerModelId: dto.effective.routerModelId,
     failureBehavior: dto.effective.failureBehavior,
     longPromptThresholdChars:
@@ -276,13 +297,17 @@ function formToPayload(form: FormState): {
       allowLongPromptWhenExpensive: true,
       longPromptThresholdChars: threshold,
       routerModelId: form.routerModelId,
+      // Default / lower-cost lane
       normalChatRecommenderModelId: form.normalChatRecommenderModelId,
       normalChatRecommenderReasoningLevel: form.normalChatRecommenderReasoningLevel,
-      // The fallback model + reasoning are user-configurable. We
-      // send `null` through unchanged so the user can clear the
-      // fallback (the default = no fallback).
       normalChatRecommenderFallbackModelId: form.normalChatRecommenderFallbackModelId,
       normalChatRecommenderFallbackReasoningLevel: form.normalChatRecommenderFallbackReasoningLevel,
+      // Long-prompt lane
+      longPromptThresholdTokens: parseInt(form.longPromptThresholdTokens) || 120000,
+      longPromptRecommenderModelId: form.longPromptRecommenderModelId,
+      longPromptRecommenderReasoningLevel: form.longPromptRecommenderReasoningLevel,
+      longPromptRecommenderFallbackModelId: form.longPromptRecommenderFallbackModelId,
+      longPromptRecommenderFallbackReasoningLevel: form.longPromptRecommenderFallbackReasoningLevel,
       failureBehavior: form.failureBehavior,
       allowedCombos,
       normalChatRecommenderAllowedModels:
@@ -295,6 +320,7 @@ function formToPayload(form: FormState): {
 }
 
 function hasFormChanged(form: FormState, baseline: FormState): boolean {
+  // Default lane
   if (form.normalChatRecommenderModelId !== baseline.normalChatRecommenderModelId) return true;
   if (form.normalChatRecommenderReasoningLevel !== baseline.normalChatRecommenderReasoningLevel)
     return true;
@@ -305,6 +331,19 @@ function hasFormChanged(form: FormState, baseline: FormState): boolean {
     baseline.normalChatRecommenderFallbackReasoningLevel
   )
     return true;
+  // Long-prompt lane
+  if (form.longPromptThresholdTokens !== baseline.longPromptThresholdTokens) return true;
+  if (form.longPromptRecommenderModelId !== baseline.longPromptRecommenderModelId) return true;
+  if (form.longPromptRecommenderReasoningLevel !== baseline.longPromptRecommenderReasoningLevel)
+    return true;
+  if (form.longPromptRecommenderFallbackModelId !== baseline.longPromptRecommenderFallbackModelId)
+    return true;
+  if (
+    form.longPromptRecommenderFallbackReasoningLevel !==
+    baseline.longPromptRecommenderFallbackReasoningLevel
+  )
+    return true;
+  // Legacy
   if (form.routerModelId !== baseline.routerModelId) return true;
   if (form.failureBehavior !== baseline.failureBehavior) return true;
   if (form.longPromptThresholdChars !== baseline.longPromptThresholdChars) return true;
@@ -391,7 +430,7 @@ function mergeCodexIntoRegistry(
       usableForChat: true,
       manualSelectorVisible: true,
       manuallyOverridden: false,
-      routerEligible: false,
+      routerEligible: true,
       capabilities: {
         reasoning: hasReasoningControls(m.reasoningCapability),
         vision: false,
@@ -812,17 +851,17 @@ export const RouterSettingsPage: FC<{
   }, []);
 
   const onResetSafeDefaults = useCallback(() => {
-    setForm((prev) => {
-      if (!prev) return prev;
-      // Safe defaults = no explicit allowlist + minimal reasoning
-      // per-model surface (one low effort option per row).
-      return {
-        ...prev,
-        normalChatRecommenderAllowedModels: null,
-        allowedComboKeys: new Set<string>(),
-      };
-    });
-  }, []);
+    if (!dto) return;
+    // Reset to the schema defaults (DEFAULT_ROUTER_SETTINGS). For
+    // allowedCombos this means all Codex catalog models with ALL their
+    // supported reasoning levels — the recommender can pick any of them.
+    // The "Reset to safe defaults" button uses the schema defaults, not
+    // the persisted effective settings.
+    const next = initialForm({ ...dto, effective: dto.defaults });
+    setForm(next);
+    setServerErrors([]);
+    setSaveStatus({ kind: "idle" });
+  }, [dto]);
 
   /**
    * Loud-failure engine smoke-test. Calls /api/model/recommend in a
@@ -990,31 +1029,51 @@ export const RouterSettingsPage: FC<{
         <RouterEnginesCallout />
 
         {/* Tab B — Recommender engine. Renders FIRST in the main section
-            so it is above the fold. Contains engine model + reasoning and
-            fallback model + reasoning pickers. */}
+            so it is above the fold. Contains two-lane recommender engine
+            pickers (default + long-prompt lanes). */}
         <RecommenderEngineTab
           registry={rows}
-          engineModelId={form.normalChatRecommenderModelId}
-          engineReasoningOption={form.normalChatRecommenderReasoningLevel}
+          // Default / lower-cost lane
+          defaultLaneModelId={form.normalChatRecommenderModelId}
+          defaultLaneReasoningOption={form.normalChatRecommenderReasoningLevel}
+          defaultLaneFallbackModelId={form.normalChatRecommenderFallbackModelId}
+          defaultLaneFallbackReasoningOption={form.normalChatRecommenderFallbackReasoningLevel}
+          // Token threshold + long-prompt lane
+          tokenThreshold={form.longPromptThresholdTokens}
+          longPromptLaneModelId={form.longPromptRecommenderModelId}
+          longPromptLaneReasoningOption={form.longPromptRecommenderReasoningLevel}
+          longPromptLaneFallbackModelId={form.longPromptRecommenderFallbackModelId}
+          longPromptLaneFallbackReasoningOption={form.longPromptRecommenderFallbackReasoningLevel}
           allowOpenAiApiRouter={dto.effective.allowOpenAiApiRouter}
           engineOptions={engineOptions}
           candidatePoolSize={candidateCount}
-          onEngineModelChange={(id) => update({ normalChatRecommenderModelId: id })}
-          onEngineReasoningChange={(opt) => update({ normalChatRecommenderReasoningLevel: opt })}
-          fallbackModelId={form.normalChatRecommenderFallbackModelId}
-          fallbackReasoningOption={form.normalChatRecommenderFallbackReasoningLevel}
-          onFallbackModelChange={(id) =>
+          // Change handlers
+          onDefaultLaneModelChange={(id) => update({ normalChatRecommenderModelId: id })}
+          onDefaultLaneReasoningChange={(opt) => update({ normalChatRecommenderReasoningLevel: opt })}
+          onDefaultLaneFallbackModelChange={(id) =>
             update({
               normalChatRecommenderFallbackModelId: id,
-              // Clear the reasoning level whenever the user clears
-              // the fallback model — the validator enforces the
-              // (model + level) pair as a unit.
               normalChatRecommenderFallbackReasoningLevel:
                 id === null ? null : form.normalChatRecommenderFallbackReasoningLevel,
             })
           }
-          onFallbackReasoningChange={(opt) =>
+          onDefaultLaneFallbackReasoningChange={(opt) =>
             update({ normalChatRecommenderFallbackReasoningLevel: opt })
+          }
+          onTokenThresholdChange={(val) => update({ longPromptThresholdTokens: val })}
+          onLongPromptLaneModelChange={(id) => update({ longPromptRecommenderModelId: id })}
+          onLongPromptLaneReasoningChange={(opt) =>
+            update({ longPromptRecommenderReasoningLevel: opt })
+          }
+          onLongPromptLaneFallbackModelChange={(id) =>
+            update({
+              longPromptRecommenderFallbackModelId: id,
+              longPromptRecommenderFallbackReasoningLevel:
+                id === null ? null : form.longPromptRecommenderFallbackReasoningLevel,
+            })
+          }
+          onLongPromptLaneFallbackReasoningChange={(opt) =>
+            update({ longPromptRecommenderFallbackReasoningLevel: opt })
           }
           promptPreview={dto.normalChatRecommenderPrompt}
           onTestEngine={onTestEngine}

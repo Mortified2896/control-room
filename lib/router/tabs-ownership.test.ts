@@ -36,9 +36,37 @@ test("Default engine fields are distinct from default candidate fields", () => {
   assert.equal(DEFAULT_ROUTER_SETTINGS.normalChatRecommenderReasoningLevel, "low");
   // Default = no restriction (every enabled model is implicitly allowed).
   assert.equal(DEFAULT_ROUTER_SETTINGS.normalChatRecommenderAllowedModels, null);
-  // Default = CODEBOX_ONLY combo (the only one that ships in the open).
-  assert.equal(DEFAULT_ROUTER_SETTINGS.allowedCombos.length, 1);
-  assert.equal(DEFAULT_ROUTER_SETTINGS.allowedCombos[0]?.modelId, "codex:gpt-5.4-mini");
+  // Default allowedCombos includes all Codex subscription models with their reasoning levels.
+  // The exact count may vary; we just verify the default recommender is in there.
+  assert.ok(
+    DEFAULT_ROUTER_SETTINGS.allowedCombos.some(
+      (c) => c.modelId === "codex:gpt-5.4-mini" && c.reasoningLevel === "low",
+    ),
+    "default recommender (codex:gpt-5.4-mini, low) must be in allowedCombos",
+  );
+  // Verify the new long-prompt lane fields exist and have defaults.
+  assert.ok(
+    "longPromptThresholdTokens" in DEFAULT_ROUTER_SETTINGS,
+    "longPromptThresholdTokens field must exist",
+  );
+  assert.ok(
+    "longPromptRecommenderModelId" in DEFAULT_ROUTER_SETTINGS,
+    "longPromptRecommenderModelId field must exist",
+  );
+  assert.ok(
+    "longPromptRecommenderFallbackModelId" in DEFAULT_ROUTER_SETTINGS,
+    "longPromptRecommenderFallbackModelId field must exist",
+  );
+  assert.equal(
+    DEFAULT_ROUTER_SETTINGS.longPromptThresholdTokens,
+    120_000,
+    "default token threshold should be 120,000",
+  );
+  assert.equal(
+    DEFAULT_ROUTER_SETTINGS.longPromptRecommenderModelId,
+    "codex:gpt-5.4-mini",
+    "default long-prompt recommender should match default recommender",
+  );
 });
 
 test("parseRouterSettings preserves the engine-vs-candidate separation", () => {

@@ -16,6 +16,7 @@ function stubRecommend(behavior: RecommendImpl): void {
 // `allowOpenAiApiRouter` to admit OpenAI API entries.
 const TEST_SETTINGS = {
   ...DEFAULT_ROUTER_SETTINGS,
+  abEnabled: true,
   allowOpenAiApiRouter: true,
   routerModelId: "gpt-5.4-mini",
   allowedCombos: [

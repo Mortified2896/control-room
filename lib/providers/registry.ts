@@ -568,8 +568,53 @@ export async function getEffectiveModelsRegistry(): Promise<EffectiveRegistry> {
   // when it builds the chat-picker payload. The base sync registry
   // does not include Codex/MiniMax entries, so the refresh loop
   // can't reach them — this field is the bridge.
+
+  // Codex catalog models: add to the registry with routerEligible=true
+  // so `listRouterAllowedPool` includes them and the recommender can
+  // pick Codex models. Codex models are always configured, available,
+  // and support reasoning controls (subscription-first policy). The
+  // access-control gate is applied later in `getEffectiveModelsResponse`
+  // so the registry itself stays pure.
+  const codexRows: EffectiveModelEntry[] = CODEX_CATALOG_MODELS.map((m) => {
+    const refreshedCap = byId.get(`codex:${m.id}`) ?? m.reasoningCapability;
+    return {
+      providerId: "codex" as const,
+      providerLabel: "Codex subscription",
+      modelId: `codex:${m.id}`,
+      displayLabel: `Codex · ${m.label}`,
+      configured: true,
+      available: true,
+      stale: false,
+      supportsReasoning: hasReasoningControls(refreshedCap),
+      supportedExecutionTargets: m.supportedExecutionTargets,
+      supportsReasoningLevels: m.supportsReasoningLevels,
+      reasoningCapability: refreshedCap,
+      supportedReasoningLevels: getEffectiveReasoningLevels(refreshedCap),
+      tier: m.tier === "expensive" ? ("expensive" as const) : ("standard" as const),
+      usableForChat: true,
+      manualSelectorVisible: true,
+      manuallyOverridden: false,
+      // Codex catalog models are always router-eligible — they are
+      // always configured (static catalog) and always support reasoning.
+      // The recommender can only pick them if they are also in
+      // `allowedCombos` and `normalChatRecommenderAllowedModels`, so
+      // the access-control gate is applied downstream, not here.
+      routerEligible: true,
+      capabilities: {
+        reasoning: hasReasoningControls(refreshedCap),
+        vision: false,
+        images: false,
+        functionCalling: false,
+        structuredOutput: false,
+        streaming: true,
+      },
+      provenance: "env_static" as const,
+    };
+  });
+
   return {
     ...refreshed,
+    models: [...refreshed.models, ...codexRows],
     refreshedCapabilitiesById: byId,
   };
 }

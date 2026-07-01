@@ -250,4 +250,81 @@ test.describe("Router Settings UI", () => {
     await expect(locked).toBeVisible();
     await expect(locked).toContainText(/Disabled/i);
   });
+
+  test.describe("Tab B — Recommender engine (two-lane layout)", () => {
+    test("renders both recommender lanes with primary and fallback pickers", async ({ page }) => {
+      await page.goto("/settings/router");
+      await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+        timeout: 15_000,
+      });
+
+      // Token threshold must be visible and editable.
+      const threshold = page.getByTestId("router-settings-token-threshold");
+      await expect(threshold).toBeVisible();
+
+      // Default lane pickers.
+      await expect(page.getByTestId("router-settings-default-lane-model")).toBeVisible();
+      await expect(page.getByTestId("router-settings-default-lane-reasoning")).toBeVisible();
+      await expect(page.getByTestId("router-settings-default-lane-fallback-model")).toBeVisible();
+      await expect(page.getByTestId("router-settings-default-lane-fallback-reasoning")).toBeVisible();
+
+      // Long-prompt lane pickers.
+      await expect(page.getByTestId("router-settings-long-prompt-lane-model")).toBeVisible();
+      await expect(page.getByTestId("router-settings-long-prompt-lane-reasoning")).toBeVisible();
+      await expect(page.getByTestId("router-settings-long-prompt-lane-fallback-model")).toBeVisible();
+      await expect(page.getByTestId("router-settings-long-prompt-lane-fallback-reasoning")).toBeVisible();
+    });
+
+    test("token threshold change makes save button enabled", async ({ page }) => {
+      await page.goto("/settings/router");
+      await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+        timeout: 15_000,
+      });
+
+      const saveButton = page.getByTestId("router-settings-save");
+      // Form starts clean.
+      await expect(saveButton).toBeDisabled();
+
+      // Focus the token threshold input and change its value.
+      const threshold = page.getByTestId("router-settings-token-threshold");
+      await threshold.click();
+      await threshold.fill("150000");
+
+      // Now save should be enabled.
+      await expect(saveButton).toBeEnabled();
+
+      // Reset: set it back to default 120000.
+      await threshold.fill("120000");
+      await expect(saveButton).toBeDisabled();
+    });
+
+    test("switching a lane model enables save button", async ({ page }) => {
+      await page.goto("/settings/router");
+      await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+        timeout: 15_000,
+      });
+
+      const saveButton = page.getByTestId("router-settings-save");
+      await expect(saveButton).toBeDisabled();
+
+      // Click the default lane model selector.
+      await page.getByTestId("router-settings-default-lane-model").click();
+
+      // Select a different option from the popover.
+      const options = page.locator('[role="option"]');
+      const count = await options.count();
+      expect(count).toBeGreaterThan(1);
+
+      // Select the second option (first is the current default).
+      await options.nth(1).click();
+
+      // Save should now be enabled.
+      await expect(saveButton).toBeEnabled();
+
+      // Reset by selecting the first option again.
+      await page.getByTestId("router-settings-default-lane-model").click();
+      await options.first().click();
+      await expect(saveButton).toBeDisabled();
+    });
+  });
 });

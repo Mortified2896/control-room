@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Code2,
   FlaskConical,
+  Info,
   Loader2,
   Plug,
   XCircle,
@@ -29,68 +30,33 @@ import {
 } from "@/lib/providers/capability";
 
 /**
- * Tab B — Recommender engine.
+ * Tab B — Recommender engine (two-lane architecture).
  *
- *   "What model recommends?"
+ * Router/recommender lane selection may be deterministic by prompt/context
+ * token count. There are two recommender lanes:
  *
- * A compact settings card (NOT a table). The engine-side controls plus
- * a read-only prompt preview so the user always sees what the
- * recommender is actually being told:
+ *   1. Default / lower-cost lane
+ *      - Used when request token estimate is below the configured threshold.
+ *      - Has its own primary recommender engine.
+ *      - Has its own paired fallback recommender engine.
  *
- *   - Engine model              → model id of the recommender
- *   - Engine reasoning/thinking → provider-native option for the
- *                                 engine model (low/medium/xhigh on
- *                                 OpenAI/Codex effort-level models,
- *                                 adaptive/enabled/disabled on MiniMax
- *                                 thinking-budget models)
- *   - Fallback engine model     → optional single-model fallback
- *                                 (the recommender tries it right
- *                                 after the primary engine fails and
- *                                 BEFORE the deterministic Codex →
- *                                 MiniMax → OpenAI API defaults)
- *   - Fallback reasoning        → reasoning level used when the
- *                                 fallback model is the active
- *                                 recommender
- *   - Prompt preview            → the system + user prompts the API
- *                                 route actually sends to the
- *                                 recommender (read-only, live, so
- *                                 the user never has to guess what
- *                                 "prompt" the engine is using)
- *   - Status                    → runtime reachability + billing
- *                                 kind (subscription-backed vs
- *                                 API-billed)
- *   - Test recommender engine   → fires a smoke call against the
- *                                 configured engine and surfaces
- *                                 the result inline (loud error on
- *                                 failure; never silent fallback).
+ *   2. Long-prompt lane
+ *      - Used when request token estimate is at or above the configured threshold.
+ *      - Has its own primary recommender engine.
+ *      - Has its own paired fallback recommender engine.
  *
- * Backend fields:
- *   - `normalChatRecommenderModelId`             (engine model)
- *   - `normalChatRecommenderReasoningLevel`      (engine reasoning/thinking)
- *   - `normalChatRecommenderFallbackModelId`     (optional fallback model)
- *   - `normalChatRecommenderFallbackReasoningLevel` (fallback reasoning)
+ * IMPORTANT:
+ *   - The token threshold chooses the recommender lane only.
+ *   - The token threshold must NOT directly choose the execution model.
+ *   - The chosen recommender engine still chooses the execution model and
+ *     reasoning level.
+ *   - Fallback is paired per lane.
+ *   - No hidden third fallback.
+ *   - No deterministic execution-model routing.
  *
- * Settings owned here are deliberately kept separate from the candidate
- * pool (Tab C). The engine and the candidates are not the same
- * decision — a Codex subscription engine is allowed to recommend a
- * MiniMax M3 candidate, for example.
- *
- * Loud-failure policy enforced here:
- *   - If the engine model is misconfigured / unconfigured, the Status
- *     pill says "Unavailable" and Save is disabled until the user
- *     picks a different engine (we never silently fall back).
- *   - If the user's pick is OpenAI API and `allowOpenAiApiRouter` is
- *     off, the same pill surfaces "API-billed — opt-in required" so the
- *     user must explicitly accept the cost.
- *   - If the engine model is Codex and Codex is currently quota-
- *     exhausted, the pill stays "Subscription-backed / Quota exhausted"
- *     — the brief: "Treat Codex as configured / catalogued but
- *     temporarily unavailable for runtime." No silent swap to MiniMax
- *     or OpenAI.
- *   - The user-configured fallback is optional and respects the same
- *     OpenAI API opt-in as the primary engine. When unset, the
- *     deterministic Codex → MiniMax → OpenAI API defaults remain
- *     unchanged.
+ * These are recommender engines, not execution defaults. The selected
+ * lane's recommender chooses the execution model. If the selected lane's
+ * primary and fallback both fail, recommendation blocks loudly.
  */
 
 type EngineOption = {
@@ -119,12 +85,26 @@ type EngineStatus =
       detail: string;
     };
 
-type RecommenderEngineTabProps = {
+export type RecommenderEngineTabProps = {
   registry: ReadonlyArray<EffectiveRegistryModelDto>;
-  /** Currently-selected engine model id (== `normalChatRecommenderModelId`). */
-  engineModelId: string;
-  /** Currently-selected engine reasoning/thinking option. */
-  engineReasoningOption: string;
+  /** Currently-selected engine model id for the default lane. */
+  defaultLaneModelId: string;
+  /** Currently-selected engine reasoning/thinking option for the default lane. */
+  defaultLaneReasoningOption: string;
+  /** Optional paired fallback model id for the default lane. `null` = no fallback. */
+  defaultLaneFallbackModelId: string | null;
+  /** Reasoning level for the default lane fallback model. `null` when no fallback. */
+  defaultLaneFallbackReasoningOption: string | null;
+  /** Token count past which the long-prompt lane is used. */
+  tokenThreshold: string;
+  /** Currently-selected engine model id for the long-prompt lane. */
+  longPromptLaneModelId: string;
+  /** Currently-selected engine reasoning/thinking option for the long-prompt lane. */
+  longPromptLaneReasoningOption: string;
+  /** Optional paired fallback model id for the long-prompt lane. `null` = no fallback. */
+  longPromptLaneFallbackModelId: string | null;
+  /** Reasoning level for the long-prompt lane fallback model. `null` when no fallback. */
+  longPromptLaneFallbackReasoningOption: string | null;
   /**
    * `true` when the user has explicitly opted in to OpenAI API router
    * use (needed for engine = OpenAI API). Surfaced in the Status pill
@@ -135,28 +115,19 @@ type RecommenderEngineTabProps = {
   engineOptions?: ReadonlyArray<EngineOption>;
   /**
    * Number of candidates the recommender would actually be allowed to
-   * pick from given the current Tab C settings. The brief asks us to
-   * show this prominently so the user understands what the engine is
-   * picking *within*.
+   * pick from given the current Tab C settings.
    */
   candidatePoolSize: number;
-  /** Persist the engine model id. Empty / null means clear / use defaults. */
-  onEngineModelChange: (modelId: string) => void;
-  /** Persist the engine reasoning/thinking option. */
-  onEngineReasoningChange: (option: string) => void;
-  /**
-   * Optional user-configured fallback model. `null` = no fallback
-   * (the deterministic Codex → MiniMax → OpenAI API chain is used).
-   * Non-null = the chain tries this model right after the configured
-   * primary fails.
-   */
-  fallbackModelId: string | null;
-  /** Reasoning level for the fallback model. `null` when no fallback. */
-  fallbackReasoningOption: string | null;
-  /** Persist the fallback model id. `null` means clear the fallback. */
-  onFallbackModelChange: (modelId: string | null) => void;
-  /** Persist the fallback reasoning option. `null` means clear it. */
-  onFallbackReasoningChange: (option: string | null) => void;
+  // ===== Change handlers =====
+  onDefaultLaneModelChange: (modelId: string) => void;
+  onDefaultLaneReasoningChange: (option: string) => void;
+  onDefaultLaneFallbackModelChange: (modelId: string | null) => void;
+  onDefaultLaneFallbackReasoningChange: (option: string | null) => void;
+  onTokenThresholdChange: (value: string) => void;
+  onLongPromptLaneModelChange: (modelId: string) => void;
+  onLongPromptLaneReasoningChange: (option: string) => void;
+  onLongPromptLaneFallbackModelChange: (modelId: string | null) => void;
+  onLongPromptLaneFallbackReasoningChange: (option: string | null) => void;
   /**
    * Read-only prompt preview for the engine. Built by the API route
    * using the live registry so the user sees exactly the prompt body
@@ -193,9 +164,8 @@ function buildDefaultEngineOptions(
   const options: EngineOption[] = [];
   for (const entry of registry) {
     if (!entry.configured) continue;
-    // Skip openai_api when the user has not opted in — the brief is
-    // explicit: API-billed models are not used as fallback and not
-    // used as engine either unless explicitly approved.
+    // Skip openai_api when the user has not opted in — API-billed models
+    // are not used as recommender unless explicitly approved.
     if (entry.providerId === "openai" && !allowOpenAiApiRouter) continue;
     options.push({
       modelId: entry.modelId,
@@ -214,8 +184,7 @@ function buildDefaultEngineOptions(
 }
 
 /**
- * Derive the pill we render next to the engine model picker. This is
- * the user-facing summary of "is this engine actually able to run?".
+ * Derive the pill we render next to the engine model picker.
  */
 function computeEngineStatus(input: {
   selected: EngineOption | undefined;
@@ -274,430 +243,12 @@ function computeEngineStatus(input: {
   };
 }
 
-export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
-  registry,
-  engineModelId,
-  engineReasoningOption,
-  allowOpenAiApiRouter,
-  engineOptions,
-  candidatePoolSize,
-  onEngineModelChange,
-  onEngineReasoningChange,
-  fallbackModelId,
-  fallbackReasoningOption,
-  onFallbackModelChange,
-  onFallbackReasoningChange,
-  promptPreview,
-  onTestEngine,
-  saveError = null,
-  testId = "router-settings-section-recommender-engine",
-}) => {
-  const options = useMemo<ReadonlyArray<EngineOption>>(
-    () => engineOptions ?? buildDefaultEngineOptions(registry, allowOpenAiApiRouter),
-    [registry, engineOptions, allowOpenAiApiRouter],
-  );
-
-  const selectedOption = useMemo(() => {
-    const direct = options.find((o) => o.modelId === engineModelId);
-    if (direct) return direct;
-    // The persisted engine id may point at a row that is no longer in
-    // the engine options (provider disabled / opt-in off / stale). We
-    // synthesize a minimal option so the picker still surfaces the
-    // current value and the Test button stays enabled when the model
-    // could plausibly resolve at runtime.
-    return {
-      modelId: engineModelId,
-      displayLabel: `${engineModelId} (current — provider disabled or unknown)`,
-      providerLabel: "Unknown",
-      providerId: "openai" as const,
-      billingSource: "api_billing" as const,
-      capability: UNKNOWN_REASONING_CAPABILITY,
-    };
-  }, [options, engineModelId]);
-
-  const reasoningChoices = useMemo(
-    () =>
-      selectedOption
-        ? getProviderNativeOptionChoices(selectedOption.capability)
-        : [{ value: "", label: "Pick an engine model" }],
-    [selectedOption],
-  );
-
-  /**
-   * Fallback option: resolves the persisted fallback model id to the
-   * matching `EngineOption` (or synthesizes a minimal option for
-   * stale / unknown rows, matching the primary picker pattern). The
-   * fallback picker always includes an explicit "No fallback"
-   * option so the user can clear it without deleting the row.
-   */
-  const fallbackOptions = useMemo<ReadonlyArray<EngineOption>>(
-    () => buildDefaultEngineOptions(registry, allowOpenAiApiRouter),
-    [registry, allowOpenAiApiRouter],
-  );
-  const fallbackSelectedOption = useMemo<EngineOption | null>(() => {
-    if (!fallbackModelId) return null;
-    const direct = fallbackOptions.find((o) => o.modelId === fallbackModelId);
-    if (direct) return direct;
-    return {
-      modelId: fallbackModelId,
-      displayLabel: `${fallbackModelId} (current — provider disabled or unknown)`,
-      providerLabel: "Unknown",
-      providerId: "openai" as const,
-      billingSource: "api_billing" as const,
-      capability: UNKNOWN_REASONING_CAPABILITY,
-    };
-  }, [fallbackOptions, fallbackModelId]);
-  const fallbackReasoningChoices = useMemo(
-    () =>
-      fallbackSelectedOption
-        ? getProviderNativeOptionChoices(fallbackSelectedOption.capability)
-        : [{ value: "", label: "Pick a fallback model" }],
-    [fallbackSelectedOption],
-  );
-
-  const [testState, setTestState] = useState<EngineStatus | null>(null);
-  const [testing, setTesting] = useState(false);
-
-  /**
-   * Re-derive status when inputs change. We intentionally keep the
-   * computed status in component-state so the Test button can persist
-   * its own outcome without immediately overwriting it on every form
-   * keystroke.
-   */
-  const derivedStatus = useMemo(
-    () =>
-      computeEngineStatus({
-        selected: selectedOption,
-        registry,
-        candidatePoolSize,
-        allowOpenAiApiRouter,
-        testResult: testState,
-      }),
-    [selectedOption, registry, candidatePoolSize, allowOpenAiApiRouter, testState],
-  );
-
-  /**
-   * Reset the test status whenever the user changes the engine model
-   * or reasoning, so a stale pass / fail doesn't bleed across edits.
-   */
-  useEffect(() => {
-    setTestState(null);
-  }, [engineModelId, engineReasoningOption, fallbackModelId, fallbackReasoningOption]);
-
-  const runTest = useCallback(async () => {
-    setTesting(true);
-    try {
-      const result = await onTestEngine();
-      setTestState(result);
-    } finally {
-      setTesting(false);
-    }
-  }, [onTestEngine]);
-
-  const status = derivedStatus;
-
-  const statusBg = (() => {
-    if (status.kind === "available" || status.kind === "test_pass")
-      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-    if (status.kind === "test_fail")
-      return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
-    return "border-destructive/40 bg-destructive/10 text-destructive";
-  })();
-
-  const statusIcon = (() => {
-    if (status.kind === "available") return <CheckCircle2 className="size-3.5 shrink-0" />;
-    if (status.kind === "test_pass") return <CheckCircle2 className="size-3.5 shrink-0" />;
-    if (status.kind === "test_fail") return <AlertTriangle className="size-3.5 shrink-0" />;
-    return <XCircle className="size-3.5 shrink-0" />;
-  })();
-
-  return (
-    <section
-      aria-labelledby="recommender-engine-heading"
-      className="rounded-lg border border-border/60 bg-card p-4 sm:p-6"
-      data-testid={testId}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h2 id="recommender-engine-heading" className="text-sm font-semibold">
-            B · Recommender engine
-          </h2>
-          <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-            This is the model that reads the user prompt and recommends a chat model. It is separate
-            from the candidate pool (Tab C) — a subscription-backed engine is allowed to recommend
-            MiniMax M3, for example. If this engine is unavailable, Control Room will not silently
-            fall back to a different engine.
-          </p>
-        </div>
-        <div
-          data-testid="recommender-engine-status"
-          className={cn(
-            "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs",
-            statusBg,
-          )}
-        >
-          {statusIcon}
-          <span className="font-medium">
-            {status.kind === "available"
-              ? "Available"
-              : status.kind === "test_pass"
-                ? "Test passed"
-                : status.kind === "test_fail"
-                  ? "Test failed"
-                  : "Unavailable"}
-          </span>
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-        {/* Engine model picker */}
-        <div className="rounded-md border border-border/60 px-3 py-3">
-          <Label htmlFor="recommender-engine-model">Engine model</Label>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Cheap, fast model. Codex subscription is the safe default; MiniMax M3 is a subscription
-            fallback; OpenAI API is opt-in only.
-          </p>
-          <select
-            id="recommender-engine-model"
-            data-testid="router-settings-normal-chat-recommender-model"
-            value={engineModelId}
-            onChange={(e) => onEngineModelChange(e.target.value)}
-            className="border-input bg-background mt-2 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none"
-            aria-invalid={status.kind === "unavailable"}
-          >
-            {!options.some((o) => o.modelId === engineModelId) && (
-              <option value={engineModelId}>
-                {engineModelId} (current — provider disabled or unknown)
-              </option>
-            )}
-            {options.map((o) => (
-              <option key={o.modelId} value={o.modelId}>
-                {o.displayLabel} · {billingShortLabel(o.billingSource)}
-              </option>
-            ))}
-          </select>
-          {selectedOption ? (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <BillingTag
-                billingSource={selectedOption.billingSource}
-                testId="recommender-engine-billing"
-              />
-              <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
-                {selectedOption.providerId}
-              </span>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Engine thinking / reasoning option picker */}
-        <div className="rounded-md border border-border/60 px-3 py-3">
-          <Label htmlFor="recommender-engine-thinking">Engine reasoning / thinking</Label>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Provider-native value sent verbatim to the engine. Codex / OpenAI effort-level models
-            use <code className="rounded bg-muted px-1">low | medium | high | xhigh</code>; MiniMax
-            M3 uses{" "}
-            <code className="rounded bg-muted px-1">
-              provider_default | adaptive | enabled | disabled
-            </code>
-            .
-          </p>
-          <select
-            id="recommender-engine-thinking"
-            data-testid="router-settings-normal-chat-recommender-reasoning"
-            value={engineReasoningOption}
-            onChange={(e) => onEngineReasoningChange(e.target.value)}
-            disabled={!selectedOption || reasoningChoices.length === 0}
-            className="border-input bg-background mt-2 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none disabled:opacity-60"
-          >
-            {reasoningChoices.map((choice, idx) => (
-              <option key={`${choice.value}-${idx}`} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-          {selectedOption ? (
-            <p
-              className="mt-2 text-[10px] text-muted-foreground/70"
-              data-testid="recommender-engine-capability-summary"
-            >
-              Capability: {describeReasoningCapability(selectedOption.capability)}
-              {selectedOption.capability.kind === "effort_levels"
-                ? ` · ${getEffectiveReasoningLevels(selectedOption.capability).length} options`
-                : ""}
-            </p>
-          ) : null}
-        </div>
-
-        {/* Test button + quick stats */}
-        <div className="flex flex-col items-stretch gap-2 rounded-md border border-border/60 px-3 py-3 lg:items-end lg:justify-end">
-          <Button
-            type="button"
-            variant="default"
-            size="sm"
-            onClick={() => void runTest()}
-            disabled={testing || !selectedOption || status.kind === "unavailable"}
-            data-testid="recommender-engine-test-button"
-          >
-            {testing ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <FlaskConical className="size-3.5" />
-            )}
-            Test recommender engine
-          </Button>
-          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/80">
-            <Plug className="size-3" />
-            <span data-testid="recommender-engine-candidate-count">
-              {candidatePoolSize} candidate{candidatePoolSize === 1 ? "" : "s"} available
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Status detail panel — always rendered so users can read WHY
-          the engine is unavailable. */}
-      <div
-        className={cn("mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs", statusBg)}
-        data-testid="recommender-engine-status-detail"
-      >
-        {statusIcon}
-        <div className="min-w-0 flex-1">
-          <div className="font-medium">
-            {status.kind === "available"
-              ? "Engine is reachable."
-              : status.kind === "test_pass"
-                ? "Test call succeeded."
-                : status.kind === "test_fail"
-                  ? "Test call failed."
-                  : status.detail}
-          </div>
-          {status.kind !== "unavailable" && (
-            <div className="mt-0.5 text-[11px] opacity-80">{status.detail}</div>
-          )}
-        </div>
-      </div>
-
-      {/* Fallback engine model + reasoning. Single user-configurable
-          model tried right after the primary engine fails. Optional
-          ("No fallback" = use the deterministic Codex → MiniMax →
-          OpenAI API chain unchanged). */}
-      <div
-        className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"
-        data-testid="recommender-engine-fallback"
-      >
-        {/* Fallback engine model picker */}
-        <div className="rounded-md border border-border/60 px-3 py-3">
-          <Label htmlFor="recommender-engine-fallback-model">Fallback engine model</Label>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Optional. Tried right after the primary engine fails and before the deterministic Codex
-            → MiniMax → OpenAI API defaults. Leave on “No fallback” to keep the default
-            subscription-first chain.
-          </p>
-          <select
-            id="recommender-engine-fallback-model"
-            data-testid="router-settings-normal-chat-recommender-fallback-model"
-            value={fallbackModelId ?? ""}
-            onChange={(e) => onFallbackModelChange(e.target.value === "" ? null : e.target.value)}
-            className="border-input bg-background mt-2 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none"
-          >
-            <option value="">No fallback (use deterministic defaults)</option>
-            {fallbackModelId && !fallbackOptions.some((o) => o.modelId === fallbackModelId) && (
-              <option value={fallbackModelId}>
-                {fallbackModelId} (current — provider disabled or unknown)
-              </option>
-            )}
-            {fallbackOptions.map((o) => (
-              <option key={o.modelId} value={o.modelId}>
-                {o.displayLabel} · {billingShortLabel(o.billingSource)}
-              </option>
-            ))}
-          </select>
-          {fallbackSelectedOption ? (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <BillingTag
-                billingSource={fallbackSelectedOption.billingSource}
-                testId="recommender-engine-fallback-billing"
-              />
-              <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
-                {fallbackSelectedOption.providerId}
-              </span>
-            </div>
-          ) : (
-            <p className="mt-2 text-[10px] text-muted-foreground/70">
-              No fallback configured — chain is: engine → Codex default → MiniMax → OpenAI API (if
-              opted in).
-            </p>
-          )}
-        </div>
-
-        {/* Fallback reasoning / thinking option picker */}
-        <div className="rounded-md border border-border/60 px-3 py-3">
-          <Label htmlFor="recommender-engine-fallback-thinking">
-            Fallback reasoning / thinking
-          </Label>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            Provider-native value sent verbatim to the fallback model when it is the active
-            recommender. Mirrors the primary picker; disabled until you pick a fallback model.
-          </p>
-          <select
-            id="recommender-engine-fallback-thinking"
-            data-testid="router-settings-normal-chat-recommender-fallback-reasoning"
-            value={fallbackReasoningOption ?? ""}
-            onChange={(e) =>
-              onFallbackReasoningChange(e.target.value === "" ? null : e.target.value)
-            }
-            disabled={!fallbackSelectedOption || fallbackReasoningChoices.length === 0}
-            className="border-input bg-background mt-2 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none disabled:opacity-60"
-          >
-            {fallbackReasoningChoices.map((choice, idx) => (
-              <option key={`${choice.value}-${idx}`} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-          {fallbackSelectedOption ? (
-            <p
-              className="mt-2 text-[10px] text-muted-foreground/70"
-              data-testid="recommender-engine-fallback-capability-summary"
-            >
-              Capability: {describeReasoningCapability(fallbackSelectedOption.capability)}
-            </p>
-          ) : null}
-        </div>
-      </div>
-
-      {/* Read-only prompt preview. Built by the API route using the
-          live registry so the user sees exactly the prompt body the
-          recommender is sent. */}
-      <PromptPreview preview={promptPreview} />
-
-      {saveError && (
-        <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <div>{saveError}</div>
-        </div>
-      )}
-
-      <p className="mt-3 text-[11px] text-muted-foreground/70">
-        <strong className="font-medium">Loud-failure policy</strong> — if the engine is unavailable
-        the recommender does not silently substitute. The chat composer will surface a clear error
-        and the candidate pool from Tab C remains empty for that turn.
-      </p>
-    </section>
-  );
-};
-
 function billingShortLabel(billing: "subscription" | "api_billing"): string {
   return billing === "subscription" ? "Subscription-backed" : "API-billed";
 }
 
 /**
  * Read-only prompt preview rendered in the Recommender engine tab.
- * The same builder (`buildNormalChatRecommenderPrompt`) is used by
- * `/api/model/recommend` and `/api/router-settings` so the preview
- * never drifts from what the recommender actually sees. The preview
- * uses representative example values for the dynamic per-message
- * fields (the live prompt is per-send and per-thread).
  */
 const PromptPreview: FC<{
   preview: {
@@ -708,11 +259,6 @@ const PromptPreview: FC<{
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<"system" | "user" | null>(null);
 
-  /**
-   * Re-render `userJsonExample` through `JSON.parse` + `JSON.stringify`
-   * so we always show pretty-printed JSON even when the API returns a
-   * minified one-liner. Cheap; runs only when the preview changes.
-   */
   const prettyUser = useMemo(() => {
     if (!preview) return "";
     try {
@@ -728,8 +274,7 @@ const PromptPreview: FC<{
         await navigator.clipboard.writeText(text);
       }
     } catch {
-      // Best effort — clipboard write can be denied in some browsers;
-      // the user can still select the text manually.
+      // Best effort.
     }
     setCopied(which);
     setTimeout(() => setCopied((cur) => (cur === which ? null : cur)), 1500);
@@ -815,4 +360,616 @@ const PromptPreview: FC<{
   );
 };
 
-void Input;
+/**
+ * Single-lane engine picker (model + reasoning + optional fallback).
+ */
+const LanePicker: FC<{
+  label: string;
+  helpText: string;
+  modelId: string;
+  reasoningOption: string;
+  fallbackModelId: string | null;
+  fallbackReasoningOption: string | null;
+  options: ReadonlyArray<EngineOption>;
+  selectedOption: EngineOption | undefined;
+  fallbackSelectedOption: EngineOption | null;
+  reasoningChoices: ReadonlyArray<{ value: string; label: string }>;
+  fallbackReasoningChoices: ReadonlyArray<{ value: string; label: string }>;
+  allowOpenAiApiRouter: boolean;
+  registry: ReadonlyArray<EffectiveRegistryModelDto>;
+  candidatePoolSize: number;
+  status: EngineStatus;
+  onModelChange: (modelId: string) => void;
+  onReasoningChange: (option: string) => void;
+  onFallbackModelChange: (modelId: string | null) => void;
+  onFallbackReasoningChange: (option: string | null) => void;
+  laneTestId: string;
+}> = ({
+  label,
+  helpText,
+  modelId,
+  reasoningOption,
+  fallbackModelId,
+  fallbackReasoningOption,
+  options,
+  selectedOption,
+  fallbackSelectedOption,
+  reasoningChoices,
+  fallbackReasoningChoices,
+  allowOpenAiApiRouter,
+  registry,
+  candidatePoolSize,
+  status,
+  onModelChange,
+  onReasoningChange,
+  onFallbackModelChange,
+  onFallbackReasoningChange,
+  laneTestId,
+}) => {
+  const statusBg = (() => {
+    if (status.kind === "available" || status.kind === "test_pass")
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    if (status.kind === "test_fail")
+      return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    return "border-destructive/40 bg-destructive/10 text-destructive";
+  })();
+
+  const statusIcon = (() => {
+    if (status.kind === "available") return <CheckCircle2 className="size-3 shrink-0" />;
+    if (status.kind === "test_pass") return <CheckCircle2 className="size-3 shrink-0" />;
+    if (status.kind === "test_fail") return <AlertTriangle className="size-3 shrink-0" />;
+    return <XCircle className="size-3 shrink-0" />;
+  })();
+
+  return (
+    <div className="rounded-md border border-border/60">
+      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border/60 bg-muted/30 px-3 py-2">
+        <div>
+          <h3 className="text-xs font-semibold">{label}</h3>
+          <p className="mt-0.5 text-[10px] text-muted-foreground">{helpText}</p>
+        </div>
+        <div
+          data-testid={`${laneTestId}-status`}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[10px]",
+            statusBg,
+          )}
+        >
+          {statusIcon}
+          <span className="font-medium">
+            {status.kind === "available"
+              ? "Available"
+              : status.kind === "test_pass"
+                ? "Test passed"
+                : status.kind === "test_fail"
+                  ? "Test failed"
+                  : "Unavailable"}
+          </span>
+        </div>
+      </div>
+
+      <div className="p-3">
+        <div className="grid gap-4 lg:grid-cols-2">
+          {/* Primary engine model */}
+          <div>
+            <Label htmlFor={`${laneTestId}-model`}>Primary recommender engine</Label>
+            <select
+              id={`${laneTestId}-model`}
+              data-testid={`${laneTestId}-model`}
+              value={modelId}
+              onChange={(e) => onModelChange(e.target.value)}
+              className="border-input bg-background mt-1 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none"
+              aria-invalid={status.kind === "unavailable"}
+            >
+              {!options.some((o) => o.modelId === modelId) && (
+                <option value={modelId}>
+                  {modelId} (current — provider disabled or unknown)
+                </option>
+              )}
+              {options.map((o) => (
+                <option key={o.modelId} value={o.modelId}>
+                  {o.displayLabel} · {billingShortLabel(o.billingSource)}
+                </option>
+              ))}
+            </select>
+            {selectedOption ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <BillingTag billingSource={selectedOption.billingSource} testId={`${laneTestId}-billing`} />
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                  {selectedOption.providerId}
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          {/* Primary reasoning */}
+          <div>
+            <Label htmlFor={`${laneTestId}-reasoning`}>Primary reasoning / thinking</Label>
+            <select
+              id={`${laneTestId}-reasoning`}
+              data-testid={`${laneTestId}-reasoning`}
+              value={reasoningOption}
+              onChange={(e) => onReasoningChange(e.target.value)}
+              disabled={!selectedOption || reasoningChoices.length === 0}
+              className="border-input bg-background mt-1 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none disabled:opacity-60"
+            >
+              {reasoningChoices.map((choice, idx) => (
+                <option key={`${choice.value}-${idx}`} value={choice.value}>
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Fallback engine model */}
+          <div>
+            <Label htmlFor={`${laneTestId}-fallback-model`}>Fallback recommender engine</Label>
+            <select
+              id={`${laneTestId}-fallback-model`}
+              data-testid={`${laneTestId}-fallback-model`}
+              value={fallbackModelId ?? ""}
+              onChange={(e) => {
+                const nextModelId = e.target.value === "" ? null : e.target.value;
+                onFallbackModelChange(nextModelId);
+
+                if (nextModelId === null) {
+                  onFallbackReasoningChange(null);
+                  return;
+                }
+
+                const nextOption = options.find((o) => o.modelId === nextModelId);
+                const nextChoices = nextOption
+                  ? getProviderNativeOptionChoices(nextOption.capability)
+                  : [];
+                const currentStillValid =
+                  fallbackReasoningOption !== null &&
+                  nextChoices.some((choice) => choice.value === fallbackReasoningOption);
+                onFallbackReasoningChange(
+                  currentStillValid ? fallbackReasoningOption : (nextChoices[0]?.value ?? null),
+                );
+              }}
+              className="border-input bg-background mt-1 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none"
+            >
+              <option value="">No fallback</option>
+              {fallbackModelId && !options.some((o) => o.modelId === fallbackModelId) && (
+                <option value={fallbackModelId}>
+                  {fallbackModelId} (current — provider disabled or unknown)
+                </option>
+              )}
+              {options.map((o) => (
+                <option key={o.modelId} value={o.modelId}>
+                  {o.displayLabel} · {billingShortLabel(o.billingSource)}
+                </option>
+              ))}
+            </select>
+            {fallbackSelectedOption ? (
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <BillingTag
+                  billingSource={fallbackSelectedOption.billingSource}
+                  testId={`${laneTestId}-fallback-billing`}
+                />
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                  {fallbackSelectedOption.providerId}
+                </span>
+              </div>
+            ) : (
+              <p className="mt-1 text-[10px] text-muted-foreground/70">
+                No fallback — if primary fails, recommendation blocks.
+              </p>
+            )}
+          </div>
+
+          {/* Fallback reasoning */}
+          <div>
+            <Label htmlFor={`${laneTestId}-fallback-reasoning`}>Fallback reasoning / thinking</Label>
+            <select
+              id={`${laneTestId}-fallback-reasoning`}
+              data-testid={`${laneTestId}-fallback-reasoning`}
+              value={fallbackReasoningOption ?? ""}
+              onChange={(e) =>
+                onFallbackReasoningChange(e.target.value === "" ? null : e.target.value)
+              }
+              disabled={!fallbackSelectedOption || fallbackReasoningChoices.length === 0}
+              className="border-input bg-background mt-1 flex h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none disabled:opacity-60"
+            >
+              {fallbackReasoningChoices.map((choice, idx) => (
+                <option key={`${choice.value}-${idx}`} value={choice.value}>
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export const RecommenderEngineTab: FC<RecommenderEngineTabProps> = ({
+  registry,
+  defaultLaneModelId,
+  defaultLaneReasoningOption,
+  defaultLaneFallbackModelId,
+  defaultLaneFallbackReasoningOption,
+  tokenThreshold,
+  longPromptLaneModelId,
+  longPromptLaneReasoningOption,
+  longPromptLaneFallbackModelId,
+  longPromptLaneFallbackReasoningOption,
+  allowOpenAiApiRouter,
+  engineOptions,
+  candidatePoolSize,
+  onDefaultLaneModelChange,
+  onDefaultLaneReasoningChange,
+  onDefaultLaneFallbackModelChange,
+  onDefaultLaneFallbackReasoningChange,
+  onTokenThresholdChange,
+  onLongPromptLaneModelChange,
+  onLongPromptLaneReasoningChange,
+  onLongPromptLaneFallbackModelChange,
+  onLongPromptLaneFallbackReasoningChange,
+  promptPreview,
+  onTestEngine,
+  saveError = null,
+  testId = "router-settings-section-recommender-engine",
+}) => {
+  const options = useMemo<ReadonlyArray<EngineOption>>(
+    () => engineOptions ?? buildDefaultEngineOptions(registry, allowOpenAiApiRouter),
+    [registry, engineOptions, allowOpenAiApiRouter],
+  );
+
+  // Default lane selected option
+  const defaultSelectedOption = useMemo(() => {
+    const direct = options.find((o) => o.modelId === defaultLaneModelId);
+    if (direct) return direct;
+    return {
+      modelId: defaultLaneModelId,
+      displayLabel: `${defaultLaneModelId} (current — provider disabled or unknown)`,
+      providerLabel: "Unknown",
+      providerId: "openai" as const,
+      billingSource: "api_billing" as const,
+      capability: UNKNOWN_REASONING_CAPABILITY,
+    };
+  }, [options, defaultLaneModelId]);
+
+  // Long-prompt lane selected option
+  const longPromptSelectedOption = useMemo(() => {
+    const direct = options.find((o) => o.modelId === longPromptLaneModelId);
+    if (direct) return direct;
+    return {
+      modelId: longPromptLaneModelId,
+      displayLabel: `${longPromptLaneModelId} (current — provider disabled or unknown)`,
+      providerLabel: "Unknown",
+      providerId: "openai" as const,
+      billingSource: "api_billing" as const,
+      capability: UNKNOWN_REASONING_CAPABILITY,
+    };
+  }, [options, longPromptLaneModelId]);
+
+  // Default lane reasoning choices
+  const defaultReasoningChoices = useMemo(
+    () =>
+      defaultSelectedOption
+        ? getProviderNativeOptionChoices(defaultSelectedOption.capability)
+        : [{ value: "", label: "Pick an engine model" }],
+    [defaultSelectedOption],
+  );
+
+  // Long-prompt lane reasoning choices
+  const longPromptReasoningChoices = useMemo(
+    () =>
+      longPromptSelectedOption
+        ? getProviderNativeOptionChoices(longPromptSelectedOption.capability)
+        : [{ value: "", label: "Pick an engine model" }],
+    [longPromptSelectedOption],
+  );
+
+  // Default lane fallback
+  const defaultFallbackSelectedOption = useMemo<EngineOption | null>(() => {
+    if (!defaultLaneFallbackModelId) return null;
+    const direct = options.find((o) => o.modelId === defaultLaneFallbackModelId);
+    if (direct) return direct;
+    return {
+      modelId: defaultLaneFallbackModelId,
+      displayLabel: `${defaultLaneFallbackModelId} (current — provider disabled or unknown)`,
+      providerLabel: "Unknown",
+      providerId: "openai" as const,
+      billingSource: "api_billing" as const,
+      capability: UNKNOWN_REASONING_CAPABILITY,
+    };
+  }, [options, defaultLaneFallbackModelId]);
+
+  const defaultFallbackReasoningChoices = useMemo(
+    () =>
+      defaultFallbackSelectedOption
+        ? getProviderNativeOptionChoices(defaultFallbackSelectedOption.capability)
+        : [{ value: "", label: "Pick a fallback model" }],
+    [defaultFallbackSelectedOption],
+  );
+
+  // Long-prompt lane fallback
+  const longPromptFallbackSelectedOption = useMemo<EngineOption | null>(() => {
+    if (!longPromptLaneFallbackModelId) return null;
+    const direct = options.find((o) => o.modelId === longPromptLaneFallbackModelId);
+    if (direct) return direct;
+    return {
+      modelId: longPromptLaneFallbackModelId,
+      displayLabel: `${longPromptLaneFallbackModelId} (current — provider disabled or unknown)`,
+      providerLabel: "Unknown",
+      providerId: "openai" as const,
+      billingSource: "api_billing" as const,
+      capability: UNKNOWN_REASONING_CAPABILITY,
+    };
+  }, [options, longPromptLaneFallbackModelId]);
+
+  const longPromptFallbackReasoningChoices = useMemo(
+    () =>
+      longPromptFallbackSelectedOption
+        ? getProviderNativeOptionChoices(longPromptFallbackSelectedOption.capability)
+        : [{ value: "", label: "Pick a fallback model" }],
+    [longPromptFallbackSelectedOption],
+  );
+
+  const [testState, setTestState] = useState<EngineStatus | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  // Default lane status (using default lane primary as the test target)
+  const defaultLaneStatus = useMemo(
+    () =>
+      computeEngineStatus({
+        selected: defaultSelectedOption,
+        registry,
+        candidatePoolSize,
+        allowOpenAiApiRouter,
+        testResult: testState,
+      }),
+    [defaultSelectedOption, registry, candidatePoolSize, allowOpenAiApiRouter, testState],
+  );
+
+  // Long-prompt lane status (using long-prompt lane primary as the test target)
+  const longPromptLaneStatus = useMemo(
+    () =>
+      computeEngineStatus({
+        selected: longPromptSelectedOption,
+        registry,
+        candidatePoolSize,
+        allowOpenAiApiRouter,
+        testResult: testState,
+      }),
+    [longPromptSelectedOption, registry, candidatePoolSize, allowOpenAiApiRouter, testState],
+  );
+
+  // Reset test state when any engine model changes
+  useEffect(() => {
+    setTestState(null);
+  }, [
+    defaultLaneModelId,
+    defaultLaneReasoningOption,
+    defaultLaneFallbackModelId,
+    defaultLaneFallbackReasoningOption,
+    longPromptLaneModelId,
+    longPromptLaneReasoningOption,
+    longPromptLaneFallbackModelId,
+    longPromptLaneFallbackReasoningOption,
+  ]);
+
+  const runTest = useCallback(async () => {
+    setTesting(true);
+    try {
+      const result = await onTestEngine();
+      setTestState(result);
+    } finally {
+      setTesting(false);
+    }
+  }, [onTestEngine]);
+
+  const overallStatus = defaultLaneStatus;
+
+  const statusBg = (() => {
+    if (overallStatus.kind === "available" || overallStatus.kind === "test_pass")
+      return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    if (overallStatus.kind === "test_fail")
+      return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    return "border-destructive/40 bg-destructive/10 text-destructive";
+  })();
+
+  const statusIcon = (() => {
+    if (overallStatus.kind === "available") return <CheckCircle2 className="size-3.5 shrink-0" />;
+    if (overallStatus.kind === "test_pass") return <CheckCircle2 className="size-3.5 shrink-0" />;
+    if (overallStatus.kind === "test_fail") return <AlertTriangle className="size-3.5 shrink-0" />;
+    return <XCircle className="size-3.5 shrink-0" />;
+  })();
+
+  return (
+    <section
+      aria-labelledby="recommender-engine-heading"
+      className="rounded-lg border border-border/60 bg-card p-4 sm:p-6"
+      data-testid={testId}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 id="recommender-engine-heading" className="text-sm font-semibold">
+            B · Recommender engine
+          </h2>
+          <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
+            Two recommender lanes select which engine pair to consult. The token threshold chooses
+            the lane only — the selected engine then chooses the execution model.
+          </p>
+        </div>
+        <div
+          data-testid="recommender-engine-status"
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs",
+            statusBg,
+          )}
+        >
+          {statusIcon}
+          <span className="font-medium">
+            {overallStatus.kind === "available"
+              ? "Available"
+              : overallStatus.kind === "test_pass"
+                ? "Test passed"
+                : overallStatus.kind === "test_fail"
+                  ? "Test failed"
+                  : "Unavailable"}
+          </span>
+        </div>
+      </div>
+
+      {/* Token threshold */}
+      <div className="mt-4 rounded-md border border-border/60 bg-muted/20 p-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="token-threshold" className="text-xs font-medium">
+              Token threshold for long-prompt lane
+            </Label>
+            <Input
+              id="token-threshold"
+              type="number"
+              min={1000}
+              step={1000}
+              value={tokenThreshold}
+              onChange={(e) => onTokenThresholdChange(e.target.value)}
+              data-testid="router-settings-token-threshold"
+              className="h-8 w-32 text-sm"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <Info className="size-3" />
+            <span>
+              Below this: default lane. At or above: long-prompt lane. This chooses the recommender
+              lane only, not the execution model.
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Two lanes */}
+      <div className="mt-4 space-y-4">
+        {/* Default / lower-cost lane */}
+        <LanePicker
+          label="A · Default / lower-cost recommender lane"
+          helpText="Used below the token threshold."
+          modelId={defaultLaneModelId}
+          reasoningOption={defaultLaneReasoningOption}
+          fallbackModelId={defaultLaneFallbackModelId}
+          fallbackReasoningOption={defaultLaneFallbackReasoningOption}
+          options={options}
+          selectedOption={defaultSelectedOption}
+          fallbackSelectedOption={defaultFallbackSelectedOption}
+          reasoningChoices={defaultReasoningChoices}
+          fallbackReasoningChoices={defaultFallbackReasoningChoices}
+          allowOpenAiApiRouter={allowOpenAiApiRouter}
+          registry={registry}
+          candidatePoolSize={candidatePoolSize}
+          status={defaultLaneStatus}
+          onModelChange={onDefaultLaneModelChange}
+          onReasoningChange={onDefaultLaneReasoningChange}
+          onFallbackModelChange={onDefaultLaneFallbackModelChange}
+          onFallbackReasoningChange={onDefaultLaneFallbackReasoningChange}
+          laneTestId="router-settings-default-lane"
+        />
+
+        {/* Long-prompt lane */}
+        <LanePicker
+          label="B · Long-prompt recommender lane"
+          helpText="Used at or above the token threshold."
+          modelId={longPromptLaneModelId}
+          reasoningOption={longPromptLaneReasoningOption}
+          fallbackModelId={longPromptLaneFallbackModelId}
+          fallbackReasoningOption={longPromptLaneFallbackReasoningOption}
+          options={options}
+          selectedOption={longPromptSelectedOption}
+          fallbackSelectedOption={longPromptFallbackSelectedOption}
+          reasoningChoices={longPromptReasoningChoices}
+          fallbackReasoningChoices={longPromptFallbackReasoningChoices}
+          allowOpenAiApiRouter={allowOpenAiApiRouter}
+          registry={registry}
+          candidatePoolSize={candidatePoolSize}
+          status={longPromptLaneStatus}
+          onModelChange={onLongPromptLaneModelChange}
+          onReasoningChange={onLongPromptLaneReasoningChange}
+          onFallbackModelChange={onLongPromptLaneFallbackModelChange}
+          onFallbackReasoningChange={onLongPromptLaneFallbackReasoningChange}
+          laneTestId="router-settings-long-prompt-lane"
+        />
+      </div>
+
+      {/* Status detail panel */}
+      <div
+        className={cn("mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs", statusBg)}
+        data-testid="recommender-engine-status-detail"
+      >
+        {statusIcon}
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">
+            {overallStatus.kind === "available"
+              ? "Engine is reachable."
+              : overallStatus.kind === "test_pass"
+                ? "Test call succeeded."
+                : overallStatus.kind === "test_fail"
+                  ? "Test call failed."
+                  : overallStatus.detail}
+          </div>
+          {overallStatus.kind !== "unavailable" && (
+            <div className="mt-0.5 text-[11px] opacity-80">{overallStatus.detail}</div>
+          )}
+        </div>
+      </div>
+
+      {/* Test button */}
+      <div className="mt-3 flex items-center gap-3">
+        <Button
+          type="button"
+          variant="default"
+          size="sm"
+          onClick={() => void runTest()}
+          disabled={testing || !defaultSelectedOption || overallStatus.kind === "unavailable"}
+          data-testid="recommender-engine-test-button"
+        >
+          {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" />}
+          Test recommender engine
+        </Button>
+        <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/80">
+          <Plug className="size-3" />
+          <span data-testid="recommender-engine-candidate-count">
+            {candidatePoolSize} candidate{candidatePoolSize === 1 ? "" : "s"} available
+          </span>
+        </div>
+      </div>
+
+      {/* Prompt preview */}
+      <PromptPreview preview={promptPreview} />
+
+      {saveError && (
+        <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <div>{saveError}</div>
+        </div>
+      )}
+
+      {/* Explanatory copy */}
+      <div className="mt-4 rounded-md border border-blue-500/30 bg-blue-500/10 p-3">
+        <h4 className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+          How recommender engines work
+        </h4>
+        <ul className="mt-2 space-y-1 text-[10px] text-muted-foreground">
+          <li>• These are recommender engines, not execution defaults.</li>
+          <li>• The selected lane&apos;s recommender chooses the execution model.</li>
+          <li>
+            • If the selected lane&apos;s primary and fallback both fail, recommendation blocks
+            loudly.
+          </li>
+          <li>• No hidden Codex/MiniMax/OpenAI fallback is used.</li>
+          <li>• The token threshold chooses the recommender lane only.</li>
+        </ul>
+      </div>
+
+      <p className="mt-3 text-[11px] text-muted-foreground/70">
+        <strong className="font-medium">Loud-failure policy</strong> — if the engine is unavailable
+        the recommender does not silently substitute. The chat composer will surface a clear error
+        and the candidate pool from Tab C remains empty for that turn.
+      </p>
+    </section>
+  );
+};

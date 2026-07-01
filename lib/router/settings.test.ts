@@ -8,9 +8,11 @@ import {
   __resetRouterSettingsCacheForTests,
   DEFAULT_ROUTER_SETTINGS,
   getRouterSettings,
+  migrateStaleAllowedCombos,
   parseRouterSettings,
   parseRouterSettingsForSave,
   serializeRouterSettings,
+  type RouterSettings,
 } from "./schema.ts";
 
 test("parseRouterSettings accepts an empty payload and returns defaults", () => {
@@ -444,6 +446,253 @@ test("parseRouterSettingsForSave with registry: accepts a Codex (codex:) model i
   }
   assert.equal(result.value.allowedCombos[0]?.modelId, "codex:gpt-5.5");
   assert.equal(result.value.routerModelId, "codex:gpt-5.5");
+});
+
+test("DEFAULT_ALLOWED_COMBOS ships all Codex catalog models with ALL supported reasoning levels", () => {
+  // Every Codex catalog model must have all of its supported reasoning
+  // levels enabled by default so the Settings UI renders every checkbox
+  // as checked and the recommender can choose any level without the user
+  // having to manually opt into each one on first boot.
+  const combos = DEFAULT_ROUTER_SETTINGS.allowedCombos;
+
+  // gpt-5.5 — full effort-level surface (6 levels)
+  const gpt55 = combos.filter((c) => c.modelId === "codex:gpt-5.5");
+  assert.ok(gpt55.length === 6, `expected 6 gpt-5.5 combos, got ${gpt55.length}`);
+  assert.ok(gpt55.some((c) => c.reasoningLevel === "none"), "gpt-5.5 none missing");
+  assert.ok(gpt55.some((c) => c.reasoningLevel === "minimal"), "gpt-5.5 minimal missing");
+  assert.ok(gpt55.some((c) => c.reasoningLevel === "low"), "gpt-5.5 low missing");
+  assert.ok(gpt55.some((c) => c.reasoningLevel === "medium"), "gpt-5.5 medium missing");
+  assert.ok(gpt55.some((c) => c.reasoningLevel === "high"), "gpt-5.5 high missing");
+  assert.ok(gpt55.some((c) => c.reasoningLevel === "xhigh"), "gpt-5.5 xhigh missing");
+
+  // gpt-5.4 — full effort-level surface (6 levels)
+  const gpt54 = combos.filter((c) => c.modelId === "codex:gpt-5.4");
+  assert.ok(gpt54.length === 6, `expected 6 gpt-5.4 combos, got ${gpt54.length}`);
+  assert.ok(gpt54.some((c) => c.reasoningLevel === "none"), "gpt-5.4 none missing");
+  assert.ok(gpt54.some((c) => c.reasoningLevel === "xhigh"), "gpt-5.4 xhigh missing");
+
+  // gpt-5.4-mini — cheap tier; xhigh not documented (4 levels)
+  const gpt54mini = combos.filter((c) => c.modelId === "codex:gpt-5.4-mini");
+  assert.ok(gpt54mini.length === 4, `expected 4 gpt-5.4-mini combos, got ${gpt54mini.length}`);
+  assert.ok(gpt54mini.some((c) => c.reasoningLevel === "none"), "gpt-5.4-mini none missing");
+  assert.ok(gpt54mini.some((c) => c.reasoningLevel === "low"), "gpt-5.4-mini low missing");
+  assert.ok(gpt54mini.some((c) => c.reasoningLevel === "medium"), "gpt-5.4-mini medium missing");
+  assert.ok(gpt54mini.some((c) => c.reasoningLevel === "high"), "gpt-5.4-mini high missing");
+  assert.ok(!gpt54mini.some((c) => c.reasoningLevel === "xhigh"), "gpt-5.4-mini should NOT have xhigh");
+
+  // gpt-5.3-codex-spark — research preview; model_dependent (1 level)
+  const spark = combos.filter((c) => c.modelId === "codex:gpt-5.3-codex-spark");
+  assert.ok(spark.length === 1, `expected 1 gpt-5.3-codex-spark combo, got ${spark.length}`);
+  assert.ok(spark.some((c) => c.reasoningLevel === "low"), "gpt-5.3-codex-spark low missing");
+});
+
+test("parseRouterSettingsForSave accepts all Codex supported reasoning levels", () => {
+  // Every provider-native reasoning level that Codex advertises as supported
+  // must be accepted by the validator so users can save any combination
+  // the model genuinely supports.
+  const allCodexLevels = [
+    { modelId: "codex:gpt-5.5", reasoningLevel: "none" },
+    { modelId: "codex:gpt-5.5", reasoningLevel: "minimal" },
+    { modelId: "codex:gpt-5.5", reasoningLevel: "low" },
+    { modelId: "codex:gpt-5.5", reasoningLevel: "medium" },
+    { modelId: "codex:gpt-5.5", reasoningLevel: "high" },
+    { modelId: "codex:gpt-5.5", reasoningLevel: "xhigh" },
+    { modelId: "codex:gpt-5.4-mini", reasoningLevel: "none" },
+    { modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" },
+    { modelId: "codex:gpt-5.4-mini", reasoningLevel: "medium" },
+    { modelId: "codex:gpt-5.4-mini", reasoningLevel: "high" },
+    { modelId: "codex:gpt-5.3-codex-spark", reasoningLevel: "low" },
+  ];
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: allCodexLevels,
+      routerModelId: "codex:gpt-5.5",
+      fallbackModelId: "codex:gpt-5.5",
+      fallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "codex",
+          modelId: "codex:gpt-5.5",
+          displayLabel: "Codex · GPT-5.5",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(
+            ["none", "minimal", "low", "medium", "high", "xhigh"],
+            "supported",
+          ),
+          supportedReasoningLevels: ["none", "minimal", "low", "medium", "high", "xhigh"],
+          tier: "expensive",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "env_static",
+        },
+        {
+          providerId: "codex",
+          modelId: "codex:gpt-5.4-mini",
+          displayLabel: "Codex · GPT-5.4 Mini",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported"),
+          supportedReasoningLevels: ["none", "low", "medium", "high"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "env_static",
+        },
+        {
+          providerId: "codex",
+          modelId: "codex:gpt-5.3-codex-spark",
+          displayLabel: "Codex · GPT-5.3 Codex Spark",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["low"], "model_dependent"),
+          supportedReasoningLevels: ["low"],
+          tier: "cheap",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "env_static",
+        },
+      ],
+      defaults: { manualModelId: "codex:gpt-5.5", reasoningLevel: "low" },
+      discovery: {
+        modelIds: [],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 0,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 0,
+        discoveredConfigured: 0,
+        discoveredUnclassified: 0,
+        configuredAvailable: 3,
+        stale: 0,
+        manualSelectorVisible: 3,
+        routerEligible: 3,
+      },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
+  if (!result.ok) {
+    assert.fail(`validation failed: ${JSON.stringify(result.errors)}`);
+  }
+  assert.equal(result.value.allowedCombos.length, allCodexLevels.length);
+});
+
+test("parseRouterSettingsForSave rejects unsupported Codex reasoning levels", () => {
+  // xhigh is not documented for gpt-5.4-mini; the validator must
+  // reject it with a clear error message.
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "xhigh" }],
+      routerModelId: "codex:gpt-5.4-mini",
+      fallbackModelId: "codex:gpt-5.4-mini",
+      fallbackReasoningLevel: "low",
+    },
+    {
+      models: [
+        {
+          providerId: "codex",
+          modelId: "codex:gpt-5.4-mini",
+          displayLabel: "Codex · GPT-5.4 Mini",
+          configured: true,
+          available: true,
+          stale: false,
+          supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported"),
+          supportedReasoningLevels: ["none", "low", "medium", "high"],
+          tier: "standard",
+          usableForChat: true,
+          manualSelectorVisible: true,
+          manuallyOverridden: false,
+          routerEligible: true,
+          capabilities: {
+            reasoning: true,
+            vision: false,
+            images: false,
+            functionCalling: false,
+            structuredOutput: false,
+            streaming: true,
+          },
+          provenance: "env_static",
+        },
+      ],
+      defaults: { manualModelId: "codex:gpt-5.4-mini", reasoningLevel: "low" },
+      discovery: {
+        modelIds: [],
+        previousModelIds: [],
+        fetchedAt: new Date(),
+        httpStatus: 200,
+        source: "openai",
+        rawCount: 0,
+        errorMessage: null,
+        updatedAt: new Date(),
+      },
+      selectorPrefs: {},
+      counts: {
+        discovered: 0,
+        discoveredConfigured: 0,
+        discoveredUnclassified: 0,
+        configuredAvailable: 1,
+        stale: 0,
+        manualSelectorVisible: 1,
+        routerEligible: 1,
+      },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
+  assert.ok(!result.ok, "validation should have rejected unsupported xhigh for gpt-5.4-mini");
+  assert.ok(
+    result.errors.some(
+      (e) =>
+        e.field === "allowedCombos" &&
+        e.message.includes("does not support") &&
+        e.message.includes("xhigh"),
+    ),
+    `expected unsupported level error, got: ${JSON.stringify(result.errors)}`,
+  );
 });
 
 test("parseRouterSettingsForSave with registry: accepts a MiniMax model id under the subscription-first policy", () => {
@@ -1692,4 +1941,137 @@ test("getRouterSettings env-var round-trip preserves the fallback fields", () =>
     }
     __resetRouterSettingsCacheForTests();
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// migrateStaleAllowedCombos tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("migrateStaleAllowedCombos: old stale default is normalized to new safe defaults", () => {
+  const staleSettings: RouterSettings = {
+    ...DEFAULT_ROUTER_SETTINGS,
+    allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],
+  };
+  const migrated = migrateStaleAllowedCombos(staleSettings);
+  assert.deepEqual(migrated.allowedCombos, DEFAULT_ROUTER_SETTINGS.allowedCombos);
+  const codexCombos = migrated.allowedCombos.filter((c) => c.modelId.startsWith("codex:"));
+  assert.ok(codexCombos.length >= 17, `expected ≥17 Codex combos, got ${codexCombos.length}`);
+});
+
+test("migrateStaleAllowedCombos: non-stale custom single combo is NOT migrated", () => {
+  const custom: RouterSettings = {
+    ...DEFAULT_ROUTER_SETTINGS,
+    allowedCombos: [{ modelId: "codex:gpt-5.5", reasoningLevel: "low" }],
+  };
+  const migrated = migrateStaleAllowedCombos(custom);
+  assert.deepEqual(migrated.allowedCombos, custom.allowedCombos);
+});
+
+test("migrateStaleAllowedCombos: multiple non-stale combos are NOT migrated", () => {
+  const custom: RouterSettings = {
+    ...DEFAULT_ROUTER_SETTINGS,
+    allowedCombos: [
+      { modelId: "codex:gpt-5.5", reasoningLevel: "none" },
+      { modelId: "codex:gpt-5.4-mini", reasoningLevel: "medium" },
+    ],
+  };
+  const migrated = migrateStaleAllowedCombos(custom);
+  assert.deepEqual(migrated.allowedCombos, custom.allowedCombos);
+});
+
+test("migrateStaleAllowedCombos: empty allowedCombos is NOT migrated", () => {
+  const blockAll: RouterSettings = { ...DEFAULT_ROUTER_SETTINGS, allowedCombos: [] };
+  const migrated = migrateStaleAllowedCombos(blockAll);
+  assert.deepEqual(migrated.allowedCombos, []);
+});
+
+test("migrateStaleAllowedCombos: is idempotent", () => {
+  const stale: RouterSettings = {
+    ...DEFAULT_ROUTER_SETTINGS,
+    allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],
+  };
+  const first = migrateStaleAllowedCombos(stale);
+  const second = migrateStaleAllowedCombos(first);
+  assert.deepEqual(first.allowedCombos, second.allowedCombos);
+});
+
+test("migrateStaleAllowedCombos: OpenAI combos are NOT migrated", () => {
+  const settings: RouterSettings = {
+    ...DEFAULT_ROUTER_SETTINGS,
+    allowedCombos: [
+      { modelId: "gpt-5.4-mini", reasoningLevel: "low" },
+      { modelId: "gpt-5.4-mini", reasoningLevel: "medium" },
+    ],
+  };
+  const migrated = migrateStaleAllowedCombos(settings);
+  assert.deepEqual(migrated.allowedCombos, settings.allowedCombos);
+});
+
+test("parseRouterSettingsForSave: explicit stale legacy default is preserved", () => {
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }],
+    },
+    {
+      models: [
+        {
+          providerId: "codex", modelId: "codex:gpt-5.5", displayLabel: "Codex · GPT-5.5",
+          configured: true, available: true, stale: false, supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["none","minimal","low","medium","high","xhigh"], "supported"),
+          supportedReasoningLevels: ["none","minimal","low","medium","high","xhigh"],
+          tier: "expensive", usableForChat: true, manualSelectorVisible: true, manuallyOverridden: false,
+          routerEligible: true, capabilities: { reasoning: true, vision: false, images: false, functionCalling: false, structuredOutput: false, streaming: true },
+          provenance: "env_static" as const,
+        },
+        {
+          providerId: "codex", modelId: "codex:gpt-5.4-mini", displayLabel: "Codex · GPT-5.4 Mini",
+          configured: true, available: true, stale: false, supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["none","low","medium","high"], "supported"),
+          supportedReasoningLevels: ["none","low","medium","high"],
+          tier: "standard", usableForChat: true, manualSelectorVisible: true, manuallyOverridden: false,
+          routerEligible: true, capabilities: { reasoning: true, vision: false, images: false, functionCalling: false, structuredOutput: false, streaming: true },
+          provenance: "env_static" as const,
+        },
+      ],
+      defaults: { manualModelId: "codex:gpt-5.5", reasoningLevel: "low" },
+      discovery: { modelIds: [], previousModelIds: [], fetchedAt: new Date(), httpStatus: 200, source: "openai", rawCount: 0, errorMessage: null, updatedAt: new Date() },
+      selectorPrefs: {},
+      counts: { discovered: 0, discoveredConfigured: 0, discoveredUnclassified: 0, configuredAvailable: 2, stale: 0, manualSelectorVisible: 2, routerEligible: 2 },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
+  if (!result.ok) assert.fail(`validation failed: ${JSON.stringify(result.errors)}`);
+  assert.deepEqual(result.value.allowedCombos, [
+    { modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" },
+  ]);
+});
+
+test("parseRouterSettingsForSave: custom policy (gpt-5.5|none) is preserved and NOT expanded", () => {
+  const result = parseRouterSettingsForSave(
+    {
+      allowedCombos: [{ modelId: "codex:gpt-5.5", reasoningLevel: "none" }],
+    },
+    {
+      models: [
+        {
+          providerId: "codex", modelId: "codex:gpt-5.5", displayLabel: "Codex · GPT-5.5",
+          configured: true, available: true, stale: false, supportsReasoning: true,
+          reasoningCapability: effortLevelsCapability(["none","minimal","low","medium","high","xhigh"], "supported"),
+          supportedReasoningLevels: ["none","minimal","low","medium","high","xhigh"],
+          tier: "expensive", usableForChat: true, manualSelectorVisible: true, manuallyOverridden: false,
+          routerEligible: true, capabilities: { reasoning: true, vision: false, images: false, functionCalling: false, structuredOutput: false, streaming: true },
+          provenance: "env_static" as const,
+        },
+      ],
+      defaults: { manualModelId: "codex:gpt-5.5", reasoningLevel: "low" },
+      discovery: { modelIds: [], previousModelIds: [], fetchedAt: new Date(), httpStatus: 200, source: "openai", rawCount: 0, errorMessage: null, updatedAt: new Date() },
+      selectorPrefs: {},
+      counts: { discovered: 0, discoveredConfigured: 0, discoveredUnclassified: 0, configuredAvailable: 1, stale: 0, manualSelectorVisible: 1, routerEligible: 1 },
+      fakeMode: false,
+    } as unknown as EffectiveRegistry,
+  );
+  if (!result.ok) assert.fail(`validation failed: ${JSON.stringify(result.errors)}`);
+  assert.equal(result.value.allowedCombos.length, 1);
+  assert.equal(result.value.allowedCombos[0].modelId, "codex:gpt-5.5");
+  assert.equal(result.value.allowedCombos[0].reasoningLevel, "none");
 });

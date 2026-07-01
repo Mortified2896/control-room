@@ -252,21 +252,78 @@ export type RouterSettings = {
    * shows a summary + `Allow all enabled` / `Block all` buttons.
    */
   normalChatRecommenderAllowedModels: ReadonlyArray<string> | null;
+  /**
+   * Token count past which the long-prompt recommender lane is used.
+   * Lane selection is deterministic by token estimate; the selected
+   * lane's recommender engine then chooses the execution model.
+   * Default: 120,000 tokens.
+   */
+  longPromptThresholdTokens: number;
+  /**
+   * Long-prompt-lane primary recommender model id. Used when request
+   * token estimate is at or above `longPromptThresholdTokens`.
+   * The recommender engine is NOT an execution default — it only
+   * recommends. Execution model comes from recommender output.
+   */
+  longPromptRecommenderModelId: string;
+  /** Reasoning/thinking level for the long-prompt-lane primary recommender. */
+  longPromptRecommenderReasoningLevel: string;
+  /**
+   * Long-prompt-lane paired fallback recommender model. `null` = no
+   * fallback; primary fails → loud failure, no hidden default rung.
+   */
+  longPromptRecommenderFallbackModelId: string | null;
+  /** Reasoning/thinking level for the long-prompt-lane fallback recommender. */
+  longPromptRecommenderFallbackReasoningLevel: string | null;
 };
 
 /**
- * Default authorized combos for the MVP. Cost-safety first: ship with
- * the Codex (subscription) entry so a fresh deploy never falls back
- * to the OpenAI paid API. The OpenAI API is opt-in via
- * `allowOpenAiApiRouter`.
+ * Default authorized combos. Cost-safety first: ship with every
+ * Codex (subscription) entry across all their supported reasoning
+ * levels so a fresh deploy never falls back to the OpenAI paid API.
+ * The OpenAI API is opt-in via `allowOpenAiApiRouter`.
  *
- * Codex models do not advertise reasoning-level controls
- * (`supportedReasoningLevels = []`), so the validator skips the
- * reasoning-level check for them. The `reasoningLevel: "low"` label
- * below is informational and is ignored at runtime.
+ * Codex models are always configured, available, and support reasoning
+ * controls (their `effort_levels` capability is the source of truth
+ * for which levels are supported per-model). The `reasoningLevel`
+ * value below is validated against each model's
+ * `supportedReasoningLevels` at save time — only provider-native
+ * levels that the model genuinely supports are accepted.
+ *
+ * All Codex catalog models (gpt-5.5, gpt-5.4, gpt-5.4-mini,
+ * gpt-5.3-codex-spark) are included with ALL their supported
+ * reasoning levels so the Settings UI renders every checkbox as
+ * checked by default and users do not have to manually opt into
+ * each level on first boot.
+ *
+ * Per-model supported levels (from `lib/providers/codex-catalog.ts`):
+ *   codex:gpt-5.5              → none, minimal, low, medium, high, xhigh
+ *   codex:gpt-5.4              → none, minimal, low, medium, high, xhigh
+ *   codex:gpt-5.4-mini         → none, low, medium, high
+ *   codex:gpt-5.3-codex-spark → low (model_dependent; conservative)
  */
 const DEFAULT_ALLOWED_COMBOS: ReadonlyArray<RouterAllowedCombo> = [
+  // gpt-5.5 — full effort-level surface
+  { modelId: "codex:gpt-5.5", reasoningLevel: "none" },
+  { modelId: "codex:gpt-5.5", reasoningLevel: "minimal" },
+  { modelId: "codex:gpt-5.5", reasoningLevel: "low" },
+  { modelId: "codex:gpt-5.5", reasoningLevel: "medium" },
+  { modelId: "codex:gpt-5.5", reasoningLevel: "high" },
+  { modelId: "codex:gpt-5.5", reasoningLevel: "xhigh" },
+  // gpt-5.4 — full effort-level surface
+  { modelId: "codex:gpt-5.4", reasoningLevel: "none" },
+  { modelId: "codex:gpt-5.4", reasoningLevel: "minimal" },
+  { modelId: "codex:gpt-5.4", reasoningLevel: "low" },
+  { modelId: "codex:gpt-5.4", reasoningLevel: "medium" },
+  { modelId: "codex:gpt-5.4", reasoningLevel: "high" },
+  { modelId: "codex:gpt-5.4", reasoningLevel: "xhigh" },
+  // gpt-5.4-mini — cheap tier; xhigh not documented
+  { modelId: "codex:gpt-5.4-mini", reasoningLevel: "none" },
   { modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" },
+  { modelId: "codex:gpt-5.4-mini", reasoningLevel: "medium" },
+  { modelId: "codex:gpt-5.4-mini", reasoningLevel: "high" },
+  // gpt-5.3-codex-spark — research preview; model_dependent; conservative
+  { modelId: "codex:gpt-5.3-codex-spark", reasoningLevel: "low" },
 ];
 
 export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
@@ -293,6 +350,12 @@ export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
   // No hidden Codex/MiniMax/OpenAI default rung.
   normalChatRecommenderFallbackModelId: null,
   normalChatRecommenderFallbackReasoningLevel: null,
+  // Long-prompt-lane recommender defaults (same as default lane).
+  longPromptThresholdTokens: 120_000,
+  longPromptRecommenderModelId: "codex:gpt-5.4-mini",
+  longPromptRecommenderReasoningLevel: DEFAULT_REASONING_LEVEL,
+  longPromptRecommenderFallbackModelId: null,
+  longPromptRecommenderFallbackReasoningLevel: null,
   // Cheap-by-default reasoning for the recommender itself.
   normalChatRecommenderReasoningLevel: DEFAULT_REASONING_LEVEL,
   failureBehavior: "fail_loud",
@@ -304,6 +367,57 @@ export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
   // narrow this to a specific subset.
   normalChatRecommenderAllowedModels: null,
 };
+
+/**
+ * The pre-fix stale default for `allowedCombos`.
+ *
+ * Before this fix, `DEFAULT_ALLOWED_COMBOS` shipped only:
+ *   `{ modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" }`
+ *
+ * Any DB row that has EXACTLY this as its `allowedCombos` is the
+ * untouched stale default from before the fix — NOT a user-customized
+ * policy. We migrate it to the new safe defaults.
+ *
+ * Any other `allowedCombos` (a different single combo, multiple combos,
+ * or any non-Codex entries) is treated as a user-customized policy
+ * and is NOT migrated.
+ */
+const STALE_LEGACY_DEFAULT_ALLOWED_COMBOS: ReadonlyArray<RouterAllowedCombo> = [
+  { modelId: "codex:gpt-5.4-mini", reasoningLevel: "low" },
+];
+
+function allowedCombosEqualsStaleLegacyDefault(
+  combos: ReadonlyArray<RouterAllowedCombo>,
+): boolean {
+  if (combos.length !== STALE_LEGACY_DEFAULT_ALLOWED_COMBOS.length) return false;
+  const a = combos.map((c) => `${c.modelId}|${c.reasoningLevel}`).sort();
+  const b = STALE_LEGACY_DEFAULT_ALLOWED_COMBOS.map((c) => `${c.modelId}|${c.reasoningLevel}`).sort();
+  return a.every((v, i) => v === b[i]);
+}
+
+/**
+ * One-time migration: if `allowedCombos` is the old stale default, replace
+ * it with the new safe defaults (all Codex models × all supported reasoning
+ * levels). Otherwise return unchanged.
+ *
+ * This migration is idempotent — once the DB has new defaults, subsequent
+ * calls are no-ops (the condition never matches).
+ *
+ * Applied in two places:
+ *   1. GET handler — migrates stale DB on first load after deploy
+ *   2. PUT handler — guards against PUT body that somehow still sends
+ *      the stale default (belt-and-suspenders)
+ *
+ * Custom user policies are NOT touched — they are preserved exactly.
+ */
+export function migrateStaleAllowedCombos(
+  settings: RouterSettings,
+): RouterSettings {
+  if (!allowedCombosEqualsStaleLegacyDefault(settings.allowedCombos)) {
+    return settings;
+  }
+  return { ...settings, allowedCombos: DEFAULT_ALLOWED_COMBOS };
+}
 
 /**
  * Provider-native reasoning-effort value. May be any of the model's
@@ -474,6 +588,58 @@ export function parseRouterSettings(input: unknown): RouterSettings {
     } else {
       out.normalChatRecommenderFallbackReasoningLevel =
         input.normalChatRecommenderFallbackReasoningLevel;
+    }
+  }
+  // Long-prompt-lane fields
+  if (input.longPromptThresholdTokens !== undefined) {
+    if (
+      typeof input.longPromptThresholdTokens !== "number" ||
+      !Number.isFinite(input.longPromptThresholdTokens) ||
+      input.longPromptThresholdTokens < 1
+    ) {
+      throw new Error("longPromptThresholdTokens must be a positive number");
+    }
+    out.longPromptThresholdTokens = Math.floor(input.longPromptThresholdTokens);
+  }
+  if (input.longPromptRecommenderModelId !== undefined) {
+    if (
+      typeof input.longPromptRecommenderModelId !== "string" ||
+      input.longPromptRecommenderModelId.trim().length === 0
+    ) {
+      throw new Error("longPromptRecommenderModelId must be a non-empty string");
+    }
+    out.longPromptRecommenderModelId = input.longPromptRecommenderModelId.trim();
+  }
+  if (input.longPromptRecommenderReasoningLevel !== undefined) {
+    if (!isProviderNativeReasoningValue(input.longPromptRecommenderReasoningLevel)) {
+      throw new Error(
+        "longPromptRecommenderReasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh')",
+      );
+    }
+    out.longPromptRecommenderReasoningLevel = input.longPromptRecommenderReasoningLevel;
+  }
+  if (input.longPromptRecommenderFallbackModelId !== undefined) {
+    if (input.longPromptRecommenderFallbackModelId === null) {
+      out.longPromptRecommenderFallbackModelId = null;
+    } else if (
+      typeof input.longPromptRecommenderFallbackModelId !== "string" ||
+      input.longPromptRecommenderFallbackModelId.trim().length === 0
+    ) {
+      throw new Error("longPromptRecommenderFallbackModelId must be null or a non-empty string");
+    } else {
+      out.longPromptRecommenderFallbackModelId = input.longPromptRecommenderFallbackModelId.trim();
+    }
+  }
+  if (input.longPromptRecommenderFallbackReasoningLevel !== undefined) {
+    if (input.longPromptRecommenderFallbackReasoningLevel === null) {
+      out.longPromptRecommenderFallbackReasoningLevel = null;
+    } else if (!isProviderNativeReasoningValue(input.longPromptRecommenderFallbackReasoningLevel)) {
+      throw new Error(
+        "longPromptRecommenderFallbackReasoningLevel must be null or a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh')",
+      );
+    } else {
+      out.longPromptRecommenderFallbackReasoningLevel =
+        input.longPromptRecommenderFallbackReasoningLevel;
     }
   }
   if (input.failureBehavior !== undefined) {
@@ -751,6 +917,82 @@ export function parseRouterSettingsForSave(
         field: "normalChatRecommenderFallbackReasoningLevel",
         message:
           "normalChatRecommenderFallbackReasoningLevel must be null or a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh').",
+      });
+    }
+  }
+
+  // Long-prompt-lane fields (new)
+  let longPromptThresholdTokens = DEFAULT_ROUTER_SETTINGS.longPromptThresholdTokens;
+  if (b.longPromptThresholdTokens !== undefined && b.longPromptThresholdTokens !== null) {
+    const raw = b.longPromptThresholdTokens;
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
+      longPromptThresholdTokens = Math.floor(raw);
+    } else {
+      errors.push({
+        field: "longPromptThresholdTokens",
+        message: "Token threshold must be a positive number.",
+      });
+    }
+  }
+
+  let longPromptRecommenderModelId = DEFAULT_ROUTER_SETTINGS.longPromptRecommenderModelId;
+  if (b.longPromptRecommenderModelId !== undefined) {
+    if (
+      typeof b.longPromptRecommenderModelId === "string" &&
+      b.longPromptRecommenderModelId.trim().length > 0
+    ) {
+      longPromptRecommenderModelId = b.longPromptRecommenderModelId.trim();
+    } else {
+      errors.push({
+        field: "longPromptRecommenderModelId",
+        message: "longPromptRecommenderModelId must be a non-empty string.",
+      });
+    }
+  }
+
+  let longPromptRecommenderReasoningLevel = DEFAULT_ROUTER_SETTINGS.longPromptRecommenderReasoningLevel;
+  if (b.longPromptRecommenderReasoningLevel !== undefined) {
+    if (isProviderNativeReasoningValue(b.longPromptRecommenderReasoningLevel)) {
+      longPromptRecommenderReasoningLevel = b.longPromptRecommenderReasoningLevel;
+    } else {
+      errors.push({
+        field: "longPromptRecommenderReasoningLevel",
+        message:
+          "longPromptRecommenderReasoningLevel must be a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh').",
+      });
+    }
+  }
+
+  let longPromptRecommenderFallbackModelId: string | null =
+    DEFAULT_ROUTER_SETTINGS.longPromptRecommenderFallbackModelId;
+  if (b.longPromptRecommenderFallbackModelId !== undefined) {
+    if (b.longPromptRecommenderFallbackModelId === null) {
+      longPromptRecommenderFallbackModelId = null;
+    } else if (
+      typeof b.longPromptRecommenderFallbackModelId === "string" &&
+      b.longPromptRecommenderFallbackModelId.trim().length > 0
+    ) {
+      longPromptRecommenderFallbackModelId = b.longPromptRecommenderFallbackModelId.trim();
+    } else {
+      errors.push({
+        field: "longPromptRecommenderFallbackModelId",
+        message: "longPromptRecommenderFallbackModelId must be null or a non-empty string.",
+      });
+    }
+  }
+
+  let longPromptRecommenderFallbackReasoningLevel: string | null =
+    DEFAULT_ROUTER_SETTINGS.longPromptRecommenderFallbackReasoningLevel;
+  if (b.longPromptRecommenderFallbackReasoningLevel !== undefined) {
+    if (b.longPromptRecommenderFallbackReasoningLevel === null) {
+      longPromptRecommenderFallbackReasoningLevel = null;
+    } else if (isProviderNativeReasoningValue(b.longPromptRecommenderFallbackReasoningLevel)) {
+      longPromptRecommenderFallbackReasoningLevel = b.longPromptRecommenderFallbackReasoningLevel;
+    } else {
+      errors.push({
+        field: "longPromptRecommenderFallbackReasoningLevel",
+        message:
+          "longPromptRecommenderFallbackReasoningLevel must be null or a non-empty provider-native value (e.g. 'low', 'medium', 'xhigh').",
       });
     }
   }
@@ -1089,6 +1331,11 @@ export function parseRouterSettingsForSave(
       normalChatRecommenderAllowedModels,
       normalChatRecommenderFallbackModelId,
       normalChatRecommenderFallbackReasoningLevel,
+      longPromptThresholdTokens,
+      longPromptRecommenderModelId,
+      longPromptRecommenderReasoningLevel,
+      longPromptRecommenderFallbackModelId,
+      longPromptRecommenderFallbackReasoningLevel,
     },
   };
 }

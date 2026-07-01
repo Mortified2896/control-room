@@ -12,7 +12,7 @@ import {
   isMiniMaxEnabled,
   minimaxProvider,
 } from "./minimax";
-import { isCodexCatalogModelId } from "./codex-catalog";
+import { isCodexCatalogModelId, CODEX_CATALOG_MODELS } from "./codex-catalog";
 import { getBillingSourceForProvider } from "./billing-source";
 import type {
   ModelMeta,
@@ -194,6 +194,21 @@ export function listRouterAllowedPool(
     if (m.tier === "expensive" && !allowExpensive) continue;
     for (const lvl of m.reasoningLevels) {
       out.push({ modelId: m.modelId, reasoningLevel: lvl, tier: m.tier });
+    }
+  }
+  // Codex subscription catalog: always included in the pool.
+  // Subscription models are cost-safe by default (no per-token API meter).
+  // The `DEFAULT_ALLOWED_COMBOS` in schema.ts ships with ALL Codex models
+  // and ALL their supported reasoning levels enabled so the Settings UI
+  // checkboxes are checked by default and the recommender can pick any
+  // level. The tier filter (`allowExpensive`) still applies.
+  for (const m of CODEX_CATALOG_MODELS) {
+    if (m.tier === "expensive" && !allowExpensive) continue;
+    const cap = m.reasoningCapability;
+    if (cap.kind !== "effort_levels") continue;
+    if (cap.control !== "supported" && cap.control !== "model_dependent") continue;
+    for (const opt of cap.options) {
+      out.push({ modelId: `codex:${m.id}`, reasoningLevel: opt.value, tier: m.tier });
     }
   }
   return out;
