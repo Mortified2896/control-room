@@ -12,6 +12,13 @@ import { Button } from "@/components/ui/button";
 import { KbdHint } from "@/components/kbd-hint";
 import { RecommenderToggle } from "@/components/assistant-ui/router-ab-controls";
 import { cn } from "@/lib/utils";
+import {
+  formatRoutingDecisionMarkdown,
+  routingDecisionAuditId,
+  routingDecisionPart,
+  routingDecisionFromMessage,
+  type RoutingDecisionPayload,
+} from "@/lib/assistant-ui/routing-decision";
 import { SHORTCUT_TARGETS } from "@/lib/shortcuts";
 import {
   ActionBarMorePrimitive,
@@ -1022,6 +1029,37 @@ const ComposerAction: FC<{
     onError(null);
     try {
       const runThreadId = threadId ?? (await onEnsureCodingThread?.()) ?? null;
+      const routingDecision: RoutingDecisionPayload | null = codingHarnessRecommendation
+        ? {
+            messageType: "routing_decision",
+            includeInModelContext: false,
+            auditId: routingDecisionAuditId({
+              threadId: runThreadId,
+              prompt: instruction,
+              route: "coding_task",
+              harness: input.harnessId,
+              executionModel: input.modelId,
+            }),
+            route: "coding_task",
+            harness: input.harnessId === "minimax_cli" ? "MiniMax CLI" : "Codex CLI",
+            routerEngine: routerDecision?.recommender_model_id ?? null,
+            recommenderEngine: routerDecision?.recommender_model_id ?? null,
+            recommenderReasoningLevel: null,
+            executionModel: input.modelId,
+            executionReasoningLevel: input.reasoningLevel,
+            fallback: {
+              configured: Boolean(routerDecision?.error_details?.fallback_recommender_model_id),
+              attempted: routerDecision?.error_details?.fallback_attempted ?? false,
+              used: Boolean(codingHarnessRecommendation.fallback),
+              engine: routerDecision?.error_details?.fallback_recommender_model_id ?? null,
+              reason: codingHarnessRecommendation.fallbackReason ?? null,
+            },
+            whyRoute: routerDecision?.reason ?? "User accepted coding route.",
+            whyHarness: codingHarnessRecommendation.reason,
+            whyModel: codingHarnessRecommendation.reason,
+            alternatives: codingHarnessRecommendation.alternatives,
+          }
+        : null;
       const res = await fetch("/api/coding-runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1032,10 +1070,18 @@ const ComposerAction: FC<{
           harnessId: input.harnessId,
           modelId: input.modelId,
           reasoningLevel: input.reasoningLevel,
+          routingDecision,
         }),
       });
       const data = (await res.json().catch(() => null)) as CodexRunResponse | null;
       if (data?.run) setCodexRun(data.run);
+      if (routingDecision) {
+        aui.thread().append({
+          role: "assistant",
+          content: [routingDecisionPart(routingDecision) as never],
+          startRun: false,
+        });
+      }
       if (data) appendCodexMessages(data, instruction);
       onCodingRunComplete?.(runThreadId);
       aui.composer().setText("");
@@ -2200,6 +2246,58 @@ const CodexMetadataLine: FC<{
   );
 };
 
+const RoutingDecisionCard: FC<{ decision: RoutingDecisionPayload }> = ({ decision }) => {
+  const alternatives = decision.alternatives ?? [];
+  return (
+    <div
+      className="my-1 rounded-2xl border border-sky-500/25 bg-sky-500/5 p-3 text-sm"
+      data-testid="routing-decision-bubble"
+    >
+      <div className="font-semibold text-foreground">Routing decision</div>
+      <div className="mt-1 text-xs font-medium text-muted-foreground">
+        Saved for visibility only. Not sent to the execution model.
+      </div>
+      <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
+        <dt className="text-muted-foreground">Route</dt>
+        <dd>{decision.route === "coding_task" ? "coding" : "normal chat"}</dd>
+        <dt className="text-muted-foreground">Harness</dt>
+        <dd>{decision.harness ?? "none"}</dd>
+        <dt className="text-muted-foreground">Router/recommender engine</dt>
+        <dd>{decision.recommenderEngine ?? decision.routerEngine ?? "unknown"}</dd>
+        <dt className="text-muted-foreground">Recommender reasoning</dt>
+        <dd>{decision.recommenderReasoningLevel ?? "unknown"}</dd>
+        <dt className="text-muted-foreground">Execution model</dt>
+        <dd>{decision.executionModel ?? "unknown"}</dd>
+        <dt className="text-muted-foreground">Execution reasoning</dt>
+        <dd>{decision.executionReasoningLevel ?? "unknown"}</dd>
+        <dt className="text-muted-foreground">Fallback recommender</dt>
+        <dd>
+          {decision.fallback?.used
+            ? "used"
+            : decision.fallback?.attempted
+              ? "attempted"
+              : decision.fallback?.configured
+                ? "configured"
+                : "not configured"}
+          {decision.fallback?.engine ? ` · ${decision.fallback.engine}` : ""}
+        </dd>
+      </dl>
+      {decision.whyRoute ? (
+        <div className="mt-3 text-xs"><div className="font-medium">Why this route/harness</div><p className="mt-1 text-muted-foreground">{decision.whyRoute}</p></div>
+      ) : null}
+      {decision.whyHarness ? (
+        <div className="mt-3 text-xs"><div className="font-medium">Why this harness</div><p className="mt-1 text-muted-foreground">{decision.whyHarness}</p></div>
+      ) : null}
+      {decision.whyModel ? (
+        <div className="mt-3 text-xs"><div className="font-medium">Why this model</div><p className="mt-1 text-muted-foreground">{decision.whyModel}</p></div>
+      ) : null}
+      {alternatives.length ? (
+        <div className="mt-3 text-xs"><div className="font-medium">Alternatives returned</div><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-background/70 p-2 text-[11px] text-muted-foreground">{alternatives.map((a) => JSON.stringify(a)).join("\n")}</pre></div>
+      ) : null}
+    </div>
+  );
+};
+
 const AssistantMessage: FC<{
   threadId: string | null;
   notesDisabled: boolean;
@@ -2207,6 +2305,7 @@ const AssistantMessage: FC<{
 }> = ({ threadId, notesDisabled, routerAbOn }) => {
   const messageId = useAuiState((s) => s.message.id);
   const parts = useAuiState((s) => s.message.parts);
+  const routingDecision = useAuiState((s) => routingDecisionFromMessage(s.message));
   const codexMetadata = useAuiState((s) => {
     const custom = (s.message.metadata as { custom?: unknown } | undefined)?.custom;
     if (!custom || typeof custom !== "object") return null;
@@ -2269,13 +2368,17 @@ const AssistantMessage: FC<{
         // [contain-intrinsic-size:auto_24px] fixes issue #4104, don't change without checking for regressions
         className="text-foreground px-2 leading-relaxed wrap-break-word [contain-intrinsic-size:auto_24px] [content-visibility:auto]"
       >
-        <MessagePrimitive.Parts>
-          {({ part }) => {
-            if (part.type === "text") return <MarkdownText />;
-            if (part.type === "tool-call") return part.toolUI ?? <ToolFallback {...part} />;
-            return null;
-          }}
-        </MessagePrimitive.Parts>
+        {routingDecision ? (
+          <RoutingDecisionCard decision={routingDecision} />
+        ) : (
+          <MessagePrimitive.Parts>
+            {({ part }) => {
+              if (part.type === "text") return <MarkdownText />;
+              if (part.type === "tool-call") return part.toolUI ?? <ToolFallback {...part} />;
+              return null;
+            }}
+          </MessagePrimitive.Parts>
+        )}
         <AuiIf
           condition={(s) => s.message.status?.type === "running" && s.message.parts.length === 0}
         >

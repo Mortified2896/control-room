@@ -36,6 +36,13 @@ import {
   isTypingTarget,
 } from "@/lib/shortcuts";
 import { messageRowsToUIMessages } from "@/lib/assistant-ui/thread-messages";
+import {
+  filterModelContextMessages,
+  formatRoutingDecisionMarkdown,
+  routingDecisionAuditId,
+  routingDecisionPart,
+  type RoutingDecisionPayload,
+} from "@/lib/assistant-ui/routing-decision";
 
 /**
  * Click or focus the element that owns a given shortcut target.
@@ -322,7 +329,7 @@ function isLocalThreadId(id: string | null | undefined): boolean {
 }
 
 function uiMessagesToThreadMessageLikes(messages: readonly UIMessage[]): ThreadMessageLike[] {
-  return messages
+  return filterModelContextMessages([...messages])
     .filter(
       (message) =>
         message.role === "user" || message.role === "assistant" || message.role === "system",
@@ -2280,6 +2287,41 @@ export const Assistant = () => {
     setRouterDecision(null);
   }, []);
 
+  const persistRoutingDecisionBubble = useCallback(
+    async (payload: RoutingDecisionPayload) => {
+      if (isLocalThreadId(activeThreadId)) return;
+      if (
+        threadMessages.some((message) =>
+          message.parts.some(
+            (part) =>
+              part &&
+              typeof part === "object" &&
+              (part as { type?: unknown }).type === "data-routing-decision" &&
+              (part as { data?: { auditId?: unknown } }).data?.auditId === payload.auditId,
+          ),
+        )
+      ) {
+        return;
+      }
+      const parts = [routingDecisionPart(payload)];
+      setThreadMessages((prev) => [
+        ...prev,
+        { id: `routing-${Date.now()}`, role: "assistant", parts } as UIMessage,
+      ]);
+      await fetch(`/api/threads/${activeThreadId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: "assistant",
+          content: formatRoutingDecisionMarkdown(payload),
+          parts,
+          modelId: payload.recommenderEngine ?? payload.routerEngine ?? null,
+        }),
+      }).catch(() => undefined);
+    },
+    [activeThreadId, threadMessages],
+  );
+
   const handleUseRecommendation = useCallback(
     (draftText?: string) => {
       if (!recommendation) return;
@@ -2292,13 +2334,48 @@ export const Assistant = () => {
         setSelectedReasoningLevel(recommendation.recommendedReasoningLevel);
       }
       if (draftText?.trim()) {
+        const payload: RoutingDecisionPayload = {
+          messageType: "routing_decision",
+          includeInModelContext: false,
+          auditId: routingDecisionAuditId({
+            threadId: activeThreadId,
+            prompt: draftText,
+            route: "normal_chat",
+            executionModel: proposed?.toModelId ?? recommendation.recommendedModelId,
+          }),
+          route: "normal_chat",
+          harness: null,
+          routerEngine: routerDecision?.recommender_model_id ?? null,
+          recommenderEngine: recommendation.diagnostics.recommenderModelId,
+          recommenderReasoningLevel: recommenderReasoningLevel,
+          executionModel: proposed?.toModelId ?? recommendation.recommendedModelId,
+          executionReasoningLevel: proposed ? selectedReasoningLevel : recommendation.recommendedReasoningLevel,
+          fallback: {
+            configured: Boolean(recommenderFallbackModelId),
+            attempted: Boolean(recommendation.diagnostics.fallback),
+            used: Boolean(recommendation.diagnostics.fallback),
+            engine: recommenderFallbackModelId,
+            reason: recommendation.diagnostics.fallbackReason,
+          },
+          whyRoute: routerDecision?.reason ?? "User accepted normal chat route.",
+          whyModel: proposed?.reason ?? recommendation.reasoning,
+          alternatives: recommendation.alternatives,
+        };
+        void persistRoutingDecisionBubble(payload);
         pendingRecommendedSendCounter.current += 1;
         setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
       }
-      // TODO: persist accepted recommendation history in run/message metadata.
       setRecommendation(null);
     },
-    [recommendation],
+    [
+      activeThreadId,
+      persistRoutingDecisionBubble,
+      recommendation,
+      recommenderFallbackModelId,
+      recommenderReasoningLevel,
+      routerDecision,
+      selectedReasoningLevel,
+    ],
   );
 
   const handleKeepCurrent = useCallback((draftText?: string) => {

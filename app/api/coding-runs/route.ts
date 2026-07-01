@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isDbConfigured } from "@/lib/db";
 import { createCodingRun, getCodingRun } from "@/lib/repo/coding-runs";
-import { createMessage, getThread } from "@/lib/repo/threads";
+import { createMessage, getThread, listMessages } from "@/lib/repo/threads";
+import {
+  formatRoutingDecisionMarkdown,
+  isRoutingDecisionPart,
+  routingDecisionPart,
+  type RoutingDecisionPayload,
+} from "@/lib/assistant-ui/routing-decision";
 import { getProject } from "@/lib/repo/projects";
 import { dispatchCodingHarness, HarnessDispatchError } from "@/lib/harness/dispatcher";
 import {
@@ -28,6 +34,35 @@ function codexCliField(
   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = text.match(new RegExp(`^${escaped}:\\s*(.+)$`, "im"));
   return match?.[1]?.trim() || null;
+}
+
+function isRoutingDecisionPayload(value: unknown): value is RoutingDecisionPayload {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { messageType?: unknown }).messageType === "routing_decision" &&
+      (value as { includeInModelContext?: unknown }).includeInModelContext === false &&
+      typeof (value as { auditId?: unknown }).auditId === "string",
+  );
+}
+
+async function persistRoutingDecisionIfAbsent(threadId: string, payload: RoutingDecisionPayload) {
+  const messages = await listMessages(threadId);
+  const exists = messages.some(
+    (message) =>
+      Array.isArray(message.parts) &&
+      message.parts.some(
+        (part) => isRoutingDecisionPart(part) && part.data.auditId === payload.auditId,
+      ),
+  );
+  if (exists) return null;
+  return createMessage({
+    threadId,
+    role: "assistant",
+    content: formatRoutingDecisionMarkdown(payload),
+    parts: [routingDecisionPart(payload)],
+    modelId: payload.recommenderEngine ?? payload.routerEngine ?? null,
+  });
 }
 
 function runDurationMs(run: Awaited<ReturnType<typeof getCodingRun>>): number | null {
@@ -98,6 +133,7 @@ type CodingRunBody = {
   harnessId?: unknown;
   modelId?: unknown;
   reasoningLevel?: unknown;
+  routingDecision?: unknown;
 };
 
 export async function POST(req: NextRequest) {
@@ -176,6 +212,9 @@ export async function POST(req: NextRequest) {
   });
 
   if (threadId) {
+    if (isRoutingDecisionPayload(body.routingDecision)) {
+      await persistRoutingDecisionIfAbsent(threadId, body.routingDecision);
+    }
     await createMessage({
       threadId,
       role: "user",

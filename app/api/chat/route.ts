@@ -13,6 +13,7 @@ import {
 import { fakeAssistantText, isFakeLlmEnabled } from "@/lib/router/fake-llm";
 import { isDbConfigured } from "@/lib/db";
 import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thread-messages";
+import { filterModelContextMessages } from "@/lib/assistant-ui/routing-decision";
 import { createMessage, getThread } from "@/lib/repo/threads";
 import { getProject } from "@/lib/repo/projects";
 import { getModelMeta, resolveModel, getDefaultRouterModelId } from "@/lib/providers";
@@ -310,8 +311,9 @@ export async function POST(req: Request) {
   }
 
   // Only real chat messages go into model context. Ratings, notes, feedback,
-  // traces, debug metadata, and routing metadata are not loaded here.
-  const modelMessages = await convertToModelMessages(messages);
+  // traces, debug metadata, and routing-decision audit bubbles are not loaded here.
+  const contextMessages = filterModelContextMessages(messages);
+  const modelMessages = await convertToModelMessages(contextMessages);
   const threadId = validThreadId(rawThreadId);
 
   let projectSystem: string | undefined;
@@ -339,7 +341,7 @@ export async function POST(req: Request) {
   let userMessageId: string | null = null;
   if (threadId && isDbConfigured()) {
     try {
-      const persisted = await persistUserMessage(threadId, messages, result.resolved.modelId);
+      const persisted = await persistUserMessage(threadId, contextMessages, result.resolved.modelId);
       userMessageId = persisted?.id ?? null;
     } catch (err: unknown) {
       console.error(
@@ -358,8 +360,8 @@ export async function POST(req: Request) {
   // fallback when the DB is not configured). The Settings UI at
   // /settings/router writes to that singleton.
   const settings: RouterSettings = await getEffectiveRouterSettings();
-  const latestText = latestUserText(messages);
-  const recentTurns = buildRouterRecentTurns(messages);
+  const latestText = latestUserText(contextMessages);
+  const recentTurns = buildRouterRecentTurns(contextMessages);
   const recentChars = computeRouterRecentChars(latestText, recentTurns);
 
   const routerModelIdUsed = settings.routerModelId || getDefaultRouterModelId();
@@ -516,7 +518,7 @@ export async function POST(req: Request) {
       });
 
   const stream = createUIMessageStream<RouterAbUiMessage>({
-    originalMessages: messages as RouterAbUiMessage[],
+    originalMessages: contextMessages as RouterAbUiMessage[],
     onError: () =>
       result.resolved.providerId === "minimax"
         ? "MiniMax provider error. Check MINIMAX_API_KEY, MINIMAX_BASE_URL, and MINIMAX_DEFAULT_MODEL."
@@ -587,7 +589,7 @@ export async function POST(req: Request) {
 
       // Merge Side A's UI message stream into ours.
       const sideAUiStream = sideAStream.toUIMessageStream({
-        originalMessages: messages as RouterAbUiMessage[],
+        originalMessages: contextMessages as RouterAbUiMessage[],
         sendReasoning: false,
         sendSources: false,
       });
