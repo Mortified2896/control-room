@@ -91,7 +91,53 @@ test.describe("/settings/router — three-tab layout", () => {
     await cleanup("http://127.0.0.1:3100");
   });
 
-  test("page renders Discovery + Tab A + Tab B + Tab C + Legacy A/B", async ({ page }) => {
+  test("callout is visible above the fold and engine controls are immediately accessible", async ({
+    page,
+  }) => {
+    // The RouterEnginesCallout is rendered FIRST so the user immediately sees
+    // the decision-engine vs execution-model distinction without scrolling.
+    const consoleErrors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error") consoleErrors.push(msg.text());
+    });
+    await page.goto("/settings/router");
+    await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Callout is visible on load (no scroll required).
+    const callout = page.getByTestId("router-engines-callout");
+    await expect(callout).toBeVisible();
+    await expect(callout.getByRole("heading", { name: /router\/recommender engines/i })).toBeVisible();
+    await expect(callout).toContainText(/decision engine/i);
+    await expect(callout).toContainText(/fallback/i);
+    await expect(callout).toContainText(/block loudly/i);
+
+    // Engine model picker is visible immediately below the callout (above the fold).
+    await expect(page.getByTestId("router-settings-normal-chat-recommender-model")).toBeVisible();
+    await expect(page.getByTestId("router-settings-normal-chat-recommender-reasoning")).toBeVisible();
+
+    // Fallback pickers are also immediately visible.
+    await expect(page.getByTestId("recommender-engine-fallback")).toBeVisible();
+    await expect(
+      page.getByTestId("router-settings-normal-chat-recommender-fallback-model"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("router-settings-normal-chat-recommender-fallback-reasoning"),
+    ).toBeVisible();
+
+    // Discovery section is below the fold (after engine + picker + candidates).
+    await expect(page.getByTestId("router-settings-section-discovery")).toBeVisible();
+
+    // No fatal console errors.
+    const fatal = consoleErrors.filter((m) => {
+      const l = m.toLowerCase();
+      return !l.includes("db_not_configured") && !l.includes("404") && !l.includes("failed to load resource");
+    });
+    expect(fatal, `unexpected console errors: ${fatal.join("\n")}`).toEqual([]);
+  });
+
+  test("page renders Callout + Tab B + Tab A + Tab C + Discovery + Legacy A/B", async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") consoleErrors.push(msg.text());

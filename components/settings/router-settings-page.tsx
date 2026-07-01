@@ -18,6 +18,7 @@ import { DiscoverySection } from "./router-settings/discovery-section";
 import { ManualChatPickerTab } from "./router-settings/manual-chat-picker-tab";
 import { RecommenderEngineTab } from "./router-settings/recommender-engine-tab";
 import { RecommenderCandidatesTab } from "./router-settings/recommender-candidates-tab";
+import { RouterEnginesCallout } from "./router-settings/router-engines-callout";
 import type { EffectiveRegistryModelDto } from "./router-settings/types";
 
 /**
@@ -983,28 +984,14 @@ export const RouterSettingsPage: FC<{
       )}
 
       <main className="mt-6 space-y-6 pb-12">
-        <DiscoverySection
-          fakeMode={dto.effectiveRegistry.fakeMode}
-          counts={dto.effectiveRegistry.counts}
-          discovery={dto.effectiveRegistry.discovery}
-          minimaxDiscovery={dto.effectiveRegistry.minimaxDiscovery}
-          refreshStatus={refreshStatus}
-          onRefresh={() => void onRefreshDiscovery()}
-        />
+        {/* ——— Router/recommender engines ——— ——— ——— ——— ———
+            The callout + engine controls are rendered FIRST so they are
+            immediately visible on page load without scrolling. */}
+        <RouterEnginesCallout />
 
-        {/* Tab A — Manual chat picker. Persists via /api/model-selector-prefs
-            when the user flips a switch (no global Save needed). */}
-        <ManualChatPickerTab
-          registry={rows}
-          selectorPrefs={selectorPrefs}
-          saving={selectorSaving}
-          saveError={selectorError}
-          defaultVisibleFor={defaultVisibleFor}
-          onToggle={onToggleSelectorVisible}
-          onBulkSetAllVisible={onBulkSetAllVisible}
-        />
-
-        {/* Tab B — Recommender engine. Compact card, batches into Save. */}
+        {/* Tab B — Recommender engine. Renders FIRST in the main section
+            so it is above the fold. Contains engine model + reasoning and
+            fallback model + reasoning pickers. */}
         <RecommenderEngineTab
           registry={rows}
           engineModelId={form.normalChatRecommenderModelId}
@@ -1040,6 +1027,18 @@ export const RouterSettingsPage: FC<{
           }
         />
 
+        {/* Tab A — Manual chat picker. Persists via /api/model-selector-prefs
+            when the user flips a switch (no global Save needed). */}
+        <ManualChatPickerTab
+          registry={rows}
+          selectorPrefs={selectorPrefs}
+          saving={selectorSaving}
+          saveError={selectorError}
+          defaultVisibleFor={defaultVisibleFor}
+          onToggle={onToggleSelectorVisible}
+          onBulkSetAllVisible={onBulkSetAllVisible}
+        />
+
         {/* Tab C — Recommender candidates. Per-row allowlist + per-row
             reasoning/thinking options, batches into Save. */}
         <RecommenderCandidatesTab
@@ -1063,6 +1062,18 @@ export const RouterSettingsPage: FC<{
           onResetSafeDefaults={onResetSafeDefaults}
           candidateCount={candidateCount}
           fieldErrors={serverErrors}
+        />
+
+        {/* ——— Provider model discovery ——— ——— ——— ——— ——— ———
+            Discovery lives below the engine + picker + candidates so the
+            router/recommender controls are immediately visible on load. */}
+        <DiscoverySection
+          fakeMode={dto.effectiveRegistry.fakeMode}
+          counts={dto.effectiveRegistry.counts}
+          discovery={dto.effectiveRegistry.discovery}
+          minimaxDiscovery={dto.effectiveRegistry.minimaxDiscovery}
+          refreshStatus={refreshStatus}
+          onRefresh={() => void onRefreshDiscovery()}
         />
 
         {/* Legacy Router A/B settings card.
