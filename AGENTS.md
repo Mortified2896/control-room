@@ -50,6 +50,21 @@ When implementing a new flow, the question to ask first is:
 - Simple chat → LangGraph router node → AI SDK 6 stream → Assistant UI.
 - Multi-step → LangGraph graph with explicit state and nodes.
 
+### Model routing semantics
+
+Hard rule: Control Room must never use deterministic routing to select the
+execution model. Router/recommender models and their fallbacks are decision
+engines only; they are not default execution models for the user's prompt.
+Deterministic metadata such as prompt/context length may choose only the
+recommender lane (default pair vs long-prompt pair), and the selected
+recommender engine must still choose the execution model from authorized
+candidates.
+
+Before changing model routing, recommender, coding harness recommendation, or
+router settings code, read and follow
+`docs/model-routing-semantics.md`, especially the section titled
+“Model Routing Semantics: Router Engines vs Execution Models”.
+
 ---
 
 ## What requires approval (do not introduce)
@@ -303,8 +318,171 @@ Caveats:
 
 ---
 
+## Validation ladder (read this before running tests)
+
+Default validation depends on the **risk class** of the change. Do not
+default to the full ladder for every change. The full E2E suite is
+expensive and opt-in only.
+
+### Risk classes
+
+Pick the **lowest** class that still fits. When in doubt, escalate one
+level — but never default to E or F.
+
+#### A. Tiny UI / copy / layout / style change
+
+Touches only `components/**` (non-route files), no prop changes, no new
+selectors consumed by other code, no `data-testid` changes other than
+labels.
+
+**Default validation:**
+
+- `npm run typecheck`
+
+**Optional:**
+
+- One focused Playwright spec covering the touched component, only if
+  visual / UI behavior changed.
+
+**Do NOT run by default:**
+
+- `npm run build`
+- Full E2E
+- Production restart
+
+#### B. Focused frontend behavior change
+
+Touches `components/**` AND modifies props, hook wiring, internal state,
+or a new selector consumed by another component.
+
+**Default validation:**
+
+- `npm run typecheck`
+- Targeted unit tests if the touched logic has unit coverage
+- One focused Playwright spec / check for the changed behavior
+
+**Do NOT run by default:**
+
+- Full E2E
+- Production restart unless deployment is requested
+
+#### C. API / routing / model-selection change
+
+Touches `app/api/**`, `lib/router/**`, `lib/repo/**` repo functions used by
+routes, or schema validation in `lib/router/schema.ts`. Does NOT change
+provider / harness execution.
+
+**Default validation:**
+
+- `npm run typecheck`
+- Targeted unit tests for the touched modules
+- Focused endpoint smoke / check (a single `curl` or a focused Playwright
+  request)
+- Focused Playwright only if UI changed
+
+**Optional:**
+
+- `npm run build` only before deployment or if Next route / build
+  behavior is affected
+
+**Do NOT run by default:**
+
+- Full E2E
+- Production restart unless deployment is requested
+
+#### D. Provider / harness execution change
+
+Touches `lib/codex/**`, `lib/minimax/**`, `lib/harness/**`, or anything
+that spawns a subprocess, hits a real provider, or executes a CLI.
+
+**Default validation:**
+
+- `npm run typecheck`
+- Targeted unit tests
+- Focused mocked API / browser validation (`page.route` mocks)
+- A safe real CLI check **only if explicitly relevant**
+
+**Hard rules:**
+
+- No real API billing (OpenAI API key must not be charged)
+- No silent fallback to API-billed providers
+- `npm run build` only before deploy
+
+#### E. Deploy / release change
+
+Production deploy, schema migration, env var change, multi-file refactor
+across `app/**` + `components/**` + `lib/**`, or any release-candidate
+work.
+
+**Default validation:**
+
+- `npm run typecheck`
+- `npm test`
+- `npm run build`
+- `scripts/smoke-prod.sh`
+- Focused Playwright for the changed flows
+
+**Optional but expected for releases:**
+
+- `scripts/restart-prod.sh` only when deployment is intended and approved
+
+#### F. Full E2E suite
+
+**Expensive and opt-in only.** Allowed only when:
+
+- Explicitly requested by the user, OR
+- Pre-release / pre-merge gate, OR
+- Broad DB / auth / session / app-shell changes, OR
+- Broad provider / routing execution changes, OR
+- Test-infra work itself (changing Playwright config, helpers, fixtures)
+
+**Hard rules:**
+
+- Never re-run repeatedly to "be safe" — if it passed once and you have
+  not touched any test surface, the run is done
+- Never run as the default validation for A / B / C / D changes
+- If only 1–2 specs are relevant, run them via `test:e2e:focused`,
+  not the full suite
+
+### Forbidden validation patterns
+
+Future agents (and humans) **must not**:
+
+- Run full E2E by default for any change
+- Re-run full E2E repeatedly "to be safe"
+- Use `git stash` in this repo while parallel sessions may exist — branch
+  instead
+- Prove every unrelated E2E failure one by one — note them in the report
+  and move on
+- Run per-test Playwright loops that start a new Playwright process for
+  each test — use `test:e2e:focused` with `-g` instead
+- Restart production after every small change
+- Spawn broad Explore sub-agents for concrete 2–5 file edits — use direct
+  `read` / `grep` / `find`
+- Run real provider generations or OpenAI API billing unless explicitly
+  approved by the user
+- Continue investigating unrelated E2E failures inside a feature task —
+  quarantine / fix them in a separate dedicated task
+
+### Required validation reporting format
+
+Every final report **must** include:
+
+- **Risk class:** `A` | `B` | `C` | `D` | `E` | `F`
+- **Validation commands run:** exact commands
+- **Wall-clock time per command:** if available, in seconds / minutes
+- **Commands intentionally skipped:** explicit list and reason for each
+- **Full E2E skipped:** yes / no (and why)
+- **Production restart skipped:** yes / no (and why)
+- **Pre-existing E2E failures observed:** list any seen, but **without
+  investigating them further** as part of this task
+
+---
+
 ## Pointers
 
+- **Validation ladder reference** (full per-class detail + examples) →
+  `docs/validation-ladder.md`
 - **Postgres setup, env, helpers, migrations** → `docs/database.md`
 - **DB incident runbook** (e.g. UUID errors) → `docs/db-uuid-error-runbook.md`
 - **Postgres plan / schema history** → `docs/POSTGRES_PLAN.md`

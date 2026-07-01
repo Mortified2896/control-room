@@ -440,12 +440,11 @@ export async function POST(request: Request) {
         // never picks an effort value for them. The runtime
         // adapter translates the user's `thinkingMode` pick into
         // provider-native reasoning controls separately.
-        const isCodex = m.providerId === "codex";
         const isEffortLevels =
           m.reasoningCapability.kind === "effort_levels" &&
           m.reasoningCapability.control !== "unknown";
         let modelReasoningLevels: ReadonlyArray<string> = [];
-        if (!isCodex && isEffortLevels) {
+        if (isEffortLevels) {
           const native =
             m.reasoningCapability.kind === "effort_levels"
               ? m.reasoningCapability.options.map((o) => o.value)
@@ -465,11 +464,10 @@ export async function POST(request: Request) {
           provider: m.providerId,
           modelId: m.modelId,
           displayLabel: m.modelLabel,
-          // Codex is intentionally excluded because the Codex agent
-          // backend is a separate transport; the chat composer hands
-          // off to it via `CodexChatPane` rather than the regular
-          // `/api/chat` route. MiniMax is excluded because its
-          // capability is `thinking_budget`, not effort-level.
+          // Effort-level providers (including Codex subscription rows)
+          // expose model id and reasoning as separate candidate fields.
+          // Thinking-budget providers such as MiniMax are surfaced without
+          // effort-level controls so the recommender cannot invent one.
           supportsReasoningControls: modelReasoningLevels.length > 0,
           // Provider-native option values that survive both the
           // Tab C per-model narrowing AND the model's capability

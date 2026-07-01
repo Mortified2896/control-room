@@ -1078,12 +1078,10 @@ export const RouterSettingsPage: FC<{
         >
           <div>
             <h2 id="legacy-router-ab-heading" className="text-sm font-semibold">
-              Router A/B (legacy)
+              Router A/B (legacy / experimental)
             </h2>
             <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-              These global knobs apply to the Side B A/B router, not to the normal chat recommender.
-              They will move into a dedicated Router A/B tab in a future pass; for now they live
-              here so existing flows keep working.
+              Only applies when Router A/B is enabled. Does not control normal model routing. Normal model routing uses computed request tokens instead.
             </p>
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -1125,7 +1123,7 @@ export const RouterSettingsPage: FC<{
             </div>
             <div className="rounded-md border border-border/60 px-3 py-3">
               <label className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
-                Long prompt threshold (chars)
+                Legacy A/B long-prompt threshold (characters)
               </label>
               <Input
                 type="number"
@@ -1135,6 +1133,9 @@ export const RouterSettingsPage: FC<{
                 data-testid="router-settings-threshold"
                 className="mt-2 max-w-[12rem]"
               />
+              <p className="mt-2 text-xs text-muted-foreground">
+                Character-based legacy threshold for Side B A/B only. Normal model routing uses computed request tokens.
+              </p>
             </div>
           </div>
         </section>

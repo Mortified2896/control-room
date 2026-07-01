@@ -153,4 +153,4 @@ export function isCodexCatalogModelId(value: string): value is CodexModelId {
   return CODEX_CATALOG_MODELS.some((m) => m.id === value);
 }
 
-export const CODEX_DEFAULT_MODEL_ID: CodexModelId = "gpt-5.4-mini";
+export const CODEX_DEFAULT_MODEL_ID: CodexModelId = "gpt-5.5";

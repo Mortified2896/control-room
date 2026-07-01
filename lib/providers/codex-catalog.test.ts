@@ -11,7 +11,8 @@ import { getEffectiveReasoningLevels } from "./capability";
 test("Codex catalog includes refreshed static model set", () => {
   const ids = CODEX_CATALOG_MODELS.map((m) => m.id);
   assert.deepEqual(ids, ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]);
-  assert.equal(CODEX_DEFAULT_MODEL_ID, "gpt-5.4-mini");
+  assert.equal(CODEX_DEFAULT_MODEL_ID, "gpt-5.5");
+  assert.equal(isCodexCatalogModelId("gpt-5.5-small"), false);
 });
 
 test("Codex catalog is CLI-backed and never requires OPENAI_API_KEY", () => {

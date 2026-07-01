@@ -126,7 +126,7 @@ export type HarnessRegistryEntry = {
    * does not actually support.
    *
    * Examples:
-   *   - Codex CLI  → `["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark"]`
+   *   - Codex CLI  → `["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]`
    *   - MiniMax CLI → `["MiniMax-M3"]`
    *
    * The model must ALSO carry `supported_execution_targets` on the
@@ -177,8 +177,8 @@ export const HARNESS_REGISTRY: ReadonlyArray<HarnessRegistryEntry> = [
     canModifyFiles: true,
     supportsTokenUsage: false,
     supportsReasoningLevels: true,
-    defaultModelId: "codex:gpt-5.4-mini",
-    allowedModelIds: ["gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.3-codex-spark"],
+    defaultModelId: "codex:gpt-5.5",
+    allowedModelIds: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"],
     defaultReasoningLevel: "low",
     status: "unknown",
     unavailableReason: null,
@@ -217,6 +217,28 @@ export function harnessSupportsModel(harness: HarnessRegistryEntry, modelId: str
 }
 
 /**
+ * String-id overload of `harnessSupportsModel`. Resolves the harness
+ * entry by id and falls back to `false` when the id is unknown
+ * (OpenCode / Pi until they have a registry entry). The
+ * compatibility resolver (`lib/harness/compatibility.ts`) consults
+ * this overload so callers do not need to thread entries through
+ * every helper.
+ */
+export function harnessSupportsModelById(
+  harnessId: HarnessId | string,
+  modelId: string,
+): boolean {
+  const harness = HARNESS_REGISTRY.find((h) => h.id === harnessId);
+  if (!harness) return false;
+  // Allow either prefixed (`codex:gpt-5.4-mini`) or bare
+  // (`gpt-5.4-mini`) ids to resolve.
+  return (
+    harness.allowedModelIds.includes(modelId) ||
+    harness.allowedModelIds.includes(stripHarnessModelPrefix(modelId))
+  );
+}
+
+/**
  * Resolve a `codex:<id>` / `minimax:<id>` model id to the harness
  * catalog id (the bare codex catalog id or the bare MiniMax id). The
  * bare id is what the harness runner actually passes to its CLI.
@@ -238,13 +260,170 @@ export type HarnessStatusSnapshot = {
   /** ISO timestamp of the probe. */
   checkedAt: string;
   /**
+   * Optional coarse failure classification, set when the snapshot is
+   * downgraded because of a recent in-process run failure. Lets the
+   * UI distinguish "Codex token limit exhausted" from a generic
+   * "not logged in" probe result. Always `null` for harnesses that
+   * are healthy.
+   */
+  failureKind?: HarnessFailureKind | null;
+  /**
    * Harness-specific extras. Codex surfaces a `binary` field
    * (path / version / resolved-from); MiniMax surfaces a
    * `binary` + `region`. Kept opaque here so the harness extension
    * does not need to coordinate type unions.
    */
   extras?: Record<string, unknown>;
+  /** Harness usage/quota summary. Null when the provider exposes no safe API. */
+  usage?: unknown;
 };
+
+/**
+ * Closed set of failure kinds the dispatcher records. The UI uses
+ * these verbatim so the harness recommendation can prefer
+ * alternates without re-classifying raw stderr.
+ *
+ *   - `usage_limit` — Codex CLI hit "you've hit your usage limit" /
+ *     MiniMax CLI hit "token plan exhausted". The harness is
+ *     technically installed and authenticated but cannot run new
+ *     requests until the limit resets.
+ *   - `rate_limit`  — Codex / MiniMax emitted a 429. Distinct from
+ *     `usage_limit` because rate-limit windows are short.
+ *   - `auth`        — Codex / MiniMax rejected auth mid-run (token
+ *     rotated, expired key, etc.). Distinct from "not logged in"
+ *     because the user was logged in until just now.
+ *   - `internal`    — anything else (process crash, network, etc.).
+ *     Recorded so the UI can show "last run failed" without
+ *     misclassifying a fresh login problem as quota exhaustion.
+ */
+export type HarnessFailureKind = "usage_limit" | "rate_limit" | "auth" | "internal";
+
+/**
+ * Per-harness recent-failure record. Stored in-process in
+ * `lastFailures` and consulted by `probeHarnessStatuses` to
+ * downgrade `status` when the CLI is installed + logged in but
+ * the last run failed for a recoverable reason.
+ *
+ * The `freshUntil` timestamp is computed as
+ * `failedAt + HARNESS_FAILURE_FRESH_WINDOW_MS`. Failures older
+ * than the window are treated as stale and ignored so a successful
+ * login-after-failure path does not get permanently downgraded.
+ */
+export type HarnessFailureRecord = {
+  id: HarnessId;
+  /** ISO timestamp of the failure. */
+  failedAt: string;
+  /** Closed-set discriminator — see `HarnessFailureKind`. */
+  kind: HarnessFailureKind;
+  /** Sanitized, user-facing reason (no API keys / bearer tokens). */
+  reason: string;
+  /** ISO timestamp at which this record expires. */
+  freshUntil: string;
+};
+
+/**
+ * Window during which a recorded failure is considered "fresh"
+ * enough to override the harness's CLI-probe status. Default is
+ * one hour — long enough to keep `usage_limit` sticky across
+ * several rounds (Codex does not reset its quota in seconds), but
+ * short enough that a fresh login the next morning still flips
+ * the harness back to `available`.
+ */
+export const HARNESS_FAILURE_FRESH_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Per-harness reason phrasing for the failure kinds. Surfaced
+ * verbatim in `unavailableReason` so the harness approval card
+ * can show "Codex token limit exhausted" instead of a generic
+ * "last run failed". The harness-specific entries come first so
+ * the user sees which subscription / token plan is exhausted;
+ * the harness-agnostic entry is a generic fallback used when
+ * the harness does not have a custom reason.
+ */
+const FAILURE_REASON_BY_HARNESS: Record<
+  HarnessId,
+  Record<HarnessFailureKind, string>
+> = {
+  codex_cli: {
+    usage_limit: "Codex token limit exhausted",
+    rate_limit: "Codex rate limited",
+    auth: "Codex auth rejected on last run",
+    internal: "Codex run failed",
+  },
+  minimax_cli: {
+    usage_limit: "MiniMax token plan exhausted",
+    rate_limit: "MiniMax rate limited",
+    auth: "MiniMax auth rejected on last run",
+    internal: "MiniMax run failed",
+  },
+};
+
+/**
+ * In-memory per-harness failure cache. Cleared when a subsequent
+ * run succeeds or when the freshness window elapses. Reads /
+ * writes are guarded by a `Map` which is single-threaded in
+ * Node.js — no need for an explicit mutex.
+ */
+const lastFailures = new Map<HarnessId, HarnessFailureRecord>();
+
+/**
+ * Record a fresh harness failure. Called by the dispatcher when
+ * a run completes with a classified error. The new record
+ * overwrites any previous record for the same harness so the
+ * status probe sees only the most recent failure.
+ */
+export function recordHarnessFailure(args: {
+  id: HarnessId;
+  kind: HarnessFailureKind;
+  reason: string;
+}): HarnessFailureRecord {
+  const failedAt = new Date();
+  const freshUntil = new Date(failedAt.getTime() + HARNESS_FAILURE_FRESH_WINDOW_MS);
+  const record: HarnessFailureRecord = {
+    id: args.id,
+    failedAt: failedAt.toISOString(),
+    kind: args.kind,
+    reason: args.reason,
+    freshUntil: freshUntil.toISOString(),
+  };
+  lastFailures.set(args.id, record);
+  return record;
+}
+
+/**
+ * Drop any stored failure record for the harness. Called by the
+ * dispatcher after a successful run so a transient
+ * `usage_limit` does not permanently downgrade the harness.
+ */
+export function clearHarnessFailure(id: HarnessId): void {
+  lastFailures.delete(id);
+}
+
+/**
+ * Look up the most-recent in-window failure record for the
+ * harness. Returns `null` when no record exists, when the record
+ * is older than the freshness window, or when the harness is
+ * untracked.
+ */
+export function getLastHarnessFailure(id: HarnessId): HarnessFailureRecord | null {
+  const record = lastFailures.get(id);
+  if (!record) return null;
+  if (Date.parse(record.freshUntil) <= Date.now()) {
+    lastFailures.delete(id);
+    return null;
+  }
+  return record;
+}
+
+/**
+ * Test-only helper that resets every recorded failure. Production
+ * callers MUST use `clearHarnessFailure` per harness id. This
+ * function exists so unit tests can run in isolation without
+ * leaking state between cases.
+ */
+export function __resetHarnessFailuresForTests(): void {
+  lastFailures.clear();
+}
 
 /**
  * Probe every harness in the registry in parallel. The harness-specific
@@ -265,11 +444,14 @@ export async function probeHarnessStatuses(): Promise<ReadonlyArray<HarnessStatu
           try {
             const { probeCodexStatus } = await import("@/lib/codex/status");
             const dto = await probeCodexStatus();
+            const { probeCodexUsage } = await import("@/lib/codex/usage");
+            const usage = await probeCodexUsage();
             return {
               id: entry.id,
               status: codexDtoToStatus(dto),
               unavailableReason: codexDtoToReason(dto),
               checkedAt,
+              usage,
               extras: {
                 binary: dto.binary,
                 auth: dto.auth,
@@ -293,11 +475,14 @@ export async function probeHarnessStatuses(): Promise<ReadonlyArray<HarnessStatu
           try {
             const { probeMiniMaxStatus } = await import("@/lib/minimax/status");
             const dto = await probeMiniMaxStatus();
+            const { probeMiniMaxUsage } = await import("@/lib/minimax/usage");
+            const usage = await probeMiniMaxUsage();
             return {
               id: entry.id,
               status: minimaxDtoToStatus(dto),
               unavailableReason: minimaxDtoToReason(dto),
               checkedAt,
+              usage,
               extras: { binary: dto.binary, region: dto.region, authenticated: dto.authenticated },
             } satisfies HarnessStatusSnapshot;
           } catch (err) {
@@ -314,11 +499,47 @@ export async function probeHarnessStatuses(): Promise<ReadonlyArray<HarnessStatu
   }
 
   const settled = await Promise.all(probes);
+
+  // After the live CLI probes, fold in any recent in-process
+  // failure record. The probe says "logged in" but the last run
+  // may have hit a usage_limit / rate_limit / auth failure that
+  // the live probe cannot detect — we want the harness to read
+  // as `unavailable` for the rest of the freshness window so
+  // the harness approval card surfaces "Codex token limit
+  // exhausted" instead of recommending Codex as primary.
+  const merged = settled.map((snap) => applyFailureOverride(snap));
   // Apply the snapshots back to a fresh in-memory registry so callers
   // that read `HARNESS_REGISTRY` synchronously see the latest probe
   // results. We do NOT mutate the exported `HARNESS_REGISTRY` array —
   // we return the new entry set below.
-  return settled;
+  return merged;
+}
+
+/**
+ * If we have a recent failure record for the harness, downgrade
+ * a `available` probe snapshot to `unavailable` with the
+ * failure-specific reason. Stale records (past the freshness
+ * window) are ignored. We only downgrade `available`; we never
+ * upgrade an `unavailable` probe result to `available` because
+ * the CLI probe is authoritative for login / install state.
+ */
+function applyFailureOverride(snap: HarnessStatusSnapshot): HarnessStatusSnapshot {
+  const failure = getLastHarnessFailure(snap.id);
+  if (!failure) return snap;
+  // The CLI probe itself reports unavailable — keep its reason,
+  // but attach the failure kind so the UI can show the same
+  // "last run failed" hint next to the install / login error.
+  if (snap.status !== "available") {
+    return { ...snap, failureKind: failure.kind };
+  }
+  const reasonByKind = FAILURE_REASON_BY_HARNESS[snap.id] ?? null;
+  const overrideReason = reasonByKind?.[failure.kind] ?? failure.reason;
+  return {
+    ...snap,
+    status: "unavailable",
+    unavailableReason: overrideReason,
+    failureKind: failure.kind,
+  };
 }
 
 /**
@@ -336,6 +557,11 @@ export function registryWithStatus(
       ...entry,
       status: snap.status,
       unavailableReason: snap.unavailableReason,
+      // The harness entry carries the failure kind so the UI can
+      // tell a quota-exhausted Codex apart from a not-logged-in
+      // Codex. We surface it on the entry's `unavailableReason`
+      // (which already shows "Codex token limit exhausted") so
+      // clients reading the entry by id see the same string.
     } satisfies HarnessRegistryEntry;
   });
 }

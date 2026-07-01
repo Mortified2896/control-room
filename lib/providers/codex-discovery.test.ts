@@ -18,6 +18,7 @@ test("Codex refresh returns static catalog without API discovery", async () => {
       "gpt-5.4-mini",
       "gpt-5.3-codex-spark",
     ]);
+    assert.equal(outcome.modelIds.includes("gpt-5.5-small"), false);
   } finally {
     if (previous === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previous;

@@ -1,182 +1,214 @@
 import { NextResponse } from "next/server";
-import { openai } from "@ai-sdk/openai";
-import { jsonSchema } from "@ai-sdk/provider-utils";
-import { generateText, Output } from "ai";
-
+import { generateText, Output, stepCountIs } from "ai";
+import { z } from "zod/v4";
+import { getModelMeta, resolveModel } from "@/lib/providers";
 import { getEffectiveModelsResponse } from "@/lib/providers/registry";
-import { ensureDiscoveryFresh } from "@/lib/providers/openai-discovery";
+import { UNKNOWN_REASONING_CAPABILITY } from "@/lib/providers/capability";
+import { getRuntimeModel, getRuntimeProviderOptions } from "@/lib/providers/runtime";
+import { isCodexModelId, resolveCodexBinary, runCodexExec } from "@/lib/codex/runner";
 import {
-  HARNESS_REGISTRY,
   probeHarnessStatuses,
-  registryWithStatus,
-  type HarnessId,
-  type HarnessStatus,
   type HarnessStatusSnapshot,
 } from "@/lib/harness/registry";
-import { CODEX_CATALOG_MODELS } from "@/lib/providers/codex-catalog";
+import {
+  buildCodingHarnessCandidatesFromModels,
+  buildRequestPayloadForTokenCount,
+  getEffectiveCodingModelRoutingPolicy,
+  runCodingHarnessRecommendation,
+  type CodingHarnessCandidate,
+  type CodingRecommenderLane,
+  type TokenCountMetadata,
+} from "@/lib/harness/model-routing";
+import type { ConfiguredRecommenderRung } from "@/lib/router/recommender-config";
 
 export const dynamic = "force-dynamic";
 
 type CodingHarness = "codex_cli" | "minimax_cli";
-
 type RecommendationTaskType = "coding" | "debugging" | "repo_edit" | "code_review" | "other";
+
+const outputSchema = z.object({
+  selectedHarness: z.enum(["codex_cli", "minimax_cli"]),
+  selectedModelId: z.string().min(1),
+  selectedReasoningLevel: z.string().min(1),
+  harnessExplanation: z.string().min(1).max(500),
+  modelExplanation: z.string().min(1).max(500),
+  alternatives: z.array(z.object({
+    harness: z.enum(["codex_cli", "minimax_cli"]),
+    modelId: z.string().min(1),
+    reasoningLevel: z.string().min(1),
+    reason: z.string().min(1).max(240),
+  })).default([]),
+});
 
 type RecommendationResponse = {
   taskType: RecommendationTaskType;
   executionTarget: "coding_harness";
-  recommendedHarness: CodingHarness;
-  recommendedModelId: string;
-  recommendedReasoningLevel: string;
+  recommendedHarness: CodingHarness | null;
+  recommendedModelId: string | null;
+  recommendedReasoningLevel: string | null;
   reason: string;
-  requiresProjectFolder: true;
-  requiresUserApproval: true;
-  alternatives: Array<{
-    harness: CodingHarness;
+  recommenderLane: CodingRecommenderLane;
+  recommenderEngine: {
+    type: "model_recommender";
+    label: "Router/recommender engine";
+    providerId: "openai" | "codex" | "minimax";
     modelId: string;
-    reasoningLevel: string;
-    reason: string;
-  }>;
-};
-
-type FallbackResponse = {
-  taskType: RecommendationTaskType;
-  executionTarget: "coding_harness";
-  recommendedHarness: CodingHarness;
-  recommendedModelId: string;
-  recommendedReasoningLevel: string;
-  reason: string;
-  requiresProjectFolder: true;
-  requiresUserApproval: true;
-  alternatives: Array<{
-    harness: CodingHarness;
-    modelId: string;
-    reasoningLevel: string;
-    reason: string;
-  }>;
-  fallback: true;
-  fallbackReason: "model_not_listed" | "provider_call_failed" | "no_harness_available";
-};
-
-const HARNESS_RECOMMENDER_MODEL_ID = "gpt-5.4-mini" as const;
-
-function isCodingHarness(value: unknown): value is CodingHarness {
-  return value === "codex_cli" || value === "minimax_cli";
-}
-
-function pickDeterministicRecommendation(
-  snapshots: ReadonlyArray<{
-    id: HarnessId;
-    status: HarnessStatus;
-    unavailableReason: string | null;
-  }>,
-): { harness: CodingHarness; reason: string } {
-  // Preference order:
-  //   1. Codex CLI when available (ChatGPT subscription; well-known).
-  //   2. MiniMax CLI when Codex is unavailable and MiniMax is available.
-  //   3. Loud failure (no harness available) — UI must surface that
-  //      and offer a manual choice. We never fall back to the normal
-  //      chat path or to API billing.
-  const codex = snapshots.find((s) => s.id === "codex_cli");
-  const minimax = snapshots.find((s) => s.id === "minimax_cli");
-  if (codex?.status === "available") {
-    return {
-      harness: "codex_cli",
-      reason: "Codex CLI is available and is the preferred harness for coding tasks.",
-    };
-  }
-  if (minimax?.status === "available") {
-    return {
-      harness: "minimax_cli",
-      reason:
-        "Codex CLI is unavailable; MiniMax CLI is available. Switch to MiniMax only after explicit user approval.",
-    };
-  }
-  if (codex?.status === "unavailable" && minimax?.status === "unavailable") {
-    // Both harnesses are down — loud failure. Caller picks the
-    // harness with the better error message in the UI.
-    return {
-      harness: "codex_cli",
-      reason:
-        "Both coding harnesses are unavailable. Codex CLI: " +
-        (codex.unavailableReason ?? "unknown") +
-        ". MiniMax CLI: " +
-        (minimax.unavailableReason ?? "unknown") +
-        ". Ask the user to enable a harness in Settings or choose 'Answer in chat'.",
-    };
-  }
-  // Last resort: prefer Codex, the operator-configured default.
-  return {
-    harness: "codex_cli",
-    reason: "Defaulting to Codex CLI; no live harness status was available.",
+    reasoningLevel?: string;
   };
+  fallbackRecommender: {
+    configured: boolean;
+    attempted: boolean;
+    used: boolean;
+    providerId: "openai" | "codex" | "minimax" | null;
+    modelId: string | null;
+    reasoningLevel?: string;
+    failureReason?: string;
+  };
+  executionModel: null | {
+    modelId: string;
+    reasoningLevel: string;
+    selectionSource: "recommender_output";
+    reason: string;
+  };
+  requiresProjectFolder: true;
+  requiresUserApproval: true;
+  executionMode?: "read_only" | "workspace_write";
+  alternatives: Array<{
+    harness: CodingHarness;
+    modelId: string;
+    reasoningLevel: string;
+    reason: string;
+  }>;
+  usageSummary?: Record<string, string>;
+  blocked?: boolean;
+  diagnostics: {
+    recommenderLane: CodingRecommenderLane;
+    primaryRecommender: { providerId: string; modelId: string; reasoningLevel?: string };
+    fallbackRecommender: { configured: boolean; providerId: string | null; modelId: string | null; reasoningLevel?: string };
+    callAttempts: Array<{
+      source: "configured" | "configured_fallback";
+      providerId: "openai" | "codex" | "minimax";
+      modelId: string;
+      reasoning: string;
+      status: "success" | "failed";
+      reason: string;
+    }>;
+  };
+  routingMetadata?: {
+    recommenderLane: CodingRecommenderLane;
+    selectionReason: "default_lane" | "long_prompt_lane";
+    selectionSource: "recommender_output" | "blocked_no_recommendation";
+    tokenCount: TokenCountMetadata;
+  };
+};
+
+function buildCodingRecommenderPrompt(args: {
+  instruction: string;
+  lane: CodingRecommenderLane;
+  tokenCount: TokenCountMetadata;
+  candidates: ReadonlyArray<CodingHarnessCandidate>;
+  snapshots: ReadonlyArray<HarnessStatusSnapshot>;
+}) {
+  const system = `You are Control Room's coding harness recommender. You are a decision engine only; you do not execute the user's task.
+
+Hard rules:
+- Select exactly one authorized coding harness/path and execution model from candidates.
+- Router/recommender engine ids and fallback recommender ids are never execution defaults.
+- The deterministic lane (${args.lane}) was chosen from token/context metadata only; it must not determine the execution model.
+- Return JSON only with selectedHarness, selectedModelId, selectedReasoningLevel, harnessExplanation, modelExplanation, alternatives.
+- harnessExplanation and modelExplanation are required and must be distinct, user-facing explanations.
+- Do not invent models or harnesses.`;
+  const user = JSON.stringify({
+    instruction: args.instruction,
+    recommenderLane: args.lane,
+    tokenCount: args.tokenCount,
+    authorizedCandidates: args.candidates,
+    harnessStatus: args.snapshots,
+  });
+  return { system, user };
 }
 
-const schema = jsonSchema<RecommendationResponse>({
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "taskType",
-    "executionTarget",
-    "recommendedHarness",
-    "recommendedModelId",
-    "recommendedReasoningLevel",
-    "reason",
-    "requiresProjectFolder",
-    "requiresUserApproval",
-    "alternatives",
-  ],
-  properties: {
-    taskType: {
-      type: "string",
-      enum: ["coding", "debugging", "repo_edit", "code_review", "other"],
-    },
-    executionTarget: { type: "string", enum: ["coding_harness"] },
-    recommendedHarness: { type: "string", enum: ["codex_cli", "minimax_cli"] },
-    recommendedModelId: { type: "string", minLength: 1, maxLength: 200 },
-    recommendedReasoningLevel: { type: "string", minLength: 1, maxLength: 50 },
-    reason: { type: "string", minLength: 1, maxLength: 280 },
-    requiresProjectFolder: { type: "boolean" },
-    requiresUserApproval: { type: "boolean" },
-    alternatives: {
-      type: "array",
-      maxItems: 4,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["harness", "modelId", "reasoningLevel", "reason"],
-        properties: {
-          harness: { type: "string", enum: ["codex_cli", "minimax_cli"] },
-          modelId: { type: "string", minLength: 1, maxLength: 200 },
-          reasoningLevel: { type: "string", minLength: 1, maxLength: 50 },
-          reason: { type: "string", minLength: 1, maxLength: 200 },
-        },
-      },
-    },
-  },
-});
-
-function safeErrorMessage(err: unknown): string {
-  if (err instanceof Error) return `${err.name}: ${err.message}`;
-  return String(err);
+function parseJsonObjectFromText(text: string): unknown {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]?.trim();
+    if (fenced) return JSON.parse(fenced);
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
+    throw new Error("coding_recommender_returned_non_json");
+  }
 }
 
-/**
- * Build the harness recommendation for a coding task. The
- * recommendation:
- *   1. Reads the live harness status (Codex + MiniMax probes).
- *   2. Builds the registry view.
- *   3. Asks the OpenAI router model for a structured pick between
- *      `codex_cli` and `minimax_cli` with a model + reasoning level
- *      drawn from the central catalog.
- *   4. Falls back to a deterministic preference order when the
- *      router call fails (Codex first, MiniMax second, loud
- *      failure last).
- *
- * IMPORTANT: this endpoint NEVER recommends the normal chat path
- * or any API-billed provider. If no harness is available the
- * response includes `fallback: true` with `fallbackReason` so the
- * UI can render a loud-failure state.
- */
+async function runCodexRecommender(args: { modelId: string; system: string; user: string }) {
+  const binary = resolveCodexBinary();
+  if (!binary) throw new Error("codex_cli_not_installed");
+  const codexModelId = args.modelId.startsWith("codex:") ? args.modelId.slice("codex:".length) : args.modelId;
+  if (!isCodexModelId(codexModelId)) throw new Error("invalid_codex_recommender_model");
+  const schemaHint = `Return ONLY minified JSON with this shape: {"selectedHarness":"codex_cli|minimax_cli","selectedModelId":"string","selectedReasoningLevel":"string","harnessExplanation":"why this harness","modelExplanation":"why this execution model","alternatives":[{"harness":"codex_cli|minimax_cli","modelId":"string","reasoningLevel":"string","reason":"short"}]}. No markdown.`;
+  const result = await runCodexExec(binary, `${args.system}\n\n${schemaHint}\n\nInput JSON:\n${args.user}`, {
+    model: codexModelId,
+    maxPromptLength: 24_000,
+  });
+  if (!result.ok) throw new Error(result.error);
+  return outputSchema.parse(parseJsonObjectFromText(result.responseText));
+}
+
+async function runConfiguredCodingRecommender(args: {
+  rung: ConfiguredRecommenderRung;
+  lane: CodingRecommenderLane;
+  payload: ReturnType<typeof buildRequestPayloadForTokenCount>;
+  candidates: ReadonlyArray<CodingHarnessCandidate>;
+  tokenCount: TokenCountMetadata;
+  instruction: string;
+  snapshots: ReadonlyArray<HarnessStatusSnapshot>;
+}) {
+  if (process.env.CONTROL_ROOM_FAKE_LLM === "1") {
+    const preferred = args.candidates.find((c) => c.harnessId === "codex_cli") ?? args.candidates[0];
+    if (!preferred) throw new Error("no_authorized_candidates");
+    return {
+      selectedHarness: preferred.harnessId,
+      selectedModelId: preferred.modelId,
+      selectedReasoningLevel: preferred.reasoningLevel,
+      harnessExplanation: `${preferred.harnessLabel} is available and authorized for this coding task.`,
+      modelExplanation: `${preferred.modelId} is an authorized execution model returned by the mocked recommender, not by lane policy.`,
+      alternatives: args.candidates
+        .filter((c) => c.harnessId !== preferred.harnessId)
+        .slice(0, 1)
+        .map((c) => ({ harness: c.harnessId, modelId: c.modelId, reasoningLevel: c.reasoningLevel, reason: `${c.harnessLabel} is also authorized.` })),
+    };
+  }
+
+  const resolved = resolveModel(args.rung.modelId);
+  if (!resolved.ok) throw new Error(`resolve_failed:${resolved.error.kind}`);
+  const prompt = buildCodingRecommenderPrompt({
+    instruction: args.instruction,
+    lane: args.lane,
+    tokenCount: args.tokenCount,
+    candidates: args.candidates,
+    snapshots: args.snapshots,
+  });
+  if (resolved.resolved.providerId === "codex") {
+    return runCodexRecommender({ modelId: resolved.resolved.modelId, system: prompt.system, user: prompt.user });
+  }
+  const meta = getModelMeta(resolved.resolved.modelId);
+  const capability = meta?.reasoningCapability ?? UNKNOWN_REASONING_CAPABILITY;
+  const providerOptions = args.rung.reasoningLevel
+    ? getRuntimeProviderOptions({ resolved: resolved.resolved, capability, reasoningOption: args.rung.reasoningLevel })
+    : undefined;
+  const result = await generateText({
+    model: getRuntimeModel(resolved.resolved),
+    system: prompt.system,
+    prompt: prompt.user,
+    output: Output.object({ schema: outputSchema, name: "coding_harness_recommendation" }),
+    stopWhen: stepCountIs(1),
+    ...(providerOptions ? { providerOptions } : {}),
+  });
+  return result.output;
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   let body: unknown;
   try {
@@ -191,195 +223,153 @@ export async function POST(req: Request): Promise<NextResponse> {
   const instruction = typeof b.instruction === "string" ? b.instruction.trim() : "";
   if (!instruction) return NextResponse.json({ error: "instruction_required" }, { status: 400 });
 
-  // Probe both harnesses + read the central model catalog in
-  // parallel so the router prompt has fresh data.
-  const [snapshots, modelsResp] = await Promise.all([
+  const [snapshots, modelsPayload] = await Promise.all([
     probeHarnessStatuses().catch(() => [] as HarnessStatusSnapshot[]),
-    (async () => {
-      await ensureDiscoveryFresh();
-      return getEffectiveModelsResponse();
-    })().catch(() => ({ models: [], defaultModelId: null, defaultReasoningLevel: "low" })),
+    getEffectiveModelsResponse(),
   ]);
-  const registry = registryWithStatus(snapshots);
-  const snapshotById = new Map(snapshots.map((s) => [s.id, s] as const));
+  const candidates = buildCodingHarnessCandidatesFromModels(modelsPayload.models, snapshots);
+  const policy = await getEffectiveCodingModelRoutingPolicy();
+  const payload = buildRequestPayloadForTokenCount({
+    instruction,
+    harnessMetadata: snapshots,
+    threadHistory: b.threadHistory,
+    projectContext: b.projectContext,
+    retrievedSnippets: b.retrievedSnippets,
+  });
 
-  // If no harness is available, return a loud-failure response
-  // immediately rather than asking the router to pick from nothing.
-  const codexSnap = snapshotById.get("codex_cli");
-  const minimaxSnap = snapshotById.get("minimax_cli");
-  const anyAvailable = codexSnap?.status === "available" || minimaxSnap?.status === "available";
-  if (!anyAvailable) {
-    const fallbackPick = pickDeterministicRecommendation(snapshots);
-    const response: FallbackResponse = {
+  const result = await runCodingHarnessRecommendation({
+    payload,
+    snapshots,
+    candidates,
+    policy,
+    runRung: (args) => runConfiguredCodingRecommender({ ...args, instruction, snapshots }),
+  });
+
+  if (!result.ok) {
+    const response: RecommendationResponse = {
       taskType: "coding",
       executionTarget: "coding_harness",
-      recommendedHarness: fallbackPick.harness,
-      recommendedModelId: defaultModelIdFor(fallbackPick.harness),
-      recommendedReasoningLevel: defaultReasoningLevelFor(fallbackPick.harness),
-      reason: fallbackPick.reason,
+      recommendedHarness: null,
+      recommendedModelId: null,
+      recommendedReasoningLevel: null,
+      reason: result.reason,
+      recommenderLane: result.lane,
+      recommenderEngine: {
+        type: "model_recommender",
+        label: "Router/recommender engine",
+        providerId: result.primary.providerId,
+        modelId: result.primary.modelId,
+        reasoningLevel: result.primary.reasoningLevel,
+      },
+      fallbackRecommender: {
+        configured: Boolean(result.fallbackConfigured),
+        attempted: result.callAttempts.some((a) => a.source === "configured_fallback"),
+        used: false,
+        providerId: result.fallbackConfigured?.providerId ?? null,
+        modelId: result.fallbackConfigured?.modelId ?? null,
+        reasoningLevel: result.fallbackConfigured?.reasoningLevel,
+        failureReason: result.callAttempts.find((a) => a.source === "configured_fallback")?.reason,
+      },
+      executionModel: null,
       requiresProjectFolder: true,
       requiresUserApproval: true,
+      executionMode: inferExecutionMode(instruction),
       alternatives: [],
-      fallback: true,
-      fallbackReason: "no_harness_available",
+      usageSummary: Object.fromEntries(snapshots.map((s) => [s.id, summarizeUsage(s.usage)])),
+      blocked: true,
+      diagnostics: {
+        recommenderLane: result.lane,
+        primaryRecommender: { providerId: result.primary.providerId, modelId: result.primary.modelId, reasoningLevel: result.primary.reasoningLevel },
+        fallbackRecommender: { configured: Boolean(result.fallbackConfigured), providerId: result.fallbackConfigured?.providerId ?? null, modelId: result.fallbackConfigured?.modelId ?? null, reasoningLevel: result.fallbackConfigured?.reasoningLevel },
+        callAttempts: [...result.callAttempts],
+      },
+      routingMetadata: {
+        recommenderLane: result.lane,
+        selectionReason: result.lane === "long-prompt" ? "long_prompt_lane" : "default_lane",
+        selectionSource: "blocked_no_recommendation",
+        tokenCount: result.tokenCount,
+      },
     };
-    return NextResponse.json(response, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(response, { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 
-  // Resolve the OpenAI model id we want to call for the harness
-  // recommender. We use the same OpenAI API recommender model the
-  // existing `/api/harness/recommend` route uses; if it is missing
-  // from the catalog we fall back to the deterministic preference
-  // order rather than crashing.
-  const openaiModels = modelsResp.models.filter((m) => m.providerId === "openai");
-  const exact = openaiModels.find((m) => m.modelId === HARNESS_RECOMMENDER_MODEL_ID);
-  const fallbackPick = pickDeterministicRecommendation(snapshots);
-  const fallbackResponseShape = (reason: FallbackResponse["fallbackReason"]): FallbackResponse => ({
+  const fallbackAttempt = result.callAttempts.find((a) => a.source === "configured_fallback");
+  const response: RecommendationResponse = {
     taskType: "coding",
     executionTarget: "coding_harness",
-    recommendedHarness: fallbackPick.harness,
-    recommendedModelId: defaultModelIdFor(fallbackPick.harness),
-    recommendedReasoningLevel: defaultReasoningLevelFor(fallbackPick.harness),
-    reason: fallbackPick.reason,
+    recommendedHarness: result.recommendation.selectedHarness,
+    recommendedModelId: result.recommendation.selectedModelId,
+    recommendedReasoningLevel: result.recommendation.selectedReasoningLevel,
+    reason: result.recommendation.harnessExplanation,
+    recommenderLane: result.lane,
+    recommenderEngine: {
+      type: "model_recommender",
+      label: "Router/recommender engine",
+      providerId: result.recommender.providerId,
+      modelId: result.recommender.modelId,
+      reasoningLevel: result.recommender.reasoningLevel,
+    },
+    fallbackRecommender: {
+      configured: Boolean(result.fallbackConfigured),
+      attempted: Boolean(fallbackAttempt),
+      used: result.fallbackUsed,
+      providerId: result.fallbackConfigured?.providerId ?? null,
+      modelId: result.fallbackConfigured?.modelId ?? null,
+      reasoningLevel: result.fallbackConfigured?.reasoningLevel,
+      failureReason: fallbackAttempt?.status === "failed" ? fallbackAttempt.reason : undefined,
+    },
+    executionModel: {
+      modelId: result.recommendation.selectedModelId,
+      reasoningLevel: result.recommendation.selectedReasoningLevel,
+      selectionSource: "recommender_output",
+      reason: result.recommendation.modelExplanation,
+    },
     requiresProjectFolder: true,
     requiresUserApproval: true,
-    alternatives: [],
-    fallback: true,
-    fallbackReason: reason,
-  });
-  if (!exact) {
-    return NextResponse.json(fallbackResponseShape("model_not_listed"), {
-      headers: { "Cache-Control": "no-store" },
-    });
-  }
-
-  // Build the catalog-shaped picker for the router prompt.
-  const codexModels =
-    registry
-      .find((h) => h.id === "codex_cli")
-      ?.allowedModelIds.map((id) => {
-        const bare = id.startsWith("codex:") ? id.slice("codex:".length) : id;
-        const meta = CODEX_CATALOG_MODELS.find((m) => m.id === bare);
-        return {
-          harness: "codex_cli",
-          modelId: id,
-          reasoningLevels: meta?.reasoningCapability
-            ? // Best-effort: surface the documented effort levels per
-              // Codex catalog row. The runtime validates against the
-              // model's actual `reasoningCapability.options`.
-              meta.reasoningCapability.kind === "effort_levels"
-              ? meta.reasoningCapability.options.map((o) => o.value)
-              : ["provider_default"]
-            : ["provider_default"],
-          status: codexSnap?.status ?? "unknown",
-          unavailableReason: codexSnap?.unavailableReason ?? null,
-        };
-      }) ?? [];
-  const minimaxModels =
-    registry
-      .find((h) => h.id === "minimax_cli")
-      ?.allowedModelIds.map((id) => ({
-        harness: "minimax_cli",
-        modelId: id,
-        reasoningLevels: ["provider_default"],
-        status: minimaxSnap?.status ?? "unknown",
-        unavailableReason: minimaxSnap?.unavailableReason ?? null,
-      })) ?? [];
-
-  try {
-    const result = await generateText({
-      model: openai(HARNESS_RECOMMENDER_MODEL_ID),
-      output: Output.object({
-        schema,
-        name: "harness_recommendation",
-        description:
-          "Pick the best coding harness (Codex CLI vs MiniMax CLI), model, and reasoning level for a Control Room coding task.",
-      }),
-      providerOptions: { openai: { reasoningEffort: "low" } },
-      system: `You recommend one coding harness for a Control Room coding task that the user already approved as a coding task. Return JSON only.
-
-Available harnesses:
-- Codex CLI (codex_cli): ChatGPT-subscription-backed. Best for coding tasks that benefit from Codex's coding-agent workflow. Reasoning levels are provider-native (low / medium / high / xhigh).
-- MiniMax CLI (minimax_cli): MiniMax-token-plan-backed. The reasoning level is "provider_default" — do NOT invent another value. MiniMax CLI does not accept a reasoning-effort knob today; the harness passes "provider_default" verbatim.
-
-Rules:
-- Pick the harness the user is most likely to want. Prefer Codex CLI when it is available; switch to MiniMax CLI ONLY when Codex is unavailable, the user prefers MiniMax, or the task is simple enough that MiniMax is a good fit.
-- Model must come from the listed catalog for the chosen harness. Never recommend a model id not in the catalog.
-- For codex_cli, the reasoning level must be one of the documented effort levels for the chosen Codex model (low / medium / high / xhigh). For minimax_cli, the reasoning level must always be "provider_default".
-- If a harness is unavailable, do NOT recommend it — fall back to the other harness.
-- Keep reason short (<= 280 chars).
-- "alternatives" may include at most one entry for each of the other harness if it is available.
-- The "taskType" field is your classification of the user's instruction: coding (new feature / implementation), debugging (find/fix a bug), repo_edit (modify files), code_review (review existing code), or other.
-- ALWAYS set executionTarget to "coding_harness".
-- ALWAYS set requiresProjectFolder = true and requiresUserApproval = true.`,
-      prompt: `Catalog:
-
-Codex CLI models:
-${JSON.stringify(codexModels, null, 2)}
-
-MiniMax CLI models:
-${JSON.stringify(minimaxModels, null, 2)}
-
-User instruction:
-${instruction}`,
-    });
-    const value = result.output;
-    if (!isCodingHarness(value.recommendedHarness)) {
-      throw new Error("invalid harness from router");
-    }
-    // Validate the recommended model against the harness catalog.
-    const harnessEntry = registry.find((h) => h.id === value.recommendedHarness);
-    if (!harnessEntry)
-      throw new Error(`router picked an unknown harness: ${value.recommendedHarness}`);
-    if (!harnessEntry.allowedModelIds.includes(value.recommendedModelId)) {
-      throw new Error(
-        `router picked an unsupported model ${value.recommendedModelId} for harness ${value.recommendedHarness}`,
-      );
-    }
-    if (
-      value.recommendedHarness === "minimax_cli" &&
-      value.recommendedReasoningLevel !== "provider_default"
-    ) {
-      // Defensive: the system prompt explicitly tells the router
-      // MiniMax must use provider_default. If the router drifts we
-      // coerce it rather than passing a fake reasoning level.
-      value.recommendedReasoningLevel = "provider_default";
-    }
-    const response: RecommendationResponse = {
-      taskType: value.taskType,
-      executionTarget: "coding_harness",
-      recommendedHarness: value.recommendedHarness,
-      recommendedModelId: value.recommendedModelId,
-      recommendedReasoningLevel: value.recommendedReasoningLevel,
-      reason: value.reason,
-      requiresProjectFolder: true,
-      requiresUserApproval: true,
-      alternatives: value.alternatives.map((alt) => ({
-        harness: alt.harness,
-        modelId: alt.modelId,
-        reasoningLevel: alt.reasoningLevel,
-        reason: alt.reason,
-      })),
-    };
-    return NextResponse.json(response, { headers: { "Cache-Control": "no-store" } });
-  } catch (err) {
-    const message = safeErrorMessage(err);
-    // eslint-disable-next-line no-console
-    console.error("[api/coding-harness/recommend] provider call failed", {
-      provider: "openai",
-      modelId: HARNESS_RECOMMENDER_MODEL_ID,
-      error: message,
-    });
-    return NextResponse.json(fallbackResponseShape("provider_call_failed"), {
-      headers: { "Cache-Control": "no-store" },
-    });
-  }
+    executionMode: inferExecutionMode(instruction),
+    alternatives: result.recommendation.alternatives ?? [],
+    usageSummary: Object.fromEntries(snapshots.map((s) => [s.id, summarizeUsage(s.usage)])),
+    diagnostics: {
+      recommenderLane: result.lane,
+      primaryRecommender: { providerId: result.callAttempts[0]?.providerId ?? result.recommender.providerId, modelId: result.callAttempts[0]?.modelId ?? result.recommender.modelId, reasoningLevel: result.callAttempts[0]?.reasoning || undefined },
+      fallbackRecommender: { configured: Boolean(result.fallbackConfigured), providerId: result.fallbackConfigured?.providerId ?? null, modelId: result.fallbackConfigured?.modelId ?? null, reasoningLevel: result.fallbackConfigured?.reasoningLevel },
+      callAttempts: [...result.callAttempts],
+    },
+    routingMetadata: {
+      recommenderLane: result.lane,
+      selectionReason: result.lane === "long-prompt" ? "long_prompt_lane" : "default_lane",
+      selectionSource: "recommender_output",
+      tokenCount: result.tokenCount,
+    },
+  };
+  return NextResponse.json(response, { headers: { "Cache-Control": "no-store" } });
 }
 
-function defaultModelIdFor(harness: CodingHarness): string {
-  return HARNESS_REGISTRY.find((h) => h.id === harness)?.defaultModelId ?? "codex:gpt-5.4-mini";
+export function inferExecutionMode(instruction: string): "read_only" | "workspace_write" {
+  const text = instruction.toLowerCase();
+  const explicitlyReadOnly =
+    /\bdo not\s+(?:modify|change|edit)\s+files?\b/.test(text) ||
+    /\bdo not\s+write\s+to\s+the\s+repo\b/.test(text) ||
+    /\bdon['’]?t\s+(?:modify|change|edit)\s+files?\b/.test(text) ||
+    /\bread[- ]only\b/.test(text) ||
+    /\binspect only\b/.test(text) ||
+    /\bno edits\b/.test(text);
+  const implementationIntent =
+    /\b(apply (?:this )?patch|change|update|fix|implement)\b/.test(text) ||
+    /\b(add|update|add\/update)\s+tests?\b/.test(text) ||
+    /\badjust\s+settings?\b/.test(text);
+  if (implementationIntent) return "workspace_write";
+  return explicitlyReadOnly ? "read_only" : "workspace_write";
 }
 
-function defaultReasoningLevelFor(harness: CodingHarness): string {
-  return HARNESS_REGISTRY.find((h) => h.id === harness)?.defaultReasoningLevel ?? "low";
+function summarizeUsage(usage: unknown): string {
+  if (!usage || typeof usage !== "object") return "usage unknown";
+  const u = usage as { provider?: string; status?: string; rawSummary?: string | null; modelRemains?: Array<{ modelName?: string; currentIntervalRemainingPercent?: number | null; currentWeeklyRemainingPercent?: number | null }> };
+  if (u.provider === "codex_cli") return u.status === "unknown" ? "Codex usage unknown" : `Codex usage ${u.status ?? "unknown"}`;
+  if (u.provider === "minimax_cli") {
+    const first = u.modelRemains?.[0];
+    const pct = first ? [first.currentIntervalRemainingPercent, first.currentWeeklyRemainingPercent].filter((v) => typeof v === "number").join("% / ") : "";
+    return `MiniMax quota ${u.status ?? "unknown"}${pct ? ` (${pct}%)` : ""}`;
+  }
+  return "usage unknown";
 }

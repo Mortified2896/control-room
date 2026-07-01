@@ -263,7 +263,7 @@ const DEFAULT_ALLOWED_COMBOS: ReadonlyArray<RouterAllowedCombo> = [
 ];
 
 export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
-  abEnabled: true,
+  abEnabled: false,
   // OpenAI paid API is OFF by default. The shipped defaults only use
   // subscription providers (Codex) so a fresh deploy never burns paid
   // API budget. Users must opt in via Settings → Router to add an
@@ -271,7 +271,7 @@ export const DEFAULT_ROUTER_SETTINGS: RouterSettings = {
   allowOpenAiApiRouter: false,
   allowExpensiveModels: false,
   allowLongPromptWhenExpensive: false,
-  longPromptThresholdChars: 1500,
+  longPromptThresholdChars: 50000,
   maxCostPerRecommendationUsd: 0.03,
   maxCostPerAbRunUsd: 0.3,
   // Codex first (subscription). The runtime recommender walks:

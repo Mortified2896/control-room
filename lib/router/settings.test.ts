@@ -17,6 +17,22 @@ test("parseRouterSettings accepts an empty payload and returns defaults", () => 
   assert.deepEqual(parseRouterSettings({}), DEFAULT_ROUTER_SETTINGS);
 });
 
+test("default Router A/B is disabled", () => {
+  assert.equal(DEFAULT_ROUTER_SETTINGS.abEnabled, false);
+  assert.equal(parseRouterSettings({}).abEnabled, false);
+});
+
+test("default legacy A/B long-prompt threshold is 50000 characters", () => {
+  assert.equal(DEFAULT_ROUTER_SETTINGS.longPromptThresholdChars, 50000);
+  assert.equal(parseRouterSettings({}).longPromptThresholdChars, 50000);
+});
+
+test("saved/env Router A/B overrides are preserved over defaults", () => {
+  const parsed = parseRouterSettings({ abEnabled: true, longPromptThresholdChars: 1500 });
+  assert.equal(parsed.abEnabled, true);
+  assert.equal(parsed.longPromptThresholdChars, 1500);
+});
+
 test("parseRouterSettings rejects non-object payloads", () => {
   assert.throws(() => parseRouterSettings(null), /must be a JSON object/);
   assert.throws(() => parseRouterSettings(undefined), /must be a JSON object/);
