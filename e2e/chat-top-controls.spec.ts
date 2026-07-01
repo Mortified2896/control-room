@@ -5,9 +5,10 @@ import { expect, test, type Page } from "@playwright/test";
  *
  * The brief: combine the manual chat model controls into one compact
  * top bar (model selector + thinking selector + access label + Router
- * A/B pill + theme button) and put the recommender controls in a
- * single card directly below it. The chat UI must NOT render a
- * separate large "Manual chat model" row/card below the top bar.
+ * A/B pill + theme button). The chat UI must NOT render any
+ * router/recommender engine configuration controls — those live in
+ * Settings → Router → Tab B. The chat composer keeps a compact
+ * "Recommend on/off" pill; nothing else.
  *
  * Each test maps to a brief requirement verbatim so the next refactor
  * has a clear list of contracts to keep intact:
@@ -16,20 +17,15 @@ import { expect, test, type Page } from "@playwright/test";
  *      row/card below the top bar.
  *   2. Top bar renders: manual model selector, manual thinking
  *      selector, access label, Router A/B pill.
- *   3. Recommender card renders: Recommend on pill, primary
- *      recommender engine row, fallback engine row.
- *   4. Fallback selector is visible and editable in Chat UI.
- *   5. Selecting No fallback persists:
- *        - normalChatRecommenderFallbackModelId = null
- *        - normalChatRecommenderFallbackReasoningLevel = null
- *   6. Changing primary recommender engine in Chat UI persists to
- *      Settings Tab B.
- *   7. Changing fallback engine in Chat UI persists to Settings Tab B.
- *   8. Settings Tab B changes reflect in Chat UI after reload.
- *   9. MiniMax-M3 reasoning options in Chat UI are:
- *        provider_default, adaptive, enabled, disabled.
- *  10. Manual model/reasoning and recommender engine/reasoning do not
- *      cross-wire.
+ *   3. Chat UI does NOT render any recommender engine / fallback
+ *      engine editing controls (no model picker, no reasoning
+ *      selector, no "Recommend engine" row, no "Fallback engine"
+ *      row).
+ *   4. Chat composer renders a compact "Recommend on/off" pill
+ *      (the same `RecommenderToggle` that lives in the composer
+ *      toolbar).
+ *   5. The chat "Recommend on/off" pill toggles the per-tab
+ *      sessionStorage flag and survives a reload.
  *
  * Test ID reference (single source of truth):
  *   - Top bar:
@@ -38,15 +34,28 @@ import { expect, test, type Page } from "@playwright/test";
  *       chat-model-access-label         (access label)
  *       model-reasoning-select          (manual thinking dropdown)
  *       router-ab-toggle / router-ab-openai-only-pill
- *   - Recommender card:
- *       recommender-control             (the card)
- *       recommender-toggle              (on/off pill)
- *       chat-recommender-engine-controls   (primary row)
- *       chat-recommender-model
- *       chat-recommender-reasoning
- *       chat-recommender-fallback-controls (fallback row)
- *       chat-recommender-fallback-model
- *       chat-recommender-fallback-reasoning
+ *   - Composer:
+ *       recommender-toggle              (compact on/off pill in
+ *                                        the composer toolbar)
+ *
+ * Notably ABSENT (intentionally) from the chat UI:
+ *   - recommender-control             (the card)
+ *   - recommender-toggle-well         (the on/off well)
+ *   - chat-recommender-engine-controls   (primary row)
+ *   - chat-recommender-model
+ *   - chat-recommender-reasoning
+ *   - chat-recommender-fallback-controls (fallback row)
+ *   - chat-recommender-fallback-model
+ *   - chat-recommender-fallback-reasoning
+ *   - chat-recommender-model-saving
+ *   - chat-recommender-model-error
+ *
+ * These test IDs are reserved for the chat surface but must not
+ * appear there. They live in Settings → Router → Tab B
+ * (`router-settings-normal-chat-recommender-model`,
+ *  `router-settings-normal-chat-recommender-reasoning`,
+ *  `router-settings-normal-chat-recommender-fallback-model`,
+ *  `router-settings-normal-chat-recommender-fallback-reasoning`).
  *
  * Environment: this suite relies on the Playwright config's
  * `CONTROL_ROOM_FAKE_LLM=1` + `CONTROL_ROOM_FAKE_OPENAI_MODELS=1` so
@@ -157,268 +166,106 @@ test.describe("Chat top controls layout", () => {
     await expect(topBar.getByTestId("router-ab-toggle")).toHaveCount(0);
   });
 
-  test("Recommender card renders: Recommend on pill, primary row, fallback row", async ({
+  test("Chat UI does NOT render recommender engine / fallback engine editing controls", async ({
+    page,
+  }) => {
+    // The chat surface is the manual-execution-model surface only.
+    // Router/recommender engine + fallback engine editing lives in
+    // Settings → Router → Tab B. None of the chat-side editing
+    // controls must appear above, below, or beside the conversation.
+    await page.goto("/");
+    await expect(page.getByTestId("manual-chat-model-controls")).toBeVisible({ timeout: 15_000 });
+
+    // No chat-side recommender/fallback card or rows.
+    await expect(page.getByTestId("recommender-control")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-engine-controls")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-controls")).toHaveCount(0);
+    // No chat-side model / reasoning selectors.
+    await expect(page.getByTestId("chat-recommender-model")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-reasoning")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-model")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toHaveCount(0);
+    // No chat-side saving / error surfaces tied to the removed card.
+    await expect(page.getByTestId("chat-recommender-model-saving")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-model-error")).toHaveCount(0);
+  });
+
+  test("Chat composer renders a compact 'Recommend on/off' pill", async ({ page }) => {
+    // The composer toolbar keeps the small on/off pill; nothing else
+    // from the old inline config card.
+    await page.goto("/");
+    const toggle = page.getByTestId("recommender-toggle");
+    await expect(toggle).toBeVisible({ timeout: 15_000 });
+    // The toggle is a compact pill, not a large card.
+    await expect(toggle).toContainText(/Recommend (on|off)/);
+  });
+
+  test("Chat composer's 'Recommend on/off' pill persists via sessionStorage and survives reload", async ({
     page,
   }) => {
     await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
+    const toggle = page.getByTestId("recommender-toggle");
+    await expect(toggle).toBeVisible({ timeout: 15_000 });
 
-    // Left column: Recommend on/off pill.
-    await expect(card.getByTestId("recommender-toggle")).toBeVisible();
+    // Default = off; pill label says "off" and aria-pressed=false.
+    const initialPressed = await toggle.getAttribute("aria-pressed");
+    if (initialPressed === "true") {
+      // Pre-seeded state from a previous spec — turn it off first.
+      await toggle.click();
+    }
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(toggle).toContainText(/Recommend off/);
 
-    // Primary row.
-    const primary = card.getByTestId("chat-recommender-engine-controls");
-    await expect(primary).toBeVisible();
-    await expect(primary).toContainText(/Recommender engine/);
-    await expect(card.getByTestId("chat-recommender-model")).toBeVisible();
-    await expect(card.getByTestId("chat-recommender-reasoning")).toBeVisible();
+    // Click on.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(toggle).toContainText(/Recommend on/);
 
-    // Fallback row.
-    const fallback = card.getByTestId("chat-recommender-fallback-controls");
-    await expect(fallback).toBeVisible();
-    await expect(fallback).toContainText(/Fallback engine/);
-    await expect(card.getByTestId("chat-recommender-fallback-model")).toBeVisible();
-    await expect(card.getByTestId("chat-recommender-fallback-reasoning")).toBeVisible();
+    // Reload — the sessionStorage flag survives a hard refresh so
+    // the next session picks up the user's pick.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const reloadedToggle = page.getByTestId("recommender-toggle");
+    await expect(reloadedToggle).toBeVisible({ timeout: 15_000 });
+    await expect(reloadedToggle).toHaveAttribute("aria-pressed", "true");
+    await expect(reloadedToggle).toContainText(/Recommend on/);
 
-    // The two rows are separated by a visible horizontal divider —
-    // the fallback row's wrapper carries a `border-t` class.
-    expect(await fallback.evaluate((el) => getComputedStyle(el).borderTopWidth)).not.toBe("0px");
+    // Toggle off so we don't leak state into other specs.
+    await reloadedToggle.click();
+    await expect(reloadedToggle).toHaveAttribute("aria-pressed", "false");
   });
 
-  test("Fallback selector is visible and editable in Chat UI", async ({ page }) => {
-    await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
-
-    const fallbackModel = card.getByTestId("chat-recommender-fallback-model");
-    const fallbackReasoning = card.getByTestId("chat-recommender-fallback-reasoning");
-    await expect(fallbackModel).toBeVisible();
-    await expect(fallbackModel).toBeEnabled();
-
-    // "No fallback" is the default explicit option.
-    await expect(fallbackModel.locator('option[value=""]')).toHaveText(/no fallback/i);
-
-    // Picking a fallback model enables the reasoning picker.
-    await fallbackModel.selectOption("codex:gpt-5.4-mini");
-    await expect(fallbackReasoning).toBeEnabled();
-
-    // Selecting "No fallback" disables the reasoning picker again.
-    await fallbackModel.selectOption("");
-    await expect(fallbackReasoning).toBeDisabled();
-  });
-
-  test("Selecting No fallback persists null/null and disables fallback reasoning", async ({
+  test("Settings Tab B still owns the recommender engine + fallback engine controls", async ({
     page,
     request,
   }) => {
-    // Pre-seed a non-null fallback so we can verify the "no fallback"
-    // pick clears it end-to-end.
-    await request.put(`${apiBase}/api/router-settings`, {
-      data: {
-        normalChatRecommenderFallbackModelId: "codex:gpt-5.4-mini",
-        normalChatRecommenderFallbackReasoningLevel: "low",
-      },
-    });
-
-    await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
-
-    const fallbackModel = card.getByTestId("chat-recommender-fallback-model");
-    const fallbackReasoning = card.getByTestId("chat-recommender-fallback-reasoning");
-    await expect(fallbackModel).toHaveValue("codex:gpt-5.4-mini");
-    await expect(fallbackReasoning).toBeEnabled();
-
-    // Pick "No fallback".
-    await fallbackModel.selectOption("");
-    await expect(fallbackReasoning).toBeDisabled();
-    await page.waitForTimeout(800);
-
-    // Persisted values are both null.
-    const body = await request.get(`${apiBase}/api/router-settings`).then((r) => r.json());
-    expect(body.effective.normalChatRecommenderFallbackModelId).toBeNull();
-    expect(body.effective.normalChatRecommenderFallbackReasoningLevel).toBeNull();
-
-    // The Settings Tab B picker reflects the cleared state.
+    // Sanity: the canonical editing surface (Settings → Router → Tab B)
+    // is unaffected. The chat-side removal MUST NOT regress the
+    // Settings page.
     await gotoSettings(page);
+    await expect(page.getByTestId("router-settings-normal-chat-recommender-model")).toBeVisible();
+    await expect(
+      page.getByTestId("router-settings-normal-chat-recommender-reasoning"),
+    ).toBeVisible();
     await expect(
       page.getByTestId("router-settings-normal-chat-recommender-fallback-model"),
-    ).toHaveValue("");
+    ).toBeVisible();
     await expect(
       page.getByTestId("router-settings-normal-chat-recommender-fallback-reasoning"),
-    ).toBeDisabled();
-  });
+    ).toBeVisible();
 
-  test("Changing primary recommender engine in Chat UI persists to Settings Tab B", async ({
-    page,
-    request,
-  }) => {
-    await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
+    // Round-trip a fallback change end-to-end (Settings is the
+    // canonical writer).
+    await page
+      .getByTestId("router-settings-normal-chat-recommender-fallback-model")
+      .selectOption("codex:gpt-5.5");
+    await page
+      .getByTestId("router-settings-normal-chat-recommender-fallback-reasoning")
+      .selectOption("low");
+    await page.getByTestId("router-settings-save").click();
+    await expect(page.getByTestId("router-settings-save-status")).toBeVisible({ timeout: 5_000 });
 
-    // Switch the primary recommender engine to MiniMax-M3.
-    const modelSelect = card.getByTestId("chat-recommender-model");
-    await modelSelect.selectOption("MiniMax-M3");
-    await expect(card.getByTestId("chat-recommender-reasoning")).toHaveValue("provider_default");
-    await page.waitForTimeout(800);
-
-    // Server confirms — the canonical Tab B field is the source of
-    // truth, so the chat composer must not be allowed to drift from
-    // it.
     const after = await request.get(`${apiBase}/api/router-settings`).then((r) => r.json());
-    expect(after.effective.normalChatRecommenderModelId).toBe("MiniMax-M3");
-
-    // Settings Tab B reflects the new value without a separate Save
-    // (the chat composer's PATCH already wrote through to Postgres).
-    await gotoSettings(page);
-    await expect(page.getByTestId("router-settings-normal-chat-recommender-model")).toHaveValue(
-      "MiniMax-M3",
-    );
-  });
-
-  test("Changing fallback engine in Chat UI persists to Settings Tab B", async ({
-    page,
-    request,
-  }) => {
-    await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
-
-    await card.getByTestId("chat-recommender-fallback-model").selectOption("codex:gpt-5.5");
-    await page.waitForTimeout(800);
-
-    const body = await request.get(`${apiBase}/api/router-settings`).then((r) => r.json());
-    expect(body.effective.normalChatRecommenderFallbackModelId).toBe("codex:gpt-5.5");
-
-    await gotoSettings(page);
-    await expect(
-      page.getByTestId("router-settings-normal-chat-recommender-fallback-model"),
-    ).toHaveValue("codex:gpt-5.5");
-  });
-
-  test("Settings Tab B changes reflect in Chat UI after reload", async ({ page, request }) => {
-    await request.put(`${apiBase}/api/router-settings`, {
-      data: {
-        normalChatRecommenderFallbackModelId: "codex:gpt-5.5",
-        normalChatRecommenderFallbackReasoningLevel: "low",
-      },
-    });
-
-    await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
-    await expect(card.getByTestId("chat-recommender-fallback-model")).toHaveValue("codex:gpt-5.5");
-    await expect(card.getByTestId("chat-recommender-fallback-reasoning")).toBeEnabled();
-  });
-
-  test("MiniMax-M3 reasoning options in Chat UI are provider_default, adaptive, enabled, disabled", async ({
-    page,
-  }) => {
-    // Set the primary recommender engine to MiniMax-M3 (a thinking-
-    // budget model), then assert the Chat UI reasoning <select>
-    // lists the well-known provider-native thinking modes — never a
-    // fake OpenAI "low" or "high".
-    await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
-
-    await card.getByTestId("chat-recommender-model").selectOption("MiniMax-M3");
-    await expect(card.getByTestId("chat-recommender-reasoning")).toHaveValue("provider_default");
-
-    const options = await card
-      .getByTestId("chat-recommender-reasoning")
-      .locator("option")
-      .allTextContents();
-    const normalized = options.map((o) => o.trim().toLowerCase());
-    for (const expected of ["provider_default", "adaptive", "enabled", "disabled"]) {
-      expect(normalized).toContain(expected);
-    }
-    // No fake "low" for the thinking-budget capability.
-    expect(normalized).not.toEqual(["low"]);
-  });
-
-  test("Manual model/reasoning and recommender engine/reasoning do not cross-wire", async ({
-    page,
-    request,
-  }) => {
-    // Set up a deliberate cross-wiring trap:
-    //   manual chat model  = codex:gpt-5.4-mini (Codex subscription)
-    //   recommender engine = MiniMax-M3  (thinking-budget)
-    //
-    // Both are valid settings, but the chat UI must never mix them:
-    // the manual model dropdown / thinking picker reflects the
-    // manual selection, the recommender model / reasoning reflects
-    // the configured engine, and the recommender-thinking picker
-    // does NOT show fake "low" (which is an OpenAI effort value) for
-    // the MiniMax engine.
-    await request.put(`${apiBase}/api/router-settings`, {
-      data: {
-        normalChatRecommenderModelId: "MiniMax-M3",
-        normalChatRecommenderReasoningLevel: "provider_default",
-        normalChatRecommenderFallbackModelId: null,
-        normalChatRecommenderFallbackReasoningLevel: null,
-      },
-    });
-
-    await page.goto("/");
-
-    // Manual top bar: the model trigger labels the manual Codex row,
-    // the reasoning dropdown is the Codex reasoning surface (which
-    // advertises "Unsupported by engine" for Codex CLI — a different
-    // value from the recommender's thinking modes).
-    const topBar = page.getByTestId("manual-chat-model-controls");
-    await expect(topBar).toBeVisible({ timeout: 15_000 });
-    const trigger = topBar.getByTestId("aui-model-selector-trigger");
-    await expect(trigger).toContainText(/Codex/);
-
-    // The manual thinking dropdown does NOT show MiniMax thinking
-    // modes (provider_default / adaptive / enabled / disabled). Codex
-    // is an effort-level model with `kind: "none"`, so the manual
-    // thinking control surface is the "unsupported" notice.
-    const manualThinking = topBar.getByTestId("model-reasoning-select");
-    if ((await manualThinking.count()) > 0) {
-      // When Codex has a non-`none` capability this select renders
-      // (e.g. effort-level). Make sure MiniMax-only modes never leak
-      // into it.
-      const manualOptions = await manualThinking
-        .locator("option, [data-reasoning-level]")
-        .allTextContents();
-      for (const opt of manualOptions) {
-        const text = opt.toLowerCase();
-        for (const forbidden of ["provider_default", "adaptive"]) {
-          expect(text).not.toContain(forbidden);
-        }
-      }
-    } else {
-      // Codex kind: "none" \u2014 the manual bar renders the
-      // "Reasoning controls are not supported" notice instead of a
-      // real dropdown. Either way, the manual control surface is
-      // distinct from the recommender one.
-      await expect(topBar).toContainText(
-        /Reasoning controls are not supported|Unsupported by engine/i,
-      );
-    }
-
-    // Recommender card: MiniMax-M3 selected, reasoning is
-    // `provider_default` (NOT a Codex "low" / "Unsupported").
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible();
-    await expect(card.getByTestId("chat-recommender-model")).toHaveValue("MiniMax-M3");
-    await expect(card.getByTestId("chat-recommender-reasoning")).toHaveValue("provider_default");
-    const recommenderOptions = await card
-      .getByTestId("chat-recommender-reasoning")
-      .locator("option")
-      .allTextContents();
-    const normalizedRecommender = recommenderOptions.map((o) => o.trim().toLowerCase());
-    // The recommender picker is MiniMax-native, so it does NOT
-    // contain OpenAI effort values like "xhigh" / "high".
-    expect(normalizedRecommender.every((o) => o !== "xhigh")).toBe(true);
-    expect(normalizedRecommender.every((o) => o !== "high")).toBe(true);
-    // But it does contain the MiniMax thinking modes.
-    for (const expected of ["provider_default", "adaptive", "enabled", "disabled"]) {
-      expect(normalizedRecommender).toContain(expected);
-    }
+    expect(after.effective.normalChatRecommenderFallbackModelId).toBe("codex:gpt-5.5");
+    expect(after.effective.normalChatRecommenderFallbackReasoningLevel).toBe("low");
   });
 });

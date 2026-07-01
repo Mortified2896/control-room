@@ -1,11 +1,13 @@
-import { expect, test, type Page, type Request } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 /**
  * E2E coverage for the recommender model allowlist + reasoning-level
- * picker + chat composer inline recommender control. Regression specs
- * for the work that turned the Settings page recommender section into a
- * real configuration surface (allowlist + reasoning level) and moved the
- * chat composer control into a unified `RecommenderControl`.
+ * picker. The recommender engine and fallback engine editing surface
+ * lives in Settings → Router → Tab B; the chat UI only renders a
+ * compact "Recommend on/off" pill and the recommendation banner.
+ * Regression specs for the work that turned the Settings page
+ * recommender section into the canonical configuration surface
+ * (allowlist + reasoning level + engine + fallback).
  *
  * What these tests cover (mapped to spec names below):
  *   1. The recommender model picker on /settings/router renders the same
@@ -20,29 +22,29 @@ import { expect, test, type Page, type Request } from "@playwright/test";
  *   5. Codex subscription rows render an ACTIVE Recommender Switch
  *      (no `🔒 Disabled` lock badge) — the recommender now treats Codex
  *      as a valid chat provider, mirroring the chat picker.
- *   6. The chat composer `RecommenderControl` renders a model picker +
- *      reasoning dropdown next to the on/off toggle.
- *   7. Changing the chat-composer reasoning dropdown PATCHes
- *      /api/router/settings and the value round-trips on reload.
+ *   6. /api/model/recommend honors the user-curated allowlist and
+ *      reports the correct diagnostics on a blocked call.
  *
  * Test-id reference (single source of truth):
- *   - Chat composer:
- *       recommender-control            (wrapper)
- *       recommender-toggle             (on/off toggle)
- *       chat-recommender-model         (model picker trigger)
- *       chat-recommender-reasoning     (reasoning `<select>`)
- *       chat-recommender-model-saving  (saving indicator)
  *   - Settings page:
  *       router-settings-normal-chat-recommender-model
  *                                      (hidden native <select> backing the picker)
  *       router-settings-normal-chat-recommender-reasoning
  *                                      (reasoning <select>)
+ *       router-settings-normal-chat-recommender-fallback-model
+ *       router-settings-normal-chat-recommender-fallback-reasoning
  *       router-settings-recommender-allowlist       (subsection panel)
  *       router-settings-recommender-allowlist-summary (live summary)
  *       router-settings-recommender-allowlist-allow-all
  *       router-settings-recommender-allowlist-block-all
  *       registry-recommender-toggle-{modelId}       (per-row Switch)
  *       registry-recommender-locked-{modelId}        (per-row lock badge)
+ *
+ * The chat-side test ids (`recommender-control`,
+ * `chat-recommender-engine-controls`, `chat-recommender-fallback-*`,
+ * `chat-recommender-model-saving`, …) intentionally no longer exist
+ * on the chat surface — the chat composer only renders the compact
+ * `recommender-toggle` pill.
  *
  * Environment: this suite relies on the Playwright config's
  * `CONTROL_ROOM_FAKE_LLM=1` + `CONTROL_ROOM_FAKE_OPENAI_MODELS=1` so the
@@ -54,11 +56,6 @@ async function gotoSettings(page: Page) {
   await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
     timeout: 15_000,
   });
-}
-
-async function gotoChat(page: Page) {
-  await page.goto("/");
-  await expect(page.getByText("How can I help you today?")).toBeVisible({ timeout: 15_000 });
 }
 
 async function fetchSettings(page: Page): Promise<{
@@ -208,65 +205,6 @@ test("registry Codex rows render an active Recommender Switch (no lock badge)", 
     const sw = page.getByTestId(`registry-recommender-toggle-${id}`);
     await expect(sw, `codex row ${id} should have an active Recommender switch`).toBeVisible();
   }
-});
-
-// ---------------------------------------------------------------------------
-// Chat composer: RecommenderControl renders the reasoning dropdown
-// ---------------------------------------------------------------------------
-
-test("chat composer exposes the recommender model picker + reasoning dropdown", async ({
-  page,
-}) => {
-  await gotoChat(page);
-
-  const control = page.getByTestId("recommender-control");
-  await expect(control).toBeVisible();
-
-  const picker = page.getByTestId("chat-recommender-model");
-  await expect(picker).toBeVisible();
-
-  const reasoning = page.getByTestId("chat-recommender-reasoning");
-  await expect(reasoning).toBeVisible();
-  // Default = low (matches settings default).
-  await expect(reasoning).toHaveValue("low");
-});
-
-test("changing the chat-composer reasoning dropdown PATCHes the server and persists", async ({
-  page,
-}) => {
-  await gotoChat(page);
-
-  // Capture the PATCH so we can assert what the chat composer sends.
-  const patches: Array<{ body: string }> = [];
-  page.on("request", (req: Request) => {
-    if (req.method() === "PATCH" && req.url().endsWith("/api/router/settings")) {
-      patches.push({ body: req.postData() ?? "" });
-    }
-  });
-
-  const reasoning = page.getByTestId("chat-recommender-reasoning");
-  await reasoning.selectOption("medium");
-  // Give the optimistic update + PATCH a tick to fire.
-  await page.waitForTimeout(800);
-
-  expect(patches.length, "chat composer should PATCH the reasoning level").toBeGreaterThan(0);
-  expect(patches[patches.length - 1].body).toContain(
-    '"normalChatRecommenderReasoningLevel":"medium"',
-  );
-
-  // Server confirms.
-  const after = await fetchSettings(page);
-  expect(after.normalChatRecommenderReasoningLevel).toBe("medium");
-
-  // Reload → dropdown still says medium (round-tripped through the server).
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByTestId("chat-recommender-reasoning")).toHaveValue("medium");
-
-  // Reset to low so we don't leak state into other specs.
-  await page.getByTestId("chat-recommender-reasoning").selectOption("low");
-  await page.waitForTimeout(800);
-  const afterReset = await fetchSettings(page);
-  expect(afterReset.normalChatRecommenderReasoningLevel).toBe("low");
 });
 
 // ---------------------------------------------------------------------------

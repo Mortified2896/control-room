@@ -9,8 +9,9 @@ import { expect, test, type Page } from "@playwright/test";
  *   1. The Recommender engine tab (Tab B) exposes a "Fallback engine
  *      model" picker alongside the primary engine model picker.
  *   2. The fallback picker has an explicit "No fallback" option
- *      (= use the deterministic Codex → MiniMax → OpenAI API chain
- *      unchanged). Picking it round-trips as `null`.
+ *      (= no fallback recommender is configured; if the primary fails
+ *      the recommender returns a loud failure, no auto-substitution).
+ *      Picking it round-trips as `null`.
  *   3. Picking a fallback model + reasoning level persists through
  *      Save and survives a reload.
  *   4. The fallback reasoning picker is disabled until a fallback
@@ -21,6 +22,9 @@ import { expect, test, type Page } from "@playwright/test";
  *   6. The fallback is plumbed into /api/model/recommend's fallback
  *      chain so callers can see which rung fired
  *      (`diagnostics.recommenderSource === "configured_fallback"`).
+ *   7. The chat UI does NOT expose fallback (or primary) engine
+ *      editing controls — those live in Settings → Router → Tab B.
+ *      The chat composer keeps a compact "Recommend on/off" pill.
  *
  * Test ID reference (single source of truth):
  *   - Settings page (Tab B):
@@ -35,6 +39,12 @@ import { expect, test, type Page } from "@playwright/test";
  *       recommender-engine-prompt-user
  *       recommender-engine-prompt-copy-system
  *       recommender-engine-prompt-copy-user
+ *
+ * The chat-side test ids (`recommender-control`,
+ * `chat-recommender-engine-controls`, `chat-recommender-fallback-*`,
+ * `chat-recommender-model`, `chat-recommender-reasoning`) intentionally
+ * no longer exist on the chat surface. The chat composer only renders
+ * the compact `recommender-toggle` pill in its toolbar.
  */
 
 const apiBase = "http://127.0.0.1:3100";
@@ -290,81 +300,56 @@ test.describe("Recommender engine: fallback model + prompt preview", () => {
     expect(chain.some((c) => c.modelId === "codex:gpt-5.5")).toBe(true);
   });
 
-  test("Chat UI exposes primary + fallback recommender engine controls", async ({ page }) => {
+  test("Chat UI does NOT expose primary or fallback recommender engine editing controls", async ({
+    page,
+  }) => {
+    // The chat surface is the manual-execution-model surface only.
+    // Router/recommender engine + fallback engine editing lives in
+    // Settings → Router → Tab B. None of the chat-side editing
+    // controls must appear above, below, or beside the conversation.
     await gotoSettings(page);
     await page.goto("/");
-    // The top controls bar is the new compact "manual chat model" bar.
-    // It intentionally no longer renders a large "Manual chat model"
-    // label/heading — the title is on the wrapper's `title` attribute.
-    const topBar = page.getByTestId("manual-chat-model-controls");
-    await expect(topBar).toBeVisible({ timeout: 15_000 });
-    await expect(topBar).not.toContainText(/^Manual chat model$/);
-    await expect(topBar).toHaveAttribute("title", /Manual chat model/i);
-    // The recommender controls render in a single card below the top bar.
-    await expect(page.getByTestId("recommender-toggle").first()).toBeVisible();
-    await expect(page.getByTestId("recommender-control")).toBeVisible();
-    await expect(page.getByTestId("chat-recommender-engine-controls")).toBeVisible();
-    await expect(page.getByTestId("chat-recommender-engine-controls")).toContainText(
-      /Recommender engine/,
-    );
-    await expect(page.getByTestId("chat-recommender-model")).toBeVisible();
-    await expect(page.getByTestId("chat-recommender-reasoning")).toBeVisible();
-    await expect(page.getByTestId("chat-recommender-fallback-controls")).toBeVisible();
-    await expect(page.getByTestId("chat-recommender-fallback-controls")).toContainText(
-      /Fallback engine/,
-    );
-    await expect(page.getByTestId("chat-recommender-fallback-model")).toBeVisible();
-    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toBeVisible();
-    await expect(
-      page.getByTestId("chat-recommender-fallback-model").locator('option[value=""]'),
-    ).toHaveText(/no fallback/i);
+    await expect(page.getByTestId("manual-chat-model-controls")).toBeVisible({ timeout: 15_000 });
+
+    // No chat-side recommender / fallback card or rows.
+    await expect(page.getByTestId("recommender-control")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-engine-controls")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-controls")).toHaveCount(0);
+    // No chat-side model / reasoning selectors.
+    await expect(page.getByTestId("chat-recommender-model")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-reasoning")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-model")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toHaveCount(0);
+
+    // The composer keeps a compact "Recommend on/off" pill.
+    await expect(page.getByTestId("recommender-toggle")).toBeVisible();
   });
 
-  test("Changing fallback engine in Chat UI persists to Settings Tab B", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.getByTestId("recommender-control")).toBeVisible({ timeout: 15_000 });
-
-    await page.getByTestId("chat-recommender-fallback-model").selectOption("MiniMax-M3");
-    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toHaveValue(
-      "provider_default",
-    );
-    await page.waitForTimeout(800);
-
-    let body = await fetch(`${apiBase}/api/router-settings`).then((r) => r.json());
-    expect(body.effective.normalChatRecommenderFallbackModelId).toBe("MiniMax-M3");
-    expect(body.effective.normalChatRecommenderFallbackReasoningLevel).toBe("provider_default");
-
-    await gotoSettings(page);
-    await expect(
-      page.getByTestId("router-settings-normal-chat-recommender-fallback-model"),
-    ).toHaveValue("MiniMax-M3");
-    await expect(
-      page.getByTestId("router-settings-normal-chat-recommender-fallback-reasoning"),
-    ).toHaveValue("provider_default");
-
-    await page.goto("/");
-    await expect(page.getByTestId("chat-recommender-fallback-model")).toBeVisible({
-      timeout: 15_000,
-    });
-    await page.getByTestId("chat-recommender-fallback-model").selectOption("");
-    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toBeDisabled();
-    await page.waitForTimeout(800);
-    body = await fetch(`${apiBase}/api/router-settings`).then((r) => r.json());
-    expect(body.effective.normalChatRecommenderFallbackModelId).toBeNull();
-    expect(body.effective.normalChatRecommenderFallbackReasoningLevel).toBeNull();
-  });
-
-  test("Changing Settings Tab B reflects in Chat UI after reload", async ({ page }) => {
+  test("Settings Tab B fallback changes are the canonical writer (chat reads but does not write)", async ({
+    page,
+    request,
+  }) => {
+    // Tab B writes the fallback; the chat UI no longer mirrors the
+    // picker, so we go straight to Settings, change it, Save, and
+    // confirm the server picked it up.
     await gotoSettings(page);
     await page
       .getByTestId("router-settings-normal-chat-recommender-fallback-model")
       .selectOption("codex:gpt-5.5");
+    await page
+      .getByTestId("router-settings-normal-chat-recommender-fallback-reasoning")
+      .selectOption("low");
     await page.getByTestId("router-settings-save").click();
     await expect(page.getByTestId("router-settings-save-status")).toBeVisible({ timeout: 5_000 });
 
+    const body = await request.get(`${apiBase}/api/router-settings`).then((r) => r.json());
+    expect(body.effective.normalChatRecommenderFallbackModelId).toBe("codex:gpt-5.5");
+    expect(body.effective.normalChatRecommenderFallbackReasoningLevel).toBe("low");
+
+    // The chat surface still does not expose the picker.
     await page.goto("/");
-    await expect(page.getByTestId("chat-recommender-fallback-model")).toHaveValue("codex:gpt-5.5", {
-      timeout: 15_000,
-    });
+    await expect(page.getByTestId("manual-chat-model-controls")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("chat-recommender-fallback-model")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-reasoning")).toHaveCount(0);
   });
 });

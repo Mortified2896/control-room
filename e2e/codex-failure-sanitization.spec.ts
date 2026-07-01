@@ -285,7 +285,7 @@ test.describe("Codex backend error sanitization + recommender fallback chain", (
 
   // -- 4. Codex pane honors the recommender toggle end-to-end ------------
 
-  test("Codex manual model + Recommend ON: the inner Thread sees the recommender banner", async ({
+  test("Codex manual model + Recommend ON: the composer's 'Recommend on/off' pill is wired up", async ({
     page,
   }) => {
     // Set the manual model to a Codex subscription row (the same
@@ -311,10 +311,14 @@ test.describe("Codex backend error sanitization + recommender fallback chain", (
     const topBar = page.getByTestId("manual-chat-model-controls");
     await expect(topBar).toBeVisible({ timeout: 15_000 });
 
-    // The recommender card sits below it and is wired up regardless
-    // of which model the manual selector points at.
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible();
-    await expect(card.getByTestId("recommender-toggle")).toHaveAttribute("data-on", "true");
+    // The chat composer renders the compact "Recommend on/off" pill.
+    // The old chat-side recommender card is gone; engine + fallback
+    // configuration lives in Settings → Router → Tab B.
+    const toggle = page.getByTestId("recommender-toggle");
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute("data-on", "true");
+    await expect(page.getByTestId("recommender-control")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-engine-controls")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-controls")).toHaveCount(0);
   });
 });

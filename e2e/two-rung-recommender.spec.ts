@@ -262,14 +262,16 @@ test.describe("Two-rung recommender contract", () => {
     }
   });
 
-  test("7. UI and backend terminology match: 'Fallback engine (one)' means exactly one configured fallback engine", async ({
+  test("7. UI and backend terminology match: Settings → Router → Tab B surfaces exactly one primary + one configured fallback engine", async ({
     page,
     request,
   }) => {
-    // The Chat UI renders the recommender card with a primary
-    // "Recommender engine" row and a "Fallback engine (one)" row.
-    // The backend chain must mirror that 1-primary + 1-fallback
-    // structure — never 2 fallbacks, never a default third rung.
+    // The Settings page (Tab B) renders the canonical primary +
+    // fallback engine configuration. The backend chain must mirror
+    // that 1-primary + 1-fallback structure — never 2 fallbacks,
+    // never a default third rung. The chat UI no longer mirrors
+    // the picker, so we go straight to Settings to verify the
+    // user-facing contract.
     await putSettings(request, {
       allowOpenAiApiRouter: false,
       normalChatRecommenderModelId: "codex:gpt-5.4-mini",
@@ -278,16 +280,30 @@ test.describe("Two-rung recommender contract", () => {
       normalChatRecommenderFallbackReasoningLevel: "provider_default",
     });
 
-    await page.goto("/");
-    const card = page.getByTestId("recommender-control");
-    await expect(card).toBeVisible({ timeout: 15_000 });
-    // The card shows EXACTLY two rows: primary + fallback. The
-    // label "Fallback engine (one)" is the user-facing contract.
-    await expect(card.getByTestId("chat-recommender-engine-controls")).toBeVisible();
-    await expect(card.getByTestId("chat-recommender-fallback-controls")).toBeVisible();
-    await expect(card.getByTestId("chat-recommender-fallback-controls")).toContainText(
-      /Fallback engine/,
+    await page.goto("/settings/router");
+    await expect(page.getByRole("heading", { name: "Router Settings" })).toBeVisible({
+      timeout: 15_000,
+    });
+    // The Settings page surfaces EXACTLY one primary + one fallback
+    // engine field pair. The "Fallback engine model" label is the
+    // user-facing contract.
+    await expect(page.getByTestId("router-settings-normal-chat-recommender-model")).toHaveValue(
+      "codex:gpt-5.4-mini",
     );
+    await expect(
+      page.getByTestId("router-settings-normal-chat-recommender-fallback-model"),
+    ).toHaveValue("MiniMax-M3");
+    await expect(
+      page.getByTestId("router-settings-normal-chat-recommender-fallback-reasoning"),
+    ).toHaveValue("provider_default");
+
+    // The chat surface must NOT mirror those pickers. Sanity: the
+    // legacy chat-side card is gone.
+    await page.goto("/");
+    await expect(page.getByTestId("manual-chat-model-controls")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("recommender-control")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-engine-controls")).toHaveCount(0);
+    await expect(page.getByTestId("chat-recommender-fallback-controls")).toHaveCount(0);
 
     // And the backend chain matches: 2 configured rungs, no third
     // default rung.

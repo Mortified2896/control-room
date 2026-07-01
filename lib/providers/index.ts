@@ -39,17 +39,16 @@ function findModel(modelId: string): ModelOption | undefined {
 
 /**
  * Codex subscription ids are surfaced through a separate static catalog
- * (`lib/providers/codex-catalog.ts`) — the chat picker appends them
+ * (`lib/providers/codex-catalog.ts`) - the chat picker appends them
  * directly to `/api/models`, but `getAvailableModels` (the OpenAI +
  * MiniMax list the chat resolver consults) does not include them.
  *
- * The recommender chain (`buildRouterFallbackChain`) carries Codex
- * candidates on the assumption that the resolver can recognize them
- * — if the resolver only consulted `getAvailableModels` those
- * candidates would silently fail and the chain would drop down to
- * the next rung (which defeats the explicit “Codex first” intent).
- * Recognise Codex ids here so the resolver can probe the runtime
- * for them.
+ * The recommender chain (`buildConfiguredRecommenderChain`) carries Codex
+ * candidates on the assumption that the resolver can recognize them.
+ * If the resolver only consulted `getAvailableModels` those candidates
+ * would fail resolution and the chain would fall through to the
+ * configured fallback — defeating the "Codex first" intent.
+ * Recognise Codex ids here so the resolver can probe the runtime for them.
  */
 function isCodexModelId(modelId: string): boolean {
   if (!modelId.startsWith("codex:")) return false;
@@ -148,7 +147,7 @@ export function resolveModel(modelId: string | undefined): ResolveResult {
 
 /**
  * Canonical metadata for a model id, across all providers in the registry.
- * Returns `null` for ids the build does not recognize — the router uses this
+ * Returns `null` for ids the build does not recognize - the router uses this
  * to reject disallowed model names before they reach the chat layer.
  */
 export function getModelMeta(modelId: string): ModelMeta | null {
@@ -172,7 +171,7 @@ export function getDefaultRouterModelId(): string {
  * enumerates the registered OpenAI model metadata directly, so the router
  * allowlist is the same regardless of whether `OPENAI_API_KEY` is set at
  * process start. Whether the router is *actually allowed* to call a model
- * at runtime is a separate, chat-route concern — see `resolveModel` and
+ * at runtime is a separate, chat-route concern - see `resolveModel` and
  * `getModelMeta` for the provider-availability check.
  *
  * - When `allowExpensive === false`, expensive-tier models are filtered out.
@@ -185,7 +184,7 @@ export function listRouterAllowedPool(
   allowExpensive: boolean,
 ): ReadonlyArray<RouterAllowlistEntry> {
   const out: RouterAllowlistEntry[] = [];
-  // Pull from the static registry, not from `getAvailableModels()` — that
+  // Pull from the static registry, not from `getAvailableModels()` - that
   // function is gated on `process.env.OPENAI_API_KEY` for `enabled`, which
   // would make the allowlist (and therefore the router) nondeterministic
   // across test runs.

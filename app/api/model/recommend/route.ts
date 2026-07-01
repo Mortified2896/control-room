@@ -374,31 +374,19 @@ export async function POST(request: Request) {
   }
 
   const settings = await getEffectiveRouterSettings();
-  // Cost-safety: build the deterministic fallback chain. Subscription
-  // providers first (Codex, MiniMax), OpenAI API LAST and only when
-  // the user has explicitly opted in via `allowOpenAiApiRouter`.
-  // `pickRouterModelForRun` walks the chain and surfaces the chosen
-  // provider/model in `diagnostics` so callers can tell when OpenAI
-  // was used.
-  //
-  // The configured recommender model id is `settings.normalChatRecommenderModelId`
-  // (separate from `settings.routerModelId`, which is used by the Side B
-  // A/B router). The Settings UI lets the user pick the recommender
-  // model independently of the A/B router model.
-  //
-  // The user-configured single-model fallback
-  // (`settings.normalChatRecommenderFallbackModelId`) is inserted at
   // The chain is EXACTLY TWO RUNGS: the configured primary
   // (`normalChatRecommenderModelId`) and, if set, the configured
-  // fallback (`normalChatRecommenderFallbackModelId`). The Chat UI
-  // shows only those two controls — "Recommender engine" and
-  // "Fallback engine (one)" — so the backend must not silently try
-  // any third "deterministic default" rung (no Codex default, no
-  // MiniMax default, no OpenAI default, no provider default). If
-  // the configured fallback is missing OR also fails, the route
-  // returns a loud blocked recommendation with NO third attempt.
-  // This is the explicit product contract: "Fallback engine (one)"
-  // means exactly one configured fallback engine — nothing more.
+  // fallback (`normalChatRecommenderFallbackModelId`). No third
+  // default rung is appended — the product contract is primary →
+  // one fallback → loud failure. The Settings UI lets the user pick
+  // the recommender model independently of the A/B router model.
+  // The Chat UI shows only those two controls — "Recommender engine"
+  // and "Fallback engine (one)" — so the backend must not silently
+  // try any third "deterministic default" rung. If the configured
+  // fallback is missing OR also fails, the route returns a loud
+  // blocked recommendation with NO third attempt. This is the explicit
+  // product contract: "Fallback engine (one)" means exactly one
+  // configured fallback engine — nothing more.
   const chain = buildConfiguredRecommenderChain(settings);
   // Sanity check: the chain must never exceed 2 entries. The
   // product contract is "primary → one fallback → blocked"; a

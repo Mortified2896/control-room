@@ -10,16 +10,9 @@ import { routerAbDataSchemas } from "@/lib/assistant-ui/router-ab-data-schemas";
 import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai";
 import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
-import {
-  RouterAbToggle,
-  ReasoningControls,
-  RecommenderControl,
-} from "@/components/assistant-ui/router-ab-controls";
+import { RouterAbToggle, ReasoningControls } from "@/components/assistant-ui/router-ab-controls";
 import type { RecommenderModelOption } from "@/components/assistant-ui/recommender-model-selector";
-import {
-  getProviderNativeOptionChoices,
-  type ReasoningCapability,
-} from "@/lib/providers/capability";
+import { type ReasoningCapability } from "@/lib/providers/capability";
 import type { ThinkingMode } from "@/lib/providers/runtime";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { KbdHint } from "@/components/kbd-hint";
@@ -221,25 +214,6 @@ type ModelRecommendation = {
     attemptedCandidateModel?: string | null;
   };
 };
-
-function apiErrorReason(payload: unknown, fallback: string): string {
-  if (payload && typeof payload === "object") {
-    const obj = payload as { reason?: unknown; error?: unknown; errors?: unknown };
-    if (typeof obj.reason === "string" && obj.reason.trim()) return obj.reason;
-    if (Array.isArray(obj.errors)) {
-      const messages = obj.errors
-        .map((e) =>
-          e && typeof e === "object" && typeof (e as { message?: unknown }).message === "string"
-            ? (e as { message: string }).message
-            : null,
-        )
-        .filter(Boolean);
-      if (messages.length) return messages.join(" ");
-    }
-    if (typeof obj.error === "string" && obj.error.trim()) return obj.error;
-  }
-  return fallback;
-}
 
 type RouterSettingsLiteResponse = {
   normalChatRouterProvider: string;
@@ -1451,13 +1425,19 @@ export const Assistant = () => {
   const [selectedThinkingMode, setSelectedThinkingMode] =
     useState<ThinkingMode>("provider_default");
   const [routerAbOn, setRouterAbOn] = useState(true);
+  // Lightweight read-only snapshot of the configured recommender engine
+  // (engine model + reasoning + optional user-configured fallback).
+  // The chat surface no longer edits these values inline — they live
+  // exclusively in Settings → Router → Tab B. The chat only reads them
+  // to render the recommendation banner's failure-card copy
+  // (recommenderEngineSummary / fallbackEngineSummary) and the routing
+  // decision audit bubble. Writes happen exclusively in the Settings
+  // page, so we keep only the fetch + derived summaries here and
+  // intentionally drop the save handlers + saving flag.
   const [recommenderModelId, setRecommenderModelId] = useState<string | null>(null);
   const [recommenderModelOptions, setRecommenderModelOptions] = useState<
     ReadonlyArray<RecommenderModelOption>
   >([]);
-  const [recommenderModelLoading, setRecommenderModelLoading] = useState(true);
-  const [recommenderModelSaving, setRecommenderModelSaving] = useState(false);
-  const [recommenderModelError, setRecommenderModelError] = useState<string | null>(null);
   const [recommenderReasoningLevel, setRecommenderReasoningLevel] = useState<string>("low");
   const [recommenderFallbackModelId, setRecommenderFallbackModelId] = useState<string | null>(null);
   const [recommenderFallbackReasoningLevel, setRecommenderFallbackReasoningLevel] = useState<
@@ -1576,8 +1556,9 @@ export const Assistant = () => {
    * instead of silently leaving the user in the intermediate
    * state with no Send button. Never contains API keys.
    */
-  const [codingHarnessRecommendationError, setCodingHarnessRecommendationError] =
-    useState<string | null>(null);
+  const [codingHarnessRecommendationError, setCodingHarnessRecommendationError] = useState<
+    string | null
+  >(null);
 
   // Refresh the harness registry whenever the composer mounts so the
   // approval card surfaces current install / auth state.
@@ -1631,9 +1612,7 @@ export const Assistant = () => {
       // approval card can render "Coding harness recommendation
       // failed: <safe reason>" instead of silently leaving the
       // user in the intermediate state with no Send button.
-      setCodingHarnessRecommendationError(
-        err instanceof Error ? err.message : "unknown error",
-      );
+      setCodingHarnessRecommendationError(err instanceof Error ? err.message : "unknown error");
     } finally {
       setCodingHarnessRecommendationLoading(false);
       setCodingHarnessRecommendationEta(null);
@@ -1731,9 +1710,18 @@ export const Assistant = () => {
   }, [mounted]);
 
   // Fetch the lightweight router settings (current recommender model +
-  // available options). This drives the inline `RecommenderControl` in
-  // the chat composer. Failures are non-fatal: the picker just stays
-  // empty until the user clicks Save in Settings.
+  // available options). The chat composer no longer edits these values
+  // inline — that surface now lives in Settings → Router → Tab B — so
+  // this fetch is read-only and is only used to render the
+  // recommendation banner's failure-card copy and the routing decision
+  // audit bubble. The Settings page is the single source of truth for
+  // writes; the chat just mirrors the configured values into the
+  // composer-aware summary fields.
+  //
+  // Failures are non-fatal: the recommendation banner still works when
+  // the read fails, the failure card just falls back to a generic
+  // "engine unreachable" notice. The user can re-read the values by
+  // opening Settings.
   useEffect(() => {
     if (!mounted) return;
     let cancelled = false;
@@ -1752,161 +1740,17 @@ export const Assistant = () => {
         setRecommenderFallbackReasoningLevel(
           data.normalChatRecommenderFallbackReasoningLevel ?? null,
         );
-        setRecommenderModelError(null);
-      } catch (err) {
-        if (cancelled) return;
-        setRecommenderModelError(
-          err instanceof Error ? err.message : "Failed to load recommender settings",
-        );
-      } finally {
-        if (!cancelled) setRecommenderModelLoading(false);
+      } catch {
+        // Read-only failure is non-fatal: the recommendation banner
+        // still works (it surfaces a generic "engine unreachable"
+        // message via its own `loudFailure` path). The user can
+        // re-trigger the read by opening Settings → Router.
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [mounted]);
-
-  const handleRecommenderModelChange = useCallback(
-    async (nextId: string) => {
-      if (!nextId) return;
-      const previousId = recommenderModelId;
-      const previousLevel = recommenderReasoningLevel;
-      const selected = recommenderModelOptions.find((m) => m.modelId === nextId);
-      const nextLevel = selected
-        ? (getProviderNativeOptionChoices(selected.reasoningCapability).find((o) => o.value)
-            ?.value ?? recommenderReasoningLevel)
-        : recommenderReasoningLevel;
-      setRecommenderModelId(nextId);
-      setRecommenderReasoningLevel(nextLevel);
-      setRecommenderModelSaving(true);
-      setRecommenderModelError(null);
-      try {
-        const res = await fetch("/api/router/settings", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            normalChatRecommenderModelId: nextId,
-            normalChatRecommenderReasoningLevel: nextLevel,
-          }),
-        });
-        if (!res.ok) {
-          const payload = await res.json().catch(() => null);
-          throw new Error(apiErrorReason(payload, `status ${res.status}`));
-        }
-      } catch (err) {
-        // Roll back so the picker reflects what the server actually saved.
-        setRecommenderModelId(previousId);
-        setRecommenderReasoningLevel(previousLevel);
-        setRecommenderModelError(
-          err instanceof Error ? err.message : "Failed to save recommender model",
-        );
-      } finally {
-        setRecommenderModelSaving(false);
-      }
-    },
-    [recommenderModelId, recommenderModelOptions, recommenderReasoningLevel],
-  );
-
-  const handleRecommenderReasoningChange = useCallback(
-    async (nextLevel: string) => {
-      if (nextLevel === recommenderReasoningLevel || nextLevel.trim().length === 0) return;
-      const previousLevel = recommenderReasoningLevel;
-      setRecommenderReasoningLevel(nextLevel);
-      setRecommenderModelSaving(true);
-      setRecommenderModelError(null);
-      try {
-        const res = await fetch("/api/router/settings", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ normalChatRecommenderReasoningLevel: nextLevel }),
-        });
-        if (!res.ok) {
-          const payload = await res.json().catch(() => null);
-          throw new Error(apiErrorReason(payload, `status ${res.status}`));
-        }
-      } catch (err) {
-        setRecommenderReasoningLevel(previousLevel);
-        setRecommenderModelError(
-          err instanceof Error ? err.message : "Failed to save recommender reasoning level",
-        );
-      } finally {
-        setRecommenderModelSaving(false);
-      }
-    },
-    [recommenderReasoningLevel],
-  );
-
-  const handleRecommenderFallbackModelChange = useCallback(
-    async (nextId: string | null) => {
-      if (nextId === recommenderFallbackModelId) return;
-      const previousId = recommenderFallbackModelId;
-      const previousLevel = recommenderFallbackReasoningLevel;
-      const selected = nextId ? recommenderModelOptions.find((m) => m.modelId === nextId) : null;
-      const nextLevel = nextId
-        ? selected
-          ? (getProviderNativeOptionChoices(selected.reasoningCapability).find((o) => o.value)
-              ?.value ?? previousLevel)
-          : previousLevel
-        : null;
-      setRecommenderFallbackModelId(nextId);
-      setRecommenderFallbackReasoningLevel(nextLevel);
-      setRecommenderModelSaving(true);
-      setRecommenderModelError(null);
-      try {
-        const res = await fetch("/api/router/settings", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            normalChatRecommenderFallbackModelId: nextId,
-            normalChatRecommenderFallbackReasoningLevel: nextLevel,
-          }),
-        });
-        if (!res.ok) {
-          const payload = await res.json().catch(() => null);
-          throw new Error(apiErrorReason(payload, `status ${res.status}`));
-        }
-      } catch (err) {
-        setRecommenderFallbackModelId(previousId);
-        setRecommenderFallbackReasoningLevel(previousLevel);
-        setRecommenderModelError(
-          err instanceof Error ? err.message : "Failed to save recommender fallback model",
-        );
-      } finally {
-        setRecommenderModelSaving(false);
-      }
-    },
-    [recommenderFallbackModelId, recommenderFallbackReasoningLevel, recommenderModelOptions],
-  );
-
-  const handleRecommenderFallbackReasoningChange = useCallback(
-    async (nextLevel: string | null) => {
-      if (nextLevel === recommenderFallbackReasoningLevel) return;
-      const previousLevel = recommenderFallbackReasoningLevel;
-      setRecommenderFallbackReasoningLevel(nextLevel);
-      setRecommenderModelSaving(true);
-      setRecommenderModelError(null);
-      try {
-        const res = await fetch("/api/router/settings", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ normalChatRecommenderFallbackReasoningLevel: nextLevel }),
-        });
-        if (!res.ok) {
-          const payload = await res.json().catch(() => null);
-          throw new Error(apiErrorReason(payload, `status ${res.status}`));
-        }
-      } catch (err) {
-        setRecommenderFallbackReasoningLevel(previousLevel);
-        setRecommenderModelError(
-          err instanceof Error ? err.message : "Failed to save recommender fallback reasoning",
-        );
-      } finally {
-        setRecommenderModelSaving(false);
-      }
-    },
-    [recommenderFallbackReasoningLevel],
-  );
 
   useEffect(() => {
     if (!mounted || isLocalThreadId(activeThreadId)) {
@@ -2349,7 +2193,9 @@ export const Assistant = () => {
           recommenderEngine: recommendation.diagnostics.recommenderModelId,
           recommenderReasoningLevel: recommenderReasoningLevel,
           executionModel: proposed?.toModelId ?? recommendation.recommendedModelId,
-          executionReasoningLevel: proposed ? selectedReasoningLevel : recommendation.recommendedReasoningLevel,
+          executionReasoningLevel: proposed
+            ? selectedReasoningLevel
+            : recommendation.recommendedReasoningLevel,
           fallback: {
             configured: Boolean(recommenderFallbackModelId),
             attempted: Boolean(recommendation.diagnostics.fallback),
@@ -2513,24 +2359,6 @@ export const Assistant = () => {
           onRouterAbChange={setRouterAbOn}
         />
 
-        <div className="border-b border-border/60 bg-background px-3 py-3 sm:px-4">
-          <RecommenderControl
-            enabled={recommenderEnabled}
-            onToggle={toggleRecommender}
-            modelId={recommenderModelId}
-            modelOptions={recommenderModelOptions}
-            onModelChange={handleRecommenderModelChange}
-            modelLoading={recommenderModelLoading}
-            modelSaving={recommenderModelSaving}
-            reasoningLevel={recommenderReasoningLevel}
-            onReasoningChange={handleRecommenderReasoningChange}
-            fallbackModelId={recommenderFallbackModelId}
-            fallbackReasoningLevel={recommenderFallbackReasoningLevel}
-            onFallbackModelChange={handleRecommenderFallbackModelChange}
-            onFallbackReasoningChange={handleRecommenderFallbackReasoningChange}
-          />
-        </div>
-
         {!dbConfigured && (
           <div className="border-b border-border bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
             Working offline — chats and notes in this session may not persist.
@@ -2542,17 +2370,6 @@ export const Assistant = () => {
             Failed to load models: {modelsError}
           </div>
         )}
-
-        {recommenderModelError ? (
-          <div
-            className="border-b border-border bg-destructive/10 px-4 py-2 text-xs text-destructive"
-            data-testid="chat-recommender-model-error"
-            role="alert"
-          >
-            Recommender model: {recommenderModelError}. You can still pick a model in Settings →
-            Router → Normal-chat recommender model.
-          </div>
-        ) : null}
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {messagesLoading ? (
