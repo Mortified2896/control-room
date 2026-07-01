@@ -336,8 +336,16 @@ function fallbackResponse(
     // a different model; `loudFailure: true` flags the response as a
     // ask-the-user situation, and `proposedSubscriptionFallbacks`
     // lists the only acceptable alternatives.
-    recommendedModelId: input.currentModelId ?? "gpt-5.4-mini",
-    recommendedProvider: input.currentProvider ?? "openai",
+    //
+    // We deliberately do NOT default `recommendedModelId` to a third
+    // Codex/MiniMax/OpenAI rung here. The loud-failure response
+    // surfaces the user's current selection verbatim — and surfaces
+    // proposals built from the LIVE registry on the catch path.
+    // A silent third-fallback default would hide the configured
+    // primary → configured fallback contract behind a generic
+    // "GPT-5.4 Mini" line.
+    recommendedModelId: input.currentModelId ?? "",
+    recommendedProvider: input.currentProvider ?? "",
     recommendedReasoningLevel: input.currentReasoningLevel ?? null,
     reasoning:
       reasoningOverride ??
@@ -468,97 +476,117 @@ export async function POST(request: Request) {
     started_at: recommendationStartedAt,
   });
 
-  try {
-    const modelsPayload = await getEffectiveModelsResponse();
-    // Apply the user-curated allowlist (if any) before building the
-    // prompt. `null` means "no restriction" — the recommender can pick
-    // any enabled model from the chat picker (OpenAI, MiniMax, Codex
-    // subscription). `[]` means "block all" — the prompt will see an
-    // empty list and the route falls back to the current chat model.
-    //
-    // Note: Codex entries do appear in the chat picker (the chat
-    // composer uses the Codex chat pane for `providerId === "codex"`),
-    // so excluding them from the recommender would be a surprising
-    // gap. We include them but lie about reasoning controls: the
-    // chat picker shows `reasoningLevels: ["low"]` for Codex so the
-    // reasoning dropdown doesn't disappear, but the runtime actually
-    // ignores reasoning for the codex provider (see the comment in
-    // `getEffectiveModelsResponse`). Telling the recommender
-    // `supportsReasoningControls: false` matches what the runtime
-    // will honor and prompts it to return `recommendedReasoningLevel: null`.
-    const allowlist = settings.normalChatRecommenderAllowedModels;
-    const allowedSet = allowlist === null ? null : new Set(allowlist);
-    // Per-(model, reasoning) option allowlist from the Recommender
-    // candidates tab. The recommender must NOT suggest a reasoning level
-    // outside this set. `allowedCombos` is the user-curated surface for
-    // this — when a row is fully unconstrained, the model’s full
-    // capability is exposed; when the user has narrowed a row to a few
-    // checkboxes, only those are surfaced. The runtime engine picks
-    // exactly from `allowedReasoningLevels` for each model.
-    const candidateOptionsByModel = new Map<string, string[]>();
-    for (const combo of settings.allowedCombos) {
-      const arr = candidateOptionsByModel.get(combo.modelId) ?? [];
-      arr.push(combo.reasoningLevel);
-      candidateOptionsByModel.set(combo.modelId, arr);
-    }
-    const availableModels: ReadonlyArray<NormalChatAvailableModel> = modelsPayload.models
-      .filter((m) => m.enabled)
-      .filter((m) => allowedSet === null || allowedSet.has(m.modelId))
-      .map((m) => {
-        // The recommender picker is effort-level only — thinking-
-        // budget models (MiniMax M3 etc.) get surfaced as
-        // `supportsReasoningControls: false` so the recommender
-        // never picks an effort value for them. The runtime
-        // adapter translates the user's `thinkingMode` pick into
-        // provider-native reasoning controls separately.
-        const isEffortLevels =
-          m.reasoningCapability.kind === "effort_levels" &&
-          m.reasoningCapability.control !== "unknown";
-        let modelReasoningLevels: ReadonlyArray<string> = [];
-        if (isEffortLevels) {
-          const native =
-            m.reasoningCapability.kind === "effort_levels"
-              ? m.reasoningCapability.options.map((o) => o.value)
-              : [];
-          // If the user has narrowed the Tab C allowlist for this
-          // model, intersect with the narrowing set. The runtime
-          // also defends against stale provider-native values below.
-          const narrowed = candidateOptionsByModel.get(m.modelId);
-          if (narrowed && narrowed.length > 0) {
-            const set = new Set(native);
-            modelReasoningLevels = narrowed.filter((v) => set.has(v));
-          } else {
-            modelReasoningLevels = native;
+  // The availableModels list is built BEFORE the try block so the
+  // catch path (loud-failure handler) can read it directly to
+  // build subscription proposals from the live registry. We do NOT
+  // hardcode a third Codex/MiniMax/OpenAI rung into the proposal
+  // candidates — a model appears in proposedSubscriptionFallbacks
+  // exactly when the live registry reports it as enabled. This
+  // pins the "configured primary → configured fallback → blocked"
+  // chain and removes the previous hardcoded
+  // `codex:gpt-5.4-mini` third rung.
+  const modelsPayload = await getEffectiveModelsResponse().catch(() => null);
+  // Apply the user-curated allowlist (if any) before building the
+  // prompt. `null` means "no restriction" — the recommender can pick
+  // any enabled model from the chat picker (OpenAI, MiniMax, Codex
+  // subscription). `[]` means "block all" — the prompt will see an
+  // empty list and the route falls back to the current chat model.
+  //
+  // Note: Codex entries do appear in the chat picker (the chat
+  // composer uses the Codex chat pane for `providerId === "codex"`),
+  // so excluding them from the recommender would be a surprising
+  // gap. We include them but lie about reasoning controls: the
+  // chat picker shows `reasoningLevels: ["low"]` for Codex so the
+  // reasoning dropdown doesn't disappear, but the runtime actually
+  // ignores reasoning for the codex provider (see the comment in
+  // `getEffectiveModelsResponse`). Telling the recommender
+  // `supportsReasoningControls: false` matches what the runtime
+  // will honor and prompts it to return `recommendedReasoningLevel: null`.
+  const allowlist = settings.normalChatRecommenderAllowedModels;
+  const allowedSet = allowlist === null ? null : new Set(allowlist);
+  // Per-(model, reasoning) option allowlist from the Recommender
+  // candidates tab. The recommender must NOT suggest a reasoning level
+  // outside this set. `allowedCombos` is the user-curated surface for
+  // this — when a row is fully unconstrained, the model’s full
+  // capability is exposed; when the user has narrowed a row to a few
+  // checkboxes, only those are surfaced. The runtime engine picks
+  // exactly from `allowedReasoningLevels` for each model.
+  const candidateOptionsByModel = new Map<string, string[]>();
+  for (const combo of settings.allowedCombos) {
+    const arr = candidateOptionsByModel.get(combo.modelId) ?? [];
+    arr.push(combo.reasoningLevel);
+    candidateOptionsByModel.set(combo.modelId, arr);
+  }
+  const availableModels: ReadonlyArray<NormalChatAvailableModel> = modelsPayload
+    ? modelsPayload.models
+        .filter((m) => m.enabled)
+        .filter((m) => allowedSet === null || allowedSet.has(m.modelId))
+        .map((m) => {
+          // The recommender picker is effort-level only — thinking-
+          // budget models (MiniMax M3 etc.) get surfaced as
+          // `supportsReasoningControls: false` so the recommender
+          // never picks an effort value for them. The runtime
+          // adapter translates the user's `thinkingMode` pick into
+          // provider-native reasoning controls separately.
+          const isEffortLevels =
+            m.reasoningCapability.kind === "effort_levels" &&
+            m.reasoningCapability.control !== "unknown";
+          let modelReasoningLevels: ReadonlyArray<string> = [];
+          if (isEffortLevels) {
+            const native =
+              m.reasoningCapability.kind === "effort_levels"
+                ? m.reasoningCapability.options.map((o) => o.value)
+                : [];
+            // If the user has narrowed the Tab C allowlist for this
+            // model, intersect with the narrowing set. The runtime
+            // also defends against stale provider-native values below.
+            const narrowed = candidateOptionsByModel.get(m.modelId);
+            if (narrowed && narrowed.length > 0) {
+              const set = new Set(native);
+              modelReasoningLevels = narrowed.filter((v) => set.has(v));
+            } else {
+              modelReasoningLevels = native;
+            }
           }
-        }
-        return {
-          provider: m.providerId,
-          modelId: m.modelId,
-          displayLabel: m.modelLabel,
-          // Effort-level providers (including Codex subscription rows)
-          // expose model id and reasoning as separate candidate fields.
-          // Thinking-budget providers such as MiniMax are surfaced without
-          // effort-level controls so the recommender cannot invent one.
-          supportsReasoningControls: modelReasoningLevels.length > 0,
-          // Provider-native option values that survive both the
-          // Tab C per-model narrowing AND the model's capability
-          // surface. NOT the narrow `ReasoningLevel` enum.
-          allowedReasoningLevels: modelReasoningLevels,
-          enabled: m.enabled,
-          accessPath: m.accessPath ?? null,
-          tier: m.tier,
-        };
-      });
+          return {
+            provider: m.providerId,
+            modelId: m.modelId,
+            displayLabel: m.modelLabel,
+            // Effort-level providers (including Codex subscription rows)
+            // expose model id and reasoning as separate candidate fields.
+            // Thinking-budget providers such as MiniMax are surfaced without
+            // effort-level controls so the recommender cannot invent one.
+            supportsReasoningControls: modelReasoningLevels.length > 0,
+            // Provider-native option values that survive both the
+            // Tab C per-model narrowing AND the model's capability
+            // surface. NOT the narrow `ReasoningLevel` enum.
+            allowedReasoningLevels: modelReasoningLevels,
+            enabled: m.enabled,
+            accessPath: m.accessPath ?? null,
+            tier: m.tier,
+          };
+        })
+    : [];
 
+  try {
     if (availableModels.length === 0) {
       // Either every model is disabled, or the user has explicitly
       // allowed zero models. Fail loud rather than send an empty list
       // to the recommender (which would either crash or recommend a
-      // random id).
+      // random id). The recommender reported in diagnostics stays
+      // the configured primary — we don't fabricate a third
+      // Codex/MiniMax default rung here.
+      const defaultPrimary = settings.normalChatRecommenderModelId;
+      const defaultPrimaryProvider = defaultPrimary
+        ? providerIdFromRecommenderModelId(defaultPrimary)
+        : "codex";
       return Response.json(
         fallbackResponse(
           input,
-          activeRecommender ?? { provider: "codex", modelId: "codex:gpt-5.4-mini" },
+          activeRecommender ?? {
+            provider: defaultPrimaryProvider,
+            modelId: defaultPrimary ?? "",
+          },
           attemptedCandidateModel,
           chain.map((c) => ({
             source: c.source,
@@ -775,10 +803,48 @@ export async function POST(request: Request) {
       reason: err instanceof Error ? err.message : String(err),
     });
 
+    // Proposal candidates are derived from the LIVE availableModels
+    // (the registry + allowlist narrowed set) so proposals reflect
+    // what the user actually enabled. We do NOT hardcode a third
+    // "codex:gpt-5.4-mini" or "MiniMax-M3" default here: a candidate
+    // appears in proposedSubscriptionFallbacks only if the live
+    // registry reports it as enabled and subscription-backed. The
+    // configured fallback (e.g. MiniMax-M3) is one of the proposals
+    // exactly when the live registry actually exposes it. This
+    // preserves the user's configured fallback chain (primary →
+    // configured fallback → blocked) without appending a hidden
+    // Codex/MiniMax/OpenAI default rung.
+    const proposalCandidates = (availableModels ?? [])
+      .filter((m) => m.provider === "minimax" || m.provider === "codex")
+      .map((m) => ({
+        providerId: m.provider as "minimax" | "codex",
+        modelId: m.modelId,
+        modelLabel: m.displayLabel,
+        tier: m.tier === "expensive" ? "expensive" as const : "cheap" as const,
+        reasoningCapability: { kind: "none" as const, control: "unsupported" as const },
+        reasoningLevels: [] as string[],
+        billingSource: "subscription" as const,
+      }));
+    const proposalRegistry = (availableModels ?? [])
+      .filter((m) => m.provider === "minimax" || m.provider === "codex")
+      .map((m) => ({ modelId: m.modelId, displayLabel: m.displayLabel }));
+
     const policy = enforceNoApiBillingFallback({
       requested: {
-        modelId: input.currentModelId ?? "gpt-5.4-mini",
-        providerId: (input.currentProvider ?? "openai") as "openai" | "minimax" | "codex",
+        // The "requested" line is the *request* (current selection or
+        // sentinel) the policy uses to decide whether substitution is
+        // allowed. We deliberately do NOT default to "gpt-5.4-mini"
+        // here — that was a hidden third rung. When the user has no
+        // current chat model, the request becomes `null` so the
+        // proposals surface as a subscribe-the-user prompt rather
+        // than pretending `gpt-5.4-mini` was the active selection.
+        modelId: input.currentModelId ?? "",
+        providerId:
+          (input.currentProvider ?? "openai") === "minimax"
+            ? "minimax"
+            : (input.currentProvider ?? "openai") === "codex"
+              ? "codex"
+              : "openai",
         billingSource:
           (input.currentProvider ?? "openai") === "openai" ? "api_billing" : "subscription",
         selectionSource: "user_accepted",
@@ -786,33 +852,8 @@ export async function POST(request: Request) {
       kind: "recommender_runner_failed",
       reason:
         "The recommender runner could not produce a recommendation. Control Room will not silently switch to an API-billed model.",
-      candidates: [
-        {
-          providerId: "codex",
-          modelId: "codex:gpt-5.4-mini",
-          modelLabel: "Codex · GPT-5.4 Mini",
-          tier: "cheap",
-          reasoningCapability: { kind: "none", control: "unsupported" },
-          reasoningLevels: [],
-          billingSource: "subscription",
-        },
-        {
-          providerId: "minimax",
-          modelId: "MiniMax-M3",
-          modelLabel: "MiniMax-M3",
-          tier: "cheap",
-          reasoningCapability: { kind: "thinking_budget", control: "supported" },
-          reasoningLevels: [],
-          billingSource: "subscription",
-        },
-      ],
-      registry: [
-        {
-          modelId: "codex:gpt-5.4-mini",
-          displayLabel: "Codex · GPT-5.4 Mini · Codex subscription",
-        },
-        { modelId: "MiniMax-M3", displayLabel: "MiniMax-M3 · MiniMax subscription" },
-      ],
+      candidates: proposalCandidates,
+      registry: proposalRegistry,
     });
 
     let proposals = policy.proposals;
@@ -835,8 +876,12 @@ export async function POST(request: Request) {
       input,
       {
         provider: activeProvider,
-        modelId:
-          lastAttempt?.modelId ?? settings.normalChatRecommenderModelId ?? "codex:gpt-5.4-mini",
+        // Last-resort modelId of the recommender in the loud-failure
+        // payload. We use the last rung attempted → the configured
+        // primary → empty string. We deliberately do NOT default to
+        // a third Codex/MiniMax/OpenAI rung here: that would silently
+        // hide a third fallback behind the loud failure.
+        modelId: lastAttempt?.modelId ?? settings.normalChatRecommenderModelId ?? "",
       },
       attemptedCandidateModel,
       // The blocked-card "fallbackChain" surfaces exactly the

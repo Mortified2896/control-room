@@ -49,6 +49,54 @@ test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT is a non-empty plain-English string"
   assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /reasoning/i);
 });
 
+test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT requires the exact zod field names", () => {
+  // The schema requires these exact top-level field names. The system
+  // prompt must list them literally so the prompt does not drift
+  // from the zod schema and so the AI SDK's Output.object call
+  // validates the response. Aliases (modelId / provider /
+  // reasoningLevel) are forbidden.
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedModelId"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedProvider"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedReasoningLevel"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"reasoning"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"alternatives"/);
+});
+
+test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT forbids alias field names", () => {
+  // The MiniMax-M3 recommender engine has been observed returning
+  // the alias shape `{"modelId":"X","provider":"Y","reasoningLevel":null}`.
+  // That shape is wrong for the schema. The prompt must explicitly
+  // forbid it.
+  assert.match(
+    NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT,
+    /"modelId"\s+is NOT a substitute for "recommendedModelId"/,
+  );
+  assert.match(
+    NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT,
+    /"provider"\s+is NOT a substitute for "recommendedProvider"/,
+  );
+  assert.match(
+    NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT,
+    /"reasoningLevel"\s+is NOT a substitute for "recommendedReasoningLevel"/,
+  );
+});
+
+test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT forbids markdown fences and prose", () => {
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /no markdown fences/i);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /no prose/i);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /exactly one json object/i);
+});
+
+test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT includes a minimal valid JSON example", () => {
+  // The example anchors the exact field names and shape so the model
+  // doesn't drift into any wrapper / fence / alias form.
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedModelId": "MiniMax-M3"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedProvider": "minimax"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedReasoningLevel": null/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"reasoning":/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"alternatives": \[\]/);
+});
+
 test("buildNormalChatRecommenderUserPrompt returns valid JSON containing the input fields", () => {
   const userPrompt = buildNormalChatRecommenderUserPrompt(sampleInput);
   // The user prompt must be JSON-serializable — the API route sends it
@@ -82,14 +130,14 @@ test("buildNormalChatRecommenderPrompt accepts an empty availableModels list", (
   assert.deepEqual(parsed.availableModels, []);
 });
 
-test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT treats Codex as a valid chat provider", () => {
+test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT does not single out Codex as out-of-scope", () => {
   // Codex subscription models are selectable in the chat picker (the
   // chat composer uses the Codex chat pane), so the recommender must
-  // be willing to recommend them. The old prompt explicitly excluded
-  // Codex; the new one explicitly includes it. This test locks the
-  // contract in so a future refactor can't silently regress.
-  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /Codex subscription models/i);
+  // be willing to recommend them. The contract is locked in so a
+  // future refactor that explicitly excludes Codex (e.g. "Do not
+  // choose Codex") regresses this test.
   assert.doesNotMatch(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /Do not choose Codex/i);
+  assert.doesNotMatch(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /never Codex/i);
 });
 
 test("NormalChatAvailableModel shape accepts a Codex entry with codex_chatgpt accessPath", () => {

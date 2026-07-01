@@ -163,6 +163,203 @@ test("MiniMax-style response with think block + fenced JSON parses", () => {
   }
 });
 
+test("extracted normal-chat JSON with correct field names passes zod re-validation", () => {
+  // MiniMax-M3, given the schema-conformant prompt, returns the
+  // EXACT zod-required field names. After fenced-JSON extraction,
+  // the same zod schema that powers the AI SDK `Output.object({
+  // schema })` call MUST accept the value. We do not guess or
+  // coerce fields; we re-validate strictly.
+  const { z } = require("zod/v4") as typeof import("zod/v4");
+  const outputSchema = z.object({
+    recommendedModelId: z.string().min(1),
+    recommendedProvider: z.string().min(1),
+    recommendedReasoningLevel: z.string().min(1).nullable(),
+    reasoning: z.string().min(1).max(200),
+    alternatives: z.array(
+      z.object({
+        modelId: z.string().min(1),
+        provider: z.string().min(1),
+        recommendedReasoningLevel: z.string().min(1).nullable(),
+        reason: z.string().min(1).max(160),
+      }),
+    ),
+  });
+  const text =
+    "```json\n" +
+    JSON.stringify({
+      recommendedModelId: "MiniMax-M3",
+      recommendedProvider: "minimax",
+      recommendedReasoningLevel: null,
+      reasoning:
+        "Cheap MiniMax subscription is enough for this conversational question.",
+      alternatives: [],
+    }) +
+    "\n```";
+  const extracted = tryParseJsonObjectFromText(text);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+  assert.equal(extracted.strategy, "fenced");
+  const validated = outputSchema.safeParse(extracted.value);
+  assert.equal(validated.success, true);
+  if (validated.success) {
+    assert.equal(validated.data.recommendedModelId, "MiniMax-M3");
+    assert.equal(validated.data.recommendedProvider, "minimax");
+    assert.equal(validated.data.recommendedReasoningLevel, null);
+    assert.match(validated.data.reasoning, /MiniMax/);
+  }
+});
+
+test("extracted MiniMax normal-chat response with WRONG field names fails zod re-validation", () => {
+  // The pre-fix bad shape was
+  //   {"modelId":"MiniMax-M3","provider":"minimax","reasoningLevel":null}
+  // i.e. alias field names. The extractor pulls the JSON out of the
+  // fence, but strict zod re-validation rejects it because none of
+  // the required field names appear. The route never accepts a
+  // non-conformant payload.
+  const { z } = require("zod/v4") as typeof import("zod/v4");
+  const outputSchema = z.object({
+    recommendedModelId: z.string().min(1),
+    recommendedProvider: z.string().min(1),
+    recommendedReasoningLevel: z.string().min(1).nullable(),
+    reasoning: z.string().min(1).max(200),
+    alternatives: z.array(z.any()),
+  });
+  const text =
+    "```json\n" +
+    JSON.stringify({
+      modelId: "MiniMax-M3",
+      provider: "minimax",
+      reasoningLevel: null,
+    }) +
+    "\n```";
+  const extracted = tryParseJsonObjectFromText(text);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+  assert.equal(extracted.strategy, "fenced");
+  const validated = outputSchema.safeParse(extracted.value);
+  assert.equal(validated.success, false, "alias field names must be rejected");
+  if (!validated.success) {
+    const missing = validated.error.issues.map((i) => i.path.join("."));
+    assert.ok(
+      missing.some((p) => p.includes("recommendedModelId")),
+      "expected recommendedModelId validation error",
+    );
+    assert.ok(
+      missing.some((p) => p.includes("recommendedProvider")),
+      "expected recommendedProvider validation error",
+    );
+    assert.ok(
+      missing.some((p) => p.includes("reasoning")),
+      "expected reasoning validation error",
+    );
+  }
+});
+
+test("extracted normal-chat JSON missing required reasoning field fails zod re-validation", () => {
+  // The brief mandates `normal-chat fallback output requires
+  // explanation`. Even with the right field NAMES at the top level,
+  // omitting `reasoning` must fail. The zod schema enforces that:
+  // `reasoning: z.string().min(1).max(200)`.
+  const { z } = require("zod/v4") as typeof import("zod/v4");
+  const outputSchema = z.object({
+    recommendedModelId: z.string().min(1),
+    recommendedProvider: z.string().min(1),
+    recommendedReasoningLevel: z.string().min(1).nullable(),
+    reasoning: z.string().min(1).max(200),
+    alternatives: z.array(z.any()),
+  });
+  const text =
+    "```json\n" +
+    JSON.stringify({
+      recommendedModelId: "MiniMax-M3",
+      recommendedProvider: "minimax",
+      recommendedReasoningLevel: null,
+    }) +
+    "\n```";
+  const extracted = tryParseJsonObjectFromText(text);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+  const validated = outputSchema.safeParse(extracted.value);
+  assert.equal(validated.success, false);
+  if (!validated.success) {
+    const missing = validated.error.issues.map((i) => i.path.join("."));
+    assert.ok(
+      missing.some((p) => p === "reasoning"),
+      "expected reasoning validation error",
+    );
+  }
+});
+
+test("extracted coding-harness JSON missing harnessExplanation fails zod re-validation", () => {
+  // Coding-harness schema requires `harnessExplanation` AND
+  // `modelExplanation`. Empty / missing must fail loud.
+  const { z } = require("zod/v4") as typeof import("zod/v4");
+  const outputSchema = z.object({
+    selectedHarness: z.enum(["codex_cli", "minimax_cli"]),
+    selectedModelId: z.string().min(1),
+    selectedReasoningLevel: z.string().min(1),
+    harnessExplanation: z.string().min(1).max(500),
+    modelExplanation: z.string().min(1).max(500),
+    alternatives: z.array(z.any()).default([]),
+  });
+  const text =
+    "```json\n" +
+    JSON.stringify({
+      selectedHarness: "minimax_cli",
+      selectedModelId: "MiniMax-M3",
+      selectedReasoningLevel: "provider_default",
+      harnessExplanation: "",
+      modelExplanation: "explanation",
+    }) +
+    "\n```";
+  const extracted = tryParseJsonObjectFromText(text);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+  const validated = outputSchema.safeParse(extracted.value);
+  assert.equal(validated.success, false);
+  if (!validated.success) {
+    const issuePaths = validated.error.issues.map((i) => i.path.join("."));
+    assert.ok(
+      issuePaths.some((p) => p === "harnessExplanation"),
+      "expected harnessExplanation validation error",
+    );
+  }
+});
+
+test("extracted coding-harness JSON missing modelExplanation fails zod re-validation", () => {
+  const { z } = require("zod/v4") as typeof import("zod/v4");
+  const outputSchema = z.object({
+    selectedHarness: z.enum(["codex_cli", "minimax_cli"]),
+    selectedModelId: z.string().min(1),
+    selectedReasoningLevel: z.string().min(1),
+    harnessExplanation: z.string().min(1).max(500),
+    modelExplanation: z.string().min(1).max(500),
+    alternatives: z.array(z.any()).default([]),
+  });
+  const text =
+    "```json\n" +
+    JSON.stringify({
+      selectedHarness: "minimax_cli",
+      selectedModelId: "MiniMax-M3",
+      selectedReasoningLevel: "provider_default",
+      harnessExplanation: "harness explanation",
+      modelExplanation: "",
+    }) +
+    "\n```";
+  const extracted = tryParseJsonObjectFromText(text);
+  assert.equal(extracted.ok, true);
+  if (!extracted.ok) return;
+  const validated = outputSchema.safeParse(extracted.value);
+  assert.equal(validated.success, false);
+  if (!validated.success) {
+    const issuePaths = validated.error.issues.map((i) => i.path.join("."));
+    assert.ok(
+      issuePaths.some((p) => p === "modelExplanation"),
+      "expected modelExplanation validation error",
+    );
+  }
+});
+
 test("NoObjectGeneratedError carries recoverable raw text", () => {
   const fakeErr = {
     name: "AI_NoObjectGeneratedError",

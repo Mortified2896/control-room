@@ -51,3 +51,62 @@ test("coding-harness recommend route has no deterministic execution-model policy
   assert.doesNotMatch(source, /deterministic_coding_policy/);
   assert.doesNotMatch(source, /Deterministic coding policy/);
 });
+
+test("coding-harness recommend route's coding-recommender system prompt lists every required zod field name", () => {
+  // Pin the prompt contract: the system prompt built by the route
+  // must mention each required zod field by exact name so the model
+  // doesn't drift into the alias shape (`modelId`, `provider`,
+  // `reasoningLevel` at the top level instead of inside `alternatives`).
+  const source = readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+
+  assert.match(source, /"selectedHarness"/);
+  assert.match(source, /"selectedModelId"/);
+  assert.match(source, /"selectedReasoningLevel"/);
+  assert.match(source, /"harnessExplanation"/);
+  assert.match(source, /"modelExplanation"/);
+  assert.match(source, /"alternatives"/);
+});
+
+test("coding-harness recommend route's coding-recommender system prompt forbids markdown fences and prose", () => {
+  const source = readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+
+  assert.match(source, /No markdown fences/);
+  assert.match(source, /no prose/i);
+  assert.match(source, /no comments/i);
+  assert.match(source, /EXACTLY ONE JSON object/);
+});
+
+test("coding-harness recommend route's coding-recommender system prompt forbids alias field names", () => {
+  // The brief says MiniMax-M3 has been observed returning alias
+  // field names. The prompt must explicitly forbid them at the top
+  // level — `modelId` / `reasoningLevel` belong only inside
+  // `alternatives` items.
+  const source = readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+
+  assert.match(
+    source,
+    /"modelId"\s+is NOT a substitute for "selectedModelId"/,
+  );
+  assert.match(
+    source,
+    /"reasoningLevel"\s+is NOT a substitute for "selectedReasoningLevel"/,
+  );
+  assert.match(
+    source,
+    /"selectedProvider" \/ "provider" is NOT part of this schema/,
+  );
+});
+
+test("coding-harness recommend route's coding-recommender system prompt includes a minimal valid JSON example", () => {
+  // The prompt must anchor an exact valid-example shape so the
+  // model doesn't invent extra fields or split harness / model
+  // explanations.
+  const source = readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+
+  assert.match(source, /"selectedHarness": "minimax_cli"/);
+  assert.match(source, /"selectedModelId": "MiniMax-M3"/);
+  assert.match(source, /"selectedReasoningLevel": "provider_default"/);
+  assert.match(source, /"harnessExplanation": "MiniMax CLI is the available harness/);
+  assert.match(source, /"modelExplanation": "MiniMax-M3 is the authorized execution model/);
+  assert.match(source, /"alternatives": \[\]/);
+});

@@ -18,12 +18,62 @@
 // `adaptive`) flow through verbatim. The runtime adapter validates
 // against the model's `reasoningCapability.options` before
 // forwarding to the provider.
+//
+// Contract (pinned by `normal-chat-prompts.test.ts`):
+//
+//   - Output MUST be exactly ONE JSON object — no markdown fences,
+//     no prose, no comments, no wrapper keys, no array.
+//   - The object MUST contain EXACTLY these top-level fields:
+//       recommendedModelId          (string, required)
+//       recommendedProvider         (string, required)
+//       recommendedReasoningLevel   (string|null, required)
+//       reasoning                   (string, required, 1-200 chars)
+//       alternatives                (array, required)
+//   - Aliases are FORBIDDEN and will fail validation:
+//       "modelId"          ≠ "recommendedModelId"
+//       "provider"         ≠ "recommendedProvider"
+//       "reasoningLevel"   ≠ "recommendedReasoningLevel"
+//   - `recommendedReasoningLevel` MUST be null when the chosen
+//     model advertises `supportsReasoningControls: false`.
+//   - `alternatives` items MUST use the same alias set:
+//       modelId                    (NOT "selectedModelId" etc.)
+//       provider                   (NOT "recommendedProvider" etc.)
+//       recommendedReasoningLevel  (NOT "reasoningLevel")
+//       reason                     (string, required)
+//
+// The miniMax-M3 fallback engine in particular is known to drift
+// into alias names (`modelId`, `provider`, `reasoningLevel`) when
+// the prompt is permissive. The explicit field-name list + alias
+// call-out + minimal valid example pins that drift in the prompt
+// itself so we never have to relax the zod schema downstream.
 
 export const NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT =
-  "You recommend the answer model and reasoning level for a normal chat message in Control Room. " +
-  "Only choose enabled models from the provided list. The list may include OpenAI API models, MiniMax models, AND Codex subscription models — all three are valid chat providers in Control Room, so treat them equally. " +
-  "Prefer cheaper/faster models for simple prompts; stronger models or higher reasoning for complex planning, debugging, architecture, multi-step reasoning, or high-stakes decisions. " +
-  "Do not prefer, preserve, or mention the currently selected manual chat model; choose solely from the user message and available-model list. Reasoning must be null for models without reasoning controls. Keep reasons short and practical.";
+  "You are the Control Room normal-chat recommender. You pick ONE answer model and reasoning level for the user's chat message from the provided list. " +
+  "You do NOT answer the user. You do NOT execute anything. You ONLY return a single JSON object.\n\n" +
+  "Output contract (strict — output that does not match this shape will be rejected and the request will fail):\n" +
+  "- Return EXACTLY ONE JSON object. No markdown fences, no prose, no comments, no wrapper keys, no array, no leading or trailing text.\n" +
+  "- The object MUST contain ONLY these top-level fields, with EXACTLY these names:\n" +
+  '  - "recommendedModelId"        (string, non-empty)\n' +
+  '  - "recommendedProvider"       (string, non-empty)\n' +
+  '  - "recommendedReasoningLevel" (string OR null; must be null when the chosen model does not support reasoning controls)\n' +
+  '  - "reasoning"                 (string, 1-200 chars; short user-facing reason for the pick)\n' +
+  '  - "alternatives"              (array; each item must have keys "modelId", "provider", "recommendedReasoningLevel", "reason")\n' +
+  "- ALIASES ARE FORBIDDEN. The following WRONG field names will fail validation:\n" +
+  '  - "modelId"          is NOT a substitute for "recommendedModelId".\n' +
+  '  - "provider"         is NOT a substitute for "recommendedProvider".\n' +
+  '  - "reasoningLevel"   is NOT a substitute for "recommendedReasoningLevel".\n' +
+  "  Do not use any other naming variation.\n" +
+  "- Reasoning policy: prefer cheaper/faster models for simple prompts; stronger models or higher reasoning for complex planning, debugging, architecture, multi-step reasoning, or high-stakes decisions.\n" +
+  "- Do not prefer, preserve, or mention the currently selected manual chat model. Choose solely from the user message and the available-models list.\n" +
+  '- If you cannot decide, return a best-guess pick in the exact required shape above — never return prose, never omit a required field.\n\n' +
+  "Minimal valid example (use this exact shape — do not invent extra fields):\n" +
+  "{\n" +
+  '  "recommendedModelId": "MiniMax-M3",\n' +
+  '  "recommendedProvider": "minimax",\n' +
+  '  "recommendedReasoningLevel": null,\n' +
+  '  "reasoning": "Cheap MiniMax subscription is enough for this conversational question.",\n' +
+  '  "alternatives": []\n' +
+  "}";
 
 /**
  * A model the recommender is allowed to recommend. Subset of the full

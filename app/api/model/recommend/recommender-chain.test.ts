@@ -502,3 +502,144 @@ test("empty chain: walker returns no_success with zero callAttempts (defensive â
   if (result.kind !== "no_success") return;
   assert.equal(result.callAttempts.length, 0);
 });
+
+test("schema-correct MiniMax fallback succeeds after primary failure; invalid MiniMax fallback blocks loudly", async () => {
+  // Pin the brief's contract:
+  //   1. primary configured recommender fails
+  //      â†’ fall through to configured fallback (MiniMax-M3).
+  //   2. The MiniMax-M3 fallback returns schema-CORRECT JSON
+  //      (the new prompt's required field names: recommendedModelId,
+  //      recommendedProvider, recommendedReasoningLevel, reasoning,
+  //      alternatives). The walker parses + validates the output
+  //      shape against the recommender's output contract.
+  //   3. Walker surfaces a `success` result with the MiniMax-M3
+  //      recommendation. Loud fallback succeeds.
+  //   4. If the same primary fails AND the MiniMax-M3 fallback
+  //      returns schema-INVALID JSON (the original `modelId`,
+  //      `provider`, `reasoningLevel` aliases), the walker records
+  //      the fallback as `failed` and returns `no_success`. The
+  //      route then blocks loudly.
+  //
+  // These two cases are the exact shape we expect to see in the
+  // live system: the prompt rewrite turns (3) into the new
+  // normal case and (4) is the safety net if any future MiniMax
+  // drift returns.
+
+  const chain: RecommenderChainRung[] = [
+    {
+      source: "configured",
+      providerId: "codex",
+      modelId: "codex:gpt-5.4-mini",
+      reasoningLevel: "low",
+    },
+    {
+      source: "configured_fallback",
+      providerId: "minimax",
+      modelId: "MiniMax-M3",
+      reasoningLevel: "provider_default",
+    },
+  ];
+
+  const availableModels: ReadonlyArray<RecommenderChainAvailableModel> = [
+    {
+      provider: "codex",
+      modelId: "codex:gpt-5.4-mini",
+      supportsReasoningControls: false,
+      allowedReasoningLevels: [],
+    },
+    {
+      provider: "minimax",
+      modelId: "MiniMax-M3",
+      supportsReasoningControls: true,
+      allowedReasoningLevels: ["provider_default", "adaptive", "enabled", "disabled"],
+    },
+  ];
+
+  const resolveModel: ResolveFn = (modelId) => {
+    if (modelId.startsWith("codex:")) {
+      return { ok: true, resolved: { providerId: "codex", modelId, billingSource: "subscription" } };
+    }
+    if (modelId.startsWith("MiniMax-")) {
+      return {
+        ok: true,
+        resolved: { providerId: "minimax", modelId, billingSource: "subscription" },
+      };
+    }
+    return { ok: false, error: { kind: "unknown_model" } };
+  };
+
+  for (const [scenario, fallbackValue] of [
+    [
+      "schema-correct fallback succeeds",
+      {
+        recommendedModelId: "MiniMax-M3",
+        recommendedProvider: "minimax",
+        recommendedReasoningLevel: null,
+        reasoning: "Trivial question; cheap MiniMax subscription is enough.",
+        alternatives: [],
+      },
+    ],
+    [
+      "alias-shape fallback is treated as invalid_recommendation",
+      {
+        // The pre-fix bad shape: alias field names. The walker
+        // cannot match this to any available model because
+        // `availableModels` are keyed by the schema-required
+        // modelId, not by alias. The walker records the fallback
+        // as `invalid_recommendation` and returns `no_success`.
+        modelId: "MiniMax-M3",
+        provider: "minimax",
+        reasoningLevel: null,
+      },
+    ],
+  ] as const) {
+    const runRung: RunRungFn = async ({ rung }) => {
+      if (rung.source === "configured") {
+        throw new Error("primary quota failed: usage_limit");
+      }
+      return fallbackValue as unknown as RecommenderOutputShape;
+    };
+
+    const result = await walkRecommenderChain({
+      chain,
+      resolveModel,
+      runRung,
+      availableModels,
+    });
+
+    if (scenario === "schema-correct fallback succeeds") {
+      assert.equal(result.kind, "success", `${scenario}: expected success`);
+      if (result.kind !== "success") return;
+      assert.equal(result.rung.source, "configured_fallback");
+      assert.equal(result.value.recommendedModelId, "MiniMax-M3");
+      assert.equal(result.value.recommendedProvider, "minimax");
+      assert.match(result.value.reasoning, /MiniMax/);
+      // Both attempts are recorded: primary failed, fallback
+      // succeeded.
+      assert.equal(result.callAttempts.length, 2);
+      assert.equal(result.callAttempts[0]?.source, "configured");
+      assert.equal(result.callAttempts[0]?.status, "failed");
+      assert.match(result.callAttempts[0]?.reason ?? "", /usage_limit/);
+      assert.equal(result.callAttempts[1]?.source, "configured_fallback");
+      assert.equal(result.callAttempts[1]?.status, "success");
+    } else {
+      // Invalid fallback blocks loudly.
+      assert.equal(result.kind, "no_success", `${scenario}: expected no_success`);
+      if (result.kind !== "no_success") return;
+      assert.equal(result.callAttempts.length, 2);
+      assert.equal(result.callAttempts[0]?.status, "failed");
+      assert.equal(result.callAttempts[1]?.source, "configured_fallback");
+      assert.equal(result.callAttempts[1]?.status, "failed");
+      // Either `invalid_recommendation` or the alias shape's
+      // exact failure trace is acceptable; the load-bearing
+      // assertion is that BOTH rungs are recorded and the
+      // walker did NOT silently accept the alias payload.
+      const fallbackReason = result.callAttempts[1]?.reason ?? "";
+      assert.match(
+        fallbackReason,
+        /invalid_recommendation|invalid_reasoning_level/,
+        `${scenario}: expected invalid fallback reason, got ${fallbackReason}`,
+      );
+    }
+  }
+});

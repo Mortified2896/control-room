@@ -116,9 +116,34 @@ Hard rules:
 - Select exactly one authorized coding harness/path and execution model from candidates.
 - Router/recommender engine ids and fallback recommender ids are never execution defaults.
 - The deterministic lane (${args.lane}) was chosen from token/context metadata only; it must not determine the execution model.
-- Return JSON only with selectedHarness, selectedModelId, selectedReasoningLevel, harnessExplanation, modelExplanation, alternatives.
-- harnessExplanation and modelExplanation are required and must be distinct, user-facing explanations.
-- Do not invent models or harnesses.`;
+- Do not invent models or harnesses.
+
+Output contract (strict — output that does not match this shape will be rejected and the request will fail):
+- Return EXACTLY ONE JSON object. No markdown fences, no prose, no comments, no wrapper keys, no array, no leading or trailing text.
+- The object MUST contain ONLY these top-level fields, with EXACTLY these names:
+  - "selectedHarness"          (string; one of "codex_cli" or "minimax_cli")
+  - "selectedModelId"          (string, non-empty; one of the model ids the candidates allow)
+  - "selectedReasoningLevel"   (string, non-empty; must be in the candidates' reasoningLevel for the chosen harness/model)
+  - "harnessExplanation"       (string, 1-500 chars; required, user-facing rationale for the harness pick)
+  - "modelExplanation"         (string, 1-500 chars; required, user-facing rationale for the execution-model pick; must be DISTINCT from harnessExplanation)
+  - "alternatives"             (array; each item must have keys "harness", "modelId", "reasoningLevel", "reason"; may be empty)
+
+ALIASES ARE FORBIDDEN. The following WRONG field names will fail validation:
+  - "modelId"          is NOT a substitute for "selectedModelId".
+  - "reasoningLevel"   is NOT a substitute for "selectedReasoningLevel".
+  - "recommendedHarness" / "harness" at the top level are NOT substitutes for "selectedHarness" (the top-level field MUST be "selectedHarness"; "harness" only appears inside "alternatives" items).
+  - "selectedProvider" / "provider" is NOT part of this schema.
+Do not use any other naming variation.
+
+Minimal valid example (use this exact shape — do not invent extra fields):
+{
+  "selectedHarness": "minimax_cli",
+  "selectedModelId": "MiniMax-M3",
+  "selectedReasoningLevel": "provider_default",
+  "harnessExplanation": "MiniMax CLI is the available harness for this task.",
+  "modelExplanation": "MiniMax-M3 is the authorized execution model under the MiniMax subscription path.",
+  "alternatives": []
+}`;
   const user = JSON.stringify({
     instruction: args.instruction,
     recommenderLane: args.lane,
