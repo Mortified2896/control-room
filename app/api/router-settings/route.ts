@@ -184,7 +184,13 @@ async function serializeRegistryModels(
     const refreshedMinimax = applyRefreshed(m, m.modelId);
     return {
       providerId: minimaxProvider.id,
-      providerLabel: "MiniMax API",
+      // Match `lib/providers/minimax.ts`'s `providerLabel` /
+      // `billingLabel` so the Settings UI, the chat composer, and
+      // this registry DTO all render MiniMax as "MiniMax subscription".
+      // Calling this "MiniMax API" implied the per-token API meter
+      // path and is misleading: the env key is the subscription
+      // secret, not an API-billed meter.
+      providerLabel: "MiniMax subscription",
       modelId: m.modelId,
       displayLabel: m.modelLabel,
       configured: true,

@@ -20,6 +20,7 @@ import {
   type TokenCountMetadata,
 } from "@/lib/harness/model-routing";
 import type { ConfiguredRecommenderRung } from "@/lib/router/recommender-config";
+import { tryRecoverJsonObjectFromAiSdkError } from "@/lib/router/parse-json-fallback";
 
 export const dynamic = "force-dynamic";
 
@@ -205,6 +206,24 @@ async function runConfiguredCodingRecommender(args: {
     output: Output.object({ schema: outputSchema, name: "coding_harness_recommendation" }),
     stopWhen: stepCountIs(1),
     ...(providerOptions ? { providerOptions } : {}),
+  }).catch(async (err: unknown) => {
+    // Some providers (notably MiniMax-M3) wrap their JSON output in a
+    // `<think>` reasoning block followed by a ```json ... ``` fenced
+    // block, even when the request asked for strict JSON via
+    // `response_format: { type: "json_schema" }`. AI SDK 6's
+    // `safeParseJSON` rejects the leading `<think>` prologue and throws
+    // `NoObjectGeneratedError` ("No object generated: could not parse
+    // the response."). The AI SDK error carries the raw response text
+    // on `.text` — try a safe JSON-object extraction on it before
+    // re-throwing. Any other error (network, auth, schema mismatch on
+    // the extracted payload) re-throws verbatim. We do NOT guess
+    // missing fields and do NOT accept non-conformant payloads.
+    const recovered = tryRecoverJsonObjectFromAiSdkError(err);
+    if (recovered === null) throw err;
+    if (!recovered.ok) throw err;
+    const validated = outputSchema.safeParse(recovered.value);
+    if (!validated.success) throw err;
+    return { output: validated.data };
   });
   return result.output;
 }

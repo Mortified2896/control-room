@@ -29,6 +29,7 @@ import {
   promptHash,
 } from "@/lib/router/telemetry";
 import { completeRecommendationRun, createRecommendationRun } from "@/lib/repo/router-telemetry";
+import { tryRecoverJsonObjectFromAiSdkError } from "@/lib/router/parse-json-fallback";
 
 export const dynamic = "force-dynamic";
 
@@ -197,6 +198,76 @@ function parseJsonObjectFromText(text: string): unknown {
     const end = trimmed.lastIndexOf("}");
     if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
     throw new Error("codex_recommender_returned_non_json");
+  }
+}
+
+/**
+ * Run an OpenAI-compatible recommender (MiniMax / OpenAI API) via
+ * `generateText` + `Output.object({ schema })`, and on the AI SDK 6
+ * `NoObjectGeneratedError: "could not parse the response"` failure
+ * try a safe JSON-object extraction on the raw response text. The
+ * extracted object is then strictly validated against the same
+ * zod schema the AI SDK would have used; we do NOT guess or coerce
+ * any missing required fields.
+ *
+ * Why this exists: MiniMax-M3 wraps its output in a `<think>`
+ * reasoning block followed by a ```json ... ``` fenced block even
+ * when the request asked for strict JSON via
+ * `response_format: { type: "json_schema" }`. AI SDK 6's
+ * `safeParseJSON` runs on the raw text and rejects the leading
+ * `<think>` prologue, surfacing a generic "could not parse" error
+ * even though the JSON payload inside the fence is valid and
+ * schema-conformant.
+ *
+ * Safety properties (must hold):
+ *   - We only attempt recovery on `NoObjectGeneratedError` (and
+ *     only when the error carries a non-empty `text` payload).
+ *     Any other error — network failure, auth failure, schema
+ *     validation failure on the extracted payload — re-throws the
+ *     original error unchanged.
+ *   - The recovery extractor (`tryRecoverJsonObjectFromAiSdkError`)
+ *     performs only safe JSON-object extraction (raw → fenced →
+ *     brace-slice). It does NOT guess missing fields, does NOT
+ *     coerce types, and does NOT relax validation.
+ *   - If the extracted object does not match the zod schema, the
+ *     original `NoObjectGeneratedError` is re-thrown with its
+ *     original diagnostic intact. We never swallow a parse failure
+ *     by accepting a non-conformant payload.
+ */
+async function runOpenAICompatibleRecommenderWithSafeJsonFallback<T>(args: {
+  resolved: { providerId: "openai" | "minimax" | "codex"; modelId: string; billingSource: string };
+  providerOptions: ReturnType<typeof getRuntimeProviderOptions>;
+  system: string;
+  user: string;
+  schemaName: string;
+  schema: import("zod/v4").ZodType<T>;
+}): Promise<T> {
+  try {
+    const result = await generateText({
+      model: getRuntimeModel(
+        args.resolved as Parameters<typeof getRuntimeModel>[0],
+      ),
+      system: args.system,
+      prompt: args.user,
+      output: Output.object({ schema: args.schema, name: args.schemaName }),
+      stopWhen: stepCountIs(1),
+      ...(args.providerOptions ? { providerOptions: args.providerOptions } : {}),
+    });
+    return result.output as T;
+  } catch (err) {
+    // Only the AI SDK 6 "could not parse" path is recoverable. Any
+    // other error (network, auth, schema mismatch on a successfully
+    // parsed object) must surface verbatim.
+    const recovered = tryRecoverJsonObjectFromAiSdkError(err);
+    if (recovered === null) throw err;
+    if (!recovered.ok) throw err;
+    // Strict schema validation against the same zod schema the AI SDK
+    // would have used. `safeParse` lets us re-throw the original AI
+    // SDK error verbatim when the extracted object does not match —
+    // we never accept a non-conformant payload.
+    const validated = args.schema.safeParse(recovered.value);
+    if (!validated.success) throw err;
+    return validated.data as T;
   }
 }
 
@@ -566,19 +637,14 @@ export async function POST(request: Request) {
                   system: prompt.system,
                   user: prompt.user,
                 })
-              : (
-                  await generateText({
-                    model: getRuntimeModel(resolvedForCall),
-                    system: prompt.system,
-                    prompt: prompt.user,
-                    output: Output.object({
-                      schema: outputSchema,
-                      name: "normal_chat_model_recommendation",
-                    }),
-                    stopWhen: stepCountIs(1),
-                    ...(rungProviderOptions ? { providerOptions: rungProviderOptions } : {}),
-                  })
-                ).output;
+              : await runOpenAICompatibleRecommenderWithSafeJsonFallback({
+                  resolved: resolvedForCall,
+                  providerOptions: rungProviderOptions,
+                  system: prompt.system,
+                  user: prompt.user,
+                  schemaName: "normal_chat_model_recommendation",
+                  schema: outputSchema,
+                });
           if (!value) {
             // Walker records this as `empty_recommendation_output`.
             throw new Error("empty_recommendation_output");
