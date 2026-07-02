@@ -8,6 +8,12 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { RouterAbPanel, payloadFromMessageParts } from "@/components/assistant-ui/router-ab-panel";
 import { PanelErrorBoundary } from "@/components/assistant-ui/panel-error-boundary";
+import { RoutingDecisionPanel as RoutingDecisionPanelComponent } from "@/components/assistant-ui/routing-decision-panel";
+import type {
+  RoutingDecisionPanel as RoutingDecisionPanelPayload,
+  RoutingDecisionPanelSelection,
+} from "@/lib/router/routing-decision-panel-types";
+import type { RoutingDecisionPanelModelOption } from "@/components/assistant-ui/routing-decision-panel";
 import { Button } from "@/components/ui/button";
 import { KbdHint } from "@/components/kbd-hint";
 import { RecommenderToggle } from "@/components/assistant-ui/router-ab-controls";
@@ -460,6 +466,14 @@ export const Thread: FC<{
               onKeepCurrent={onKeepCurrent}
               pendingRecommendedSend={pendingRecommendedSend}
               onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+              routingPanel={routingPanel}
+              routingPanelLoudFailure={routingPanelLoudFailure}
+              routingPanelDraftText={routingPanelDraftText}
+              routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+              onSendWithRouting={onSendWithRouting}
+              onSendDefault={onSendDefault}
+              onDismissRoutingPanel={onDismissRoutingPanel}
+              onOpenRoutingPanel={onOpenRoutingPanel}
               pendingRoutingDecision={pendingRoutingDecision}
               onRoutingDecisionRequestBodyPrepared={onRoutingDecisionRequestBodyPrepared}
               onEnsureCodingThread={onEnsureCodingThread}
@@ -1620,6 +1634,43 @@ const ComposerAction: FC<{
             </div>
           ) : null}
         </div>
+      ) : null}
+      {/* Routing Decision Panel — the new compact editable panel
+          that replaces the previous step-by-step recommendation
+          card. Renders whenever `routingPanel` is set OR when the
+          panel's loud-failure flag is raised. The panel is the
+          only surface that gates a "Send with routing" send; the
+          legacy `recommendation` banner + `router-decision-card`
+          remain visible for users who haven't opened the new
+          panel yet (the additive migration). */}
+      {!isCodingTask && (routingPanel || routingPanelLoudFailure) ? (
+        <RoutingDecisionPanelComponent
+          panel={routingPanel ?? {
+            contextDecision: {
+              recommended: "chat_only",
+              explanation:
+                "Recommender unavailable; defaulting to chat-only context.",
+            },
+            executionPackage: {
+              model: { recommended: "", alternatives: [] },
+              reasoningLevel: { recommended: "none", supportedValues: [] },
+              harness: {
+                recommended: "normal_chat",
+                alternatives: ["normal_chat", "repo_file_harness"],
+              },
+              explanation:
+                "Recommender could not run. Switch the model dropdown or click Send default to proceed without routing.",
+            },
+            confidence: 0,
+            costTier: "standard",
+            latencyMs: 0,
+          }}
+          executionEligibleModels={routingPanelExecutionEligibleModels ?? []}
+          loudFailure={routingPanelLoudFailure}
+          onSendWithRouting={(selection) => onSendWithRouting?.(selection)}
+          onSendDefault={() => onSendDefault?.()}
+          onDismiss={() => onDismissRoutingPanel?.()}
+        />
       ) : null}
       {isCodingTask && worker === "minimax" && !codingHarnessRecommendation ? (
         <div className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs">

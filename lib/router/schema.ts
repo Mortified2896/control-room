@@ -87,6 +87,7 @@
  */
 import { DEFAULT_REASONING_LEVEL } from "@/lib/providers/openai";
 import { listRouterAllowedPool } from "@/lib/providers";
+export { getExecutionEligibleModelIds } from "@/lib/router/routing-decision-panel-types";
 
 /**
  * Provider-native reasoning-effort value stored in a router allowed

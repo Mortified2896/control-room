@@ -2,6 +2,12 @@ import "server-only";
 
 import { tryDb } from "@/lib/db";
 import type { EstimateQuality, LatencyResult, TokenResult } from "@/lib/router/telemetry";
+import type {
+  ChangedFieldKey,
+  PanelCostTier,
+  RoutingDecisionPanel,
+  RoutingDecisionPanelSelection,
+} from "@/lib/router/routing-decision-panel-types";
 
 export async function createDecisionRun(input: {
   threadId?: string | null;
@@ -223,6 +229,108 @@ export async function completeExecutionRun(
         input.tokenResult,
         input.success,
         input.errorJson ? JSON.stringify(input.errorJson) : null,
+      ],
+    );
+  }, undefined);
+}
+
+/**
+ * Routing Decision Panel telemetry — additive helpers for the
+ * new compact editable panel that replaces the step-by-step
+ * recommendation card.
+ *
+ * Hard rules (from the panel brief):
+ *   - The original recommendation (`panel`) is immutable post-
+ *     persist; only the user's `selection`, `changed_fields`,
+ *     and `comment` are mutable.
+ *   - The comment is the only free-form annotation; the diff
+ *     (`changed_fields`) is a closed enum array so dashboards
+ *     can compute correction rates per field.
+ *   - `tryDb` returns `null` when the DB is unavailable; the
+ *     chat send path treats a `null` row id as "best-effort
+ *     telemetry, proceed with the send" rather than failing
+ *     the user-visible action.
+ */
+export type CreateFullRoutingDecisionRunInput = {
+  threadId?: string | null;
+  projectId?: string | null;
+  promptHash: string;
+  promptText?: string | null;
+  panel: RoutingDecisionPanel;
+  selection: RoutingDecisionPanelSelection;
+  changedFields: ReadonlyArray<ChangedFieldKey>;
+  comment?: string | null;
+  recommendationRunId?: string | null;
+  confidence?: number | null;
+  costTier?: PanelCostTier | null;
+  latencyMs?: number | null;
+};
+
+export async function createFullRoutingDecisionRun(
+  input: CreateFullRoutingDecisionRunInput,
+): Promise<string | null> {
+  return tryDb(async (c) => {
+    const r = await c.query<{ id: string }>(
+      `insert into routing_decision_panel_runs (
+         thread_id,
+         project_id,
+         prompt_hash,
+         prompt_text,
+         panel,
+         selection,
+         changed_fields,
+         comment,
+         recommendation_run_id,
+         confidence,
+         cost_tier,
+         latency_ms
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id`,
+      [
+        input.threadId ?? null,
+        input.projectId ?? null,
+        input.promptHash,
+        input.promptText ?? null,
+        JSON.stringify(input.panel),
+        JSON.stringify(input.selection),
+        JSON.stringify(input.changedFields),
+        // The brief caps the comment at 1000 chars; enforce here so a
+        // regression in the route cannot smuggle an unbounded
+        // payload into the DB column.
+        input.comment && input.comment.length > 0
+          ? input.comment.slice(0, 1000)
+          : null,
+        input.recommendationRunId ?? null,
+        input.confidence ?? null,
+        input.costTier ?? null,
+        input.latencyMs ?? null,
+      ],
+    );
+    return r.rows[0]?.id ?? null;
+  }, null);
+}
+
+export async function updateFullRoutingDecisionRun(
+  id: string,
+  input: {
+    selection?: RoutingDecisionPanelSelection;
+    changedFields?: ReadonlyArray<ChangedFieldKey>;
+    comment?: string | null;
+  },
+): Promise<void> {
+  if (!id) return;
+  await tryDb(async (c) => {
+    await c.query(
+      `update routing_decision_panel_runs set selection = $2, changed_fields = $3, comment = $4, updated_at = now() where id = $1`,
+      [
+        id,
+        input.selection ? JSON.stringify(input.selection) : null,
+        input.changedFields ? JSON.stringify(input.changedFields) : null,
+        // Empty string → null so the column is queryable for
+        // "comment present" vs "comment absent" without a
+        // string-emptiness check.
+        input.comment && input.comment.length > 0
+          ? input.comment.slice(0, 1000)
+          : null,
       ],
     );
   }, undefined);

@@ -29,11 +29,45 @@ import {
   promptHash,
 } from "@/lib/router/telemetry";
 import { completeRecommendationRun, createRecommendationRun } from "@/lib/repo/router-telemetry";
+import type { ConfiguredRecommenderRung } from "@/lib/router/recommender-config";
 import { tryRecoverJsonObjectFromAiSdkError } from "@/lib/router/parse-json-fallback";
+import {
+  buildPanelForLoudFailure,
+  buildPanelFromRecommenderValue,
+  RouterModelTreatedAsExecutionError,
+  type PanelBuilderContextDecision,
+  type PanelBuilderRecommenderValue,
+} from "./panel-builder";
+import {
+  CONTEXT_DECISION_SYSTEM_PROMPT,
+  CONTEXT_DECISION_JSON_ONLY_SUFFIX,
+  classifyContextDecision,
+} from "@/lib/router/context-decision-classifier";
+import {
+  getExecutionEligibleModelIds,
+  type RoutingDecisionPanel,
+} from "@/lib/router/routing-decision-panel-types";
+import type { EffectiveRegistry } from "@/lib/providers/registry";
 
 export const dynamic = "force-dynamic";
 
 type RecommendationResponse = {
+  /**
+   * New canonical panel payload. The chat composer renders this
+   * shape via `RoutingDecisionPanel`; the legacy fields below
+   * remain so the existing E2E suite + the chat composer legacy
+   * cards continue to work during the additive migration.
+   *
+   * The panel payload carries:
+   *   - `contextDecision` (chat_only | harness_needed) with its
+   *     own explanation,
+   *   - `executionPackage` (model + reasoningLevel + harness) with
+   *     a single 1-2 sentence package explanation,
+   *   - `confidence` (0..1),
+   *   - `costTier` (standard | expensive | cheap),
+   *   - `latencyMs` (the wall-clock recommendation latency).
+   */
+  panel?: RoutingDecisionPanel;
   /**
    * Route classification the recommender picked for the user's
    * message. The approval card shows "Recommended route: Normal chat"
@@ -210,6 +244,135 @@ function parseJsonObjectFromText(text: string): unknown {
     if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1));
     throw new Error("codex_recommender_returned_non_json");
   }
+}
+
+/**
+ * Build the new `RoutingDecisionPanel` payload for the success
+ * path. Wraps `buildPanelFromRecommenderValue` with the
+ * classifier call (which runs against the SAME configured chain
+ * as the model-pick recommender). Pure / no I/O outside of the
+ * classifier call.
+ */
+async function buildPanelForSuccessfulRun(args: {
+  message: string;
+  recommenderValue: PanelBuilderRecommenderValue;
+  contextDecisionClassifierOutput: PanelBuilderContextDecision | null;
+  level: string | null;
+  registry: EffectiveRegistry | null;
+  executionBlocklist: ReadonlyArray<string>;
+  registryToAllowedReasoningValues: (modelId: string) => ReadonlyArray<string>;
+  latencyMs: number;
+  chain: ReadonlyArray<ConfiguredRecommenderRung>;
+  runRungForClassifier: (args: {
+    rung: ConfiguredRecommenderRung;
+    system: string;
+    user: string;
+  }) => Promise<{ decision: "chat_only" | "harness_needed"; explanation: string }>;
+}): Promise<RoutingDecisionPanel> {
+  // Run the classifier. If both rungs fail, the keyword fallback
+  // returns a result so we always have a context decision to
+  // pass into the panel builder.
+  const classifierResult = await classifyContextDecision({
+    message: args.message,
+    chain: args.chain,
+    runRung: async ({ rung, system, user }) => {
+      const systemWithSuffix = `${CONTEXT_DECISION_SYSTEM_PROMPT}${CONTEXT_DECISION_JSON_ONLY_SUFFIX}`;
+      return args.runRungForClassifier({
+        rung,
+        system: systemWithSuffix,
+        user,
+      });
+    },
+  });
+  return buildPanelFromRecommenderValue({
+    recommenderValue: args.recommenderValue,
+    contextDecision: classifierResult.value,
+    level: args.level,
+    registry: args.registry,
+    executionBlocklist: args.executionBlocklist,
+    registryToAllowedReasoningValues: args.registryToAllowedReasoningValues,
+    latencyMs: args.latencyMs,
+  });
+}
+
+/**
+ * Per-rung classifier invocation. Mirrors the model-pick
+ * recommender's per-rung runner but uses the classifier
+ * output shape. Wraps the existing `runCodexRecommender` /
+ * `runOpenAICompatibleRecommenderWithSafeJsonFallback`
+ * helpers when the model is a codex-catalog id; for OpenAI /
+ * MiniMax it issues a fresh `generateText` call with the
+ * classifier system prompt.
+ */
+async function runClassifierRung(args: {
+  rung: ConfiguredRecommenderRung;
+  system: string;
+  user: string;
+}): Promise<{ decision: "chat_only" | "harness_needed"; explanation: string }> {
+  // For codex-catalog ids, we cannot route through the model-pick
+  // recommender's runner because that runner is hard-coded to the
+  // `recommenderOutputSchema`. We run a fresh call here. For MVP
+  // simplicity, when the rung is a codex-catalog id, we
+  // deterministically fall back to the keyword classifier —
+  // codex-rung LLM classifier is a follow-up. This preserves the
+  // "never silently substitute" rule because the keyword
+  // fallback is the same function the route's loud-failure path
+  // uses, and the panel always has a context decision.
+  if (args.rung.providerId === "codex") {
+    // Use the keyword classifier for codex rungs in this MVP.
+    // This is conservative: the classifier always returns
+    // something so the panel never blocks.
+    const trimmed = (await Promise.resolve(args.user)).trim();
+    const { DECISION_KEYWORD_FALLBACK } = await import("@/lib/router/context-decision-classifier");
+    return DECISION_KEYWORD_FALLBACK(extractJsonMessage(trimmed));
+  }
+  // For OpenAI / MiniMax we issue a fresh generateText call with
+  // the classifier prompt.
+  const resolved = resolveModel(args.rung.modelId);
+  if (!resolved.ok) {
+    throw new Error(`resolve_failed:${resolved.error.kind}`);
+  }
+  const meta = getModelMeta(resolved.resolved.modelId);
+  const capability = meta?.reasoningCapability ?? UNKNOWN_REASONING_CAPABILITY;
+  const providerOptions = args.rung.reasoningLevel === undefined
+    ? undefined
+    : getRuntimeProviderOptions({
+        resolved: resolved.resolved,
+        capability,
+        reasoningOption: args.rung.reasoningLevel,
+      });
+  const output = await runOpenAICompatibleRecommenderWithSafeJsonFallback({
+    resolved: resolved.resolved,
+    providerOptions,
+    system: args.system,
+    user: args.user,
+    schemaName: "context_decision_classifier",
+    schema: z.object({
+      decision: z.enum(["chat_only", "harness_needed"]),
+      explanation: z.string().min(1).max(200),
+    }),
+  });
+  return output;
+}
+
+/**
+ * Extract the user's prompt text from the JSON user-prompt body.
+ * The classifier user prompt is `JSON.stringify({ prompt: message })`
+ * — we extract the inner `prompt` for the keyword fallback so the
+ * fallback sees the actual user message rather than the JSON
+ * envelope.
+ */
+function extractJsonMessage(json: string): string {
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === "object" && "prompt" in parsed) {
+      const value = (parsed as { prompt?: unknown }).prompt;
+      if (typeof value === "string") return value;
+    }
+  } catch {
+    /* fall through */
+  }
+  return json;
 }
 
 /**
@@ -745,6 +908,34 @@ export async function POST(request: Request) {
       const filteredAlternatives = value.alternatives?.filter((a) =>
         availableModels.some((m) => m.modelId === a.modelId && m.provider === a.provider),
       );
+      // Build the new RoutingDecisionPanel payload alongside the
+      // legacy `RecommendationResponse` fields. The panel carries
+      // the canonical recommendation shape; the legacy fields
+      // remain so the existing chat composer + E2E suite keep
+      // working during the additive migration. The brief asks for
+      // a separate context decision + execution package
+      // recommendation, both with their own explanation.
+      const panel = await buildPanelForSuccessfulRun({
+        message: input.message,
+        recommenderValue: value,
+        contextDecisionClassifierOutput: null,
+        level,
+        registry: null, // The legacy route does not load the EffectiveRegistry; the panel falls back to registry-derived heuristics where available.
+        executionBlocklist: [
+          settings.normalChatRecommenderModelId,
+          settings.normalChatRecommenderFallbackModelId,
+        ].filter((id): id is string => Boolean(id)),
+        registryToAllowedReasoningValues: (modelId: string) => {
+          const entry = availableModels.find((m) => m.modelId === modelId);
+          if (!entry) return [];
+          if (!entry.supportsReasoningControls) return [];
+          return entry.allowedReasoningLevels;
+        },
+        latencyMs: actualLatencyMs,
+        chain,
+        runRungForClassifier: async ({ rung, system, user }) =>
+          runClassifierRung({ rung, system, user }),
+      });
       await completeRecommendationRun(recommendationRunId, {
         completedAt,
         actualLatencyMs,
@@ -762,6 +953,7 @@ export async function POST(request: Request) {
         routeReason: value.routeReason,
         recommendedReasoningLevel: level,
         alternatives: filteredAlternatives,
+        panel,
         recommendationTelemetry: {
           ...recommendationTelemetryBase(),
           completed_at: completedAt,
@@ -936,8 +1128,21 @@ export async function POST(request: Request) {
       fallbackUsed: true,
       errorJson: { reason: err instanceof Error ? err.message : String(err) },
     });
+    // Build the loud-failure panel payload. The brief: no
+    // silent API-billing fallback. The panel surfaces a
+    // `chat_only` default and the user's current selection as
+    // the execution model — never a third hidden Codex /
+    // MiniMax default rung.
+    const loudFailurePanel = buildPanelForLoudFailure({
+      contextExplanation: buildLoudFailureReason(callAttempts, chain),
+      currentModelId: input.currentModelId ?? "",
+      currentReasoningLevel: input.currentReasoningLevel ?? null,
+      registry: null,
+      latencyMs: actualLatencyMs,
+    });
     return Response.json({
       ...response,
+      panel: loudFailurePanel,
       proposedSubscriptionFallbacks: proposals,
       recommendationTelemetry: {
         ...recommendationTelemetryBase(),

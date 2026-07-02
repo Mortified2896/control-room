@@ -35,6 +35,18 @@ import {
   routingDecisionAuditId,
   type RoutingDecisionPayload,
 } from "@/lib/assistant-ui/routing-decision";
+import type {
+  RoutingDecisionPanel as RoutingDecisionPanelPayload,
+  RoutingDecisionPanelSelection,
+} from "@/lib/router/routing-decision-panel-types";
+import {
+  executionPayloadModelId,
+  mapHarnessValueToInternal,
+} from "@/lib/router/routing-decision-panel-types";
+import {
+  RoutingDecisionPanel,
+  type RoutingDecisionPanelModelOption,
+} from "@/components/assistant-ui/routing-decision-panel";
 
 /**
  * Click or focus the element that owns a given shortcut target.
@@ -1489,6 +1501,13 @@ export const Assistant = () => {
     estimate_quality: "likely" | "uncertain" | "rough";
     started_at: string;
   } | null>(null);
+
+  // -------------------------------------------------------------------------
+  // Routing Decision Panel state — replaces the two-card flow.
+  // -------------------------------------------------------------------------
+  const [routingPanel, setRoutingPanel] = useState<RoutingDecisionPanelPayload | null>(null);
+  const [routingPanelLoudFailure, setRoutingPanelLoudFailure] = useState<boolean>(false);
+  const [routingPanelDraftText, setRoutingPanelDraftText] = useState<string>("");
   const [pendingRecommendedSend, setPendingRecommendedSend] =
     useState<PendingRecommendedSend | null>(null);
   const [pendingRoutingDecision, setPendingRoutingDecision] =
@@ -1965,6 +1984,223 @@ export const Assistant = () => {
     [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
   );
 
+  /**
+   * Execution-eligible model options for the Routing Decision
+   * Panel's model dropdown. Pre-filtered by
+   * `getExecutionEligibleModelIds` to NEVER include a configured
+   * recommender-chain id (ROUTER models are decision engines,
+   * not execution models). The registry is null when the
+   * `/api/models` endpoint hasn't returned yet; in that case we
+   * fall back to an empty list and the panel renders an empty
+   * disabled dropdown.
+   */
+  const routingPanelExecutionEligibleModels = useMemo<
+    ReadonlyArray<RoutingDecisionPanelModelOption>
+  >(() => {
+    if (!models || models.length === 0) return [];
+    const blockedExecutionModelIds = new Set(
+      [recommenderModelId, recommenderFallbackModelId].filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      ),
+    );
+    return models
+      .filter((m) => m.enabled && !blockedExecutionModelIds.has(m.modelId))
+      .map((m) => {
+        const supportsReasoningControls =
+          m.reasoningCapability.kind === "effort_levels" &&
+          m.reasoningCapability.control !== "unknown";
+        let allowedReasoningLevels: ReadonlyArray<string> = [];
+        if (supportsReasoningControls) {
+          allowedReasoningLevels = m.reasoningLevels;
+        }
+        return {
+          modelId: m.modelId,
+          displayLabel: m.modelLabel,
+          providerId: m.providerId as "openai" | "codex" | "minimax",
+          supportsReasoningControls,
+          allowedReasoningLevels,
+          tier: m.tier,
+        };
+      });
+  }, [models, recommenderFallbackModelId, recommenderModelId]);
+
+  /**
+   * Open the Routing Decision Panel for the given prompt. Fetches
+   * `/api/model/recommend` and stores the canonical panel payload.
+   */
+  const handleOpenRoutingPanel = useCallback(
+    async (message: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      setRouterDecision(null);
+      setThreadModeOverride(null);
+      setHarnessOverride(null);
+      setRecommendationLoading(true);
+      const promptTokens = Math.max(1, Math.ceil(trimmed.length / 4));
+      const expectedMs = Math.min(15_000, Math.max(3_000, 2_000 + promptTokens * 3));
+      setRecommendationEta({
+        expected_latency_ms: expectedMs,
+        upper_latency_ms: Math.round(expectedMs * 2.5),
+        estimate_quality: promptTokens > 2_000 ? "uncertain" : "likely",
+        started_at: new Date().toISOString(),
+      });
+      try {
+        const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
+        const res = await fetch("/api/model/recommend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
+            projectId: activeProjectId,
+            message: trimmed,
+            currentModelId: selectedModelId,
+            currentProvider: selected?.providerId ?? null,
+            currentReasoningLevel: selectedReasoningLevel,
+            mode: "normal_chat",
+          }),
+        });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data: ModelRecommendation = await res.json();
+        setRecommendation(data);
+        const panel = (data as unknown as { panel?: RoutingDecisionPanelPayload }).panel;
+        setRoutingPanel(panel ?? null);
+        setRoutingPanelLoudFailure(Boolean(data.loudFailure));
+        setRoutingPanelDraftText(trimmed);
+      } catch {
+        setRecommendation(null);
+        setRoutingPanel(null);
+        setRoutingPanelLoudFailure(true);
+        setRoutingPanelDraftText(trimmed);
+      } finally {
+        setRecommendationLoading(false);
+        setRecommendationEta(null);
+      }
+    },
+    [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
+  );
+
+  /**
+   * "Send with routing" — the user confirmed the panel as-is or
+   * after editing fields. Persists the panel telemetry row and
+   * schedules a chat send with the selected model + reasoning +
+   * harness.
+   */
+  const handleSendWithRouting = useCallback(
+    async (selection: RoutingDecisionPanelSelection) => {
+      const panel = routingPanel;
+      if (!panel) return;
+      const draftText = routingPanelDraftText.trim();
+      const harnessMap = mapHarnessValueToInternal(selection.harness);
+      // Map the harness registry id back to the thread-mode
+      // enum value the rest of the codebase uses.
+      const threadHarness: ThreadHarness | null =
+        harnessMap.harnessId === "codex_cli"
+          ? "codex"
+          : harnessMap.harnessId === "minimax_cli"
+            ? "minimax"
+            : null;
+      const execution = executionPayloadModelId({
+        modelId: selection.modelId,
+        reasoningLevel: selection.reasoningLevel,
+        registry: null,
+      });
+      try {
+        const promptHash = await import("@/lib/router/telemetry").then((m) =>
+          m.promptHash(draftText),
+        );
+        await fetch("/api/routing-decision-panel/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
+            projectId: activeProjectId,
+            promptHash,
+            promptText: draftText,
+            panel,
+            selection,
+            changedFields: selection.changedFields,
+            comment: selection.comment.trim() || null,
+          }),
+        });
+      } catch {
+        // Best-effort. The chat send below still works.
+      }
+      setSelectedModelId(selection.modelId);
+      setSelectedReasoningLevel(execution.reasoningLevel ?? selectedReasoningLevel);
+      setSelectedModelSelectionSource("user_accepted");
+      setThreadModeOverride(harnessMap.threadMode);
+      setHarnessOverride(threadHarness);
+      const payload: RoutingDecisionPayload = {
+        kind: "routing_decision",
+        messageType: "routing_decision",
+        includeInModelContext: false,
+        auditId: routingDecisionAuditId({
+          threadId: activeThreadId,
+          prompt: draftText,
+          route: harnessMap.threadMode === "coding_task" ? "coding_task" : "normal_chat",
+          harness: harnessMap.harnessId,
+          executionModel: selection.modelId,
+        }),
+        route: harnessMap.threadMode === "coding_task" ? "coding_task" : "normal_chat",
+        selectionSource: "user_accepted",
+        harness: harnessMap.harnessId,
+        routerEngine: null,
+        recommenderEngine: null,
+        recommenderReasoningLevel: null,
+        executionModel: selection.modelId,
+        executionReasoningLevel: execution.reasoningLevel,
+        fallback: null,
+        whyRoute: panel.contextDecision.explanation,
+        whyModel: panel.executionPackage.explanation,
+        whyHarness:
+          selection.harness === "repo_file_harness"
+            ? "Routes through the repo/file harness so the model can read or change project files."
+            : null,
+        alternatives: [],
+      };
+      routingDecisionForNextSendRef.current = payload;
+      setPendingRoutingDecision(payload);
+      pendingRecommendedSendCounter.current += 1;
+      setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
+      setRoutingPanel(null);
+      setRoutingPanelLoudFailure(false);
+      setRoutingPanelDraftText("");
+      setRecommendation(null);
+    },
+    [
+      routingPanel,
+      routingPanelDraftText,
+      activeThreadId,
+      activeProjectId,
+      selectedReasoningLevel,
+    ],
+  );
+
+  /**
+   * "Send default" — the user chose to bypass the panel and send
+   * with the user's current manual selection.
+   */
+  const handleSendDefault = useCallback(() => {
+    const draftText = routingPanelDraftText.trim();
+    setRoutingPanel(null);
+    setRoutingPanelLoudFailure(false);
+    setRoutingPanelDraftText("");
+    setRecommendation(null);
+    if (!draftText) return;
+    pendingRecommendedSendCounter.current += 1;
+    setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
+  }, [routingPanelDraftText]);
+
+  /**
+   * "Dismiss" — closes the panel without sending.
+   */
+  const handleDismissRoutingPanel = useCallback(() => {
+    setRoutingPanel(null);
+    setRoutingPanelLoudFailure(false);
+    setRoutingPanelDraftText("");
+    setRecommendation(null);
+  }, []);
+
   const handleRecommendModel = useCallback(
     async (message: string) => {
       const trimmed = message.trim();
@@ -2431,6 +2667,14 @@ export const Assistant = () => {
               recommendation={recommendation}
               recommendationLoading={recommendationLoading}
               recommendationEta={recommendationEta}
+              routingPanel={routingPanel}
+              routingPanelLoudFailure={routingPanelLoudFailure}
+              routingPanelDraftText={routingPanelDraftText}
+              routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+              onSendWithRouting={handleSendWithRouting}
+              onSendDefault={handleSendDefault}
+              onDismissRoutingPanel={handleDismissRoutingPanel}
+              onOpenRoutingPanel={handleOpenRoutingPanel}
               manualModelSummary={manualModelSummary}
               recommenderEngineSummary={recommenderEngineSummary}
               fallbackEngineSummary={fallbackEngineSummary}
