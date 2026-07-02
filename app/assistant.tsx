@@ -2066,6 +2066,7 @@ export const Assistant = () => {
             ? activeThreadId
             : await handleCreateThread({ threadMode: "chat" });
         const payload: RoutingDecisionPayload = {
+          kind: "routing_decision",
           messageType: "routing_decision",
           includeInModelContext: false,
           auditId: routingDecisionAuditId({
@@ -2148,6 +2149,7 @@ export const Assistant = () => {
           ? selectedThinkingMode
           : selectedReasoningLevel;
       const payload: RoutingDecisionPayload = {
+        kind: "routing_decision",
         messageType: "routing_decision",
         includeInModelContext: false,
         auditId: routingDecisionAuditId({

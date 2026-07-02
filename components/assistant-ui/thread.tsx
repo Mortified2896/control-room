@@ -254,6 +254,16 @@ export const Thread: FC<{
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
   /**
+   * Routing decision the parent has already built for the next send.
+   * Consumed (and captured into a local ref) right before
+   * `composer.send()` runs, so the client can insert it as its own
+   * assistant message bubble between the user message and the streamed
+   * model output. Reading this prop inside `thread.runStart` directly
+   * would race with the transport's `prepareSendMessagesRequest`
+   * callback, which clears it synchronously after `sendMessage`.
+   */
+  pendingRoutingDecision?: RoutingDecisionPayload | null;
+  /**
    * Called by the parent (ChatPane) after the transport has built the
    * request body containing the routing decision. The parent uses
    * this to clear React state that powered the one-shot ref lifecycle.
@@ -345,6 +355,7 @@ export const Thread: FC<{
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  pendingRoutingDecision = null,
   onRoutingDecisionRequestBodyPrepared,
   onEnsureCodingThread,
   onCodingRunComplete,
@@ -428,6 +439,7 @@ export const Thread: FC<{
               onKeepCurrent={onKeepCurrent}
               pendingRecommendedSend={pendingRecommendedSend}
               onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+              pendingRoutingDecision={pendingRoutingDecision}
               onRoutingDecisionRequestBodyPrepared={onRoutingDecisionRequestBodyPrepared}
               onEnsureCodingThread={onEnsureCodingThread}
               onCodingRunComplete={onCodingRunComplete}
@@ -562,6 +574,7 @@ const Composer: FC<{
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  pendingRoutingDecision?: RoutingDecisionPayload | null;
   onRoutingDecisionRequestBodyPrepared?: (auditId: string | null) => void;
   onEnsureCodingThread?: () => Promise<string | null>;
   onCodingRunComplete?: (threadId: string | null) => void;
@@ -601,6 +614,7 @@ const Composer: FC<{
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  pendingRoutingDecision = null,
   onRoutingDecisionRequestBodyPrepared,
   onEnsureCodingThread,
   onCodingRunComplete,
@@ -825,6 +839,7 @@ const ComposerAction: FC<{
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  pendingRoutingDecision?: RoutingDecisionPayload | null;
   onRoutingDecisionRequestBodyPrepared?: (auditId: string | null) => void;
   onEnsureCodingThread?: () => Promise<string | null>;
   onCodingRunComplete?: (threadId: string | null) => void;
@@ -866,6 +881,7 @@ const ComposerAction: FC<{
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  pendingRoutingDecision = null,
   onRoutingDecisionRequestBodyPrepared,
   onEnsureCodingThread,
   onCodingRunComplete,
@@ -879,29 +895,70 @@ const ComposerAction: FC<{
   onAnswerInChatInstead,
 }) => {
   const aui = useAui();
-  const pendingManualRoutingDecisionRef = useRef<RoutingDecisionPayload | null>(null);
+  const pendingRoutingDecisionRef = useRef<RoutingDecisionPayload | null>(null);
   const lastAppendedRoutingAuditIdRef = useRef<string | null>(null);
+
+  // Queue a routing decision so the next run picks it up and inserts it as
+  // its own assistant message bubble BEFORE the streamed model output. This
+  // is the single client-side insertion point for routing decisions; the
+  // server persists the same payload as its own DB row.
+  //
+  // Called by:
+  //   - Manual normal-chat sends via `onManualRoutingDecision` (the parent
+  //     builds the payload on demand; we capture it here on click).
+  //   - The recommend-accept useEffect below, which captures the parent's
+  //     `pendingRoutingDecision` BEFORE `composer.send()` runs (the
+  //     transport's `prepareSendMessagesRequest` clears that prop shortly
+  //     after, so reading it directly inside `thread.runStart` would race).
+  const queueRoutingDecision = useCallback((routingDecision: RoutingDecisionPayload | null) => {
+    if (!routingDecision) return;
+    if (lastAppendedRoutingAuditIdRef.current === routingDecision.auditId) return;
+    pendingRoutingDecisionRef.current = routingDecision;
+  }, []);
   const queueManualRoutingDecision = useCallback(
     (text: string) => {
       if (text.trim().length === 0) return;
       const routingDecision = onManualRoutingDecision?.(text) ?? null;
-      if (!routingDecision || lastAppendedRoutingAuditIdRef.current === routingDecision.auditId) return;
-      pendingManualRoutingDecisionRef.current = routingDecision;
+      queueRoutingDecision(routingDecision);
     },
-    [onManualRoutingDecision],
+    [onManualRoutingDecision, queueRoutingDecision],
   );
-  const appendQueuedManualRoutingDecision = useCallback(() => {
-    const routingDecision = pendingManualRoutingDecisionRef.current;
+  const appendQueuedRoutingDecision = useCallback(() => {
+    const routingDecision = pendingRoutingDecisionRef.current;
     if (!routingDecision || lastAppendedRoutingAuditIdRef.current === routingDecision.auditId) return;
-    pendingManualRoutingDecisionRef.current = null;
+    pendingRoutingDecisionRef.current = null;
     lastAppendedRoutingAuditIdRef.current = routingDecision.auditId;
+    // Append as its own assistant message (separate bubble) with
+    // `startRun: false` so we don't trigger another run. The message
+    // carries the canonical metadata tag so the assistant-ui runtime,
+    // `filterModelContextMessages`, and reload rehydration can identify
+    // it without re-parsing the data part.
     aui.thread().append({
       role: "assistant",
-      content: [routingDecisionTextPart(routingDecision) as never, routingDecisionPart(routingDecision) as never],
+      content: [
+        routingDecisionTextPart(routingDecision) as never,
+        routingDecisionPart(routingDecision) as never,
+      ],
+      metadata: {
+        custom: {
+          kind: "routing_decision",
+          messageType: "routing_decision",
+          includeInModelContext: false,
+          auditId: routingDecision.auditId,
+          routingDecision,
+        },
+      },
       startRun: false,
     });
   }, [aui]);
-  useAuiEvent("thread.runEnd", appendQueuedManualRoutingDecision);
+  // Append the queued routing decision the moment the run starts but
+  // BEFORE the streaming assistant message is appended to the runtime's
+  // message list. Inside `thread.runStart` the user's message is the
+  // last entry in `chatHelpers.messages`, so the append places R
+  // between user and the streaming A in the linear message tree. This
+  // is what makes the live-view bubble order match the DB / reload
+  // order: user → R → A.
+  useAuiEvent("thread.runStart", appendQueuedRoutingDecision);
   const [creatingDraft, setCreatingDraft] = useState(false);
   const [codexRun, setCodexRun] = useState<null | {
     id: string;
@@ -945,6 +1002,14 @@ const ComposerAction: FC<{
     if (lastConsumedPendingSendId.current === pendingRecommendedSend.id) return;
     lastConsumedPendingSendId.current = pendingRecommendedSend.id;
 
+    // CAPTURE the routing decision into a local ref BEFORE
+    // `composer.send()` runs. The transport's `prepareSendMessagesRequest`
+    // callback fires synchronously inside `sendMessage` and clears
+    // `pendingRoutingDecision` via `onRoutingDecisionRequestBodyPrepared`,
+    // so reading the prop directly inside `thread.runStart` would race.
+    // The runStart handler consumes `pendingRoutingDecisionRef` instead.
+    queueRoutingDecision(pendingRoutingDecision ?? null);
+
     try {
       const composer = aui.composer();
       composer.setText(pendingRecommendedSend.text);
@@ -958,7 +1023,7 @@ const ComposerAction: FC<{
     } finally {
       onPendingRecommendedSendConsumed?.(pendingRecommendedSend.id);
     }
-  }, [pendingRecommendedSend, aui, onPendingRecommendedSendConsumed]);
+  }, [pendingRecommendedSend, aui, onPendingRecommendedSendConsumed, pendingRoutingDecision, queueRoutingDecision]);
 
   const handleAcceptRecommendation = () => {
     onUseRecommendation?.(recommenderEnabled ? composerText : undefined);
@@ -978,10 +1043,48 @@ const ComposerAction: FC<{
     onRecommend(text);
   };
 
-  const appendCodexMessages = (data: CodexRunResponse, fallbackUserText: string) => {
+  const appendCodexUserMessage = (
+    data: CodexRunResponse,
+    fallbackUserText: string,
+    metadata: {
+      custom: {
+        harness: Record<string, unknown>;
+        codex: Record<string, unknown>;
+      };
+    },
+  ) => {
+    const userText = data.userText?.trim() || fallbackUserText;
+    aui.thread().append({
+      role: "user",
+      content: [{ type: "text", text: userText }],
+      metadata,
+      startRun: false,
+    });
+  };
+
+  const appendCodexAssistantMessage = (
+    data: CodexRunResponse,
+    fallbackUserText: string,
+    metadata: {
+      custom: {
+        harness: Record<string, unknown>;
+        codex: Record<string, unknown>;
+      };
+    },
+  ) => {
     const userText = data.userText?.trim() || fallbackUserText;
     const assistantText = data.assistantText?.trim();
     if (!assistantText) return;
+    aui.thread().append({
+      role: "assistant",
+      content: [{ type: "text", text: assistantText }],
+      metadata,
+      startRun: false,
+    });
+  };
+
+  const buildCodexMetadata = (data: CodexRunResponse) => {
+    const userText = data.userText?.trim() || "";
     // The new dispatcher surfaces a generic `metadata` block on the
     // response (carries harness / model / reasoning / provider /
     // billing paths). Fall back to the legacy `data.metadata` block
@@ -1048,19 +1151,19 @@ const ComposerAction: FC<{
         },
       },
     };
-    const thread = aui.thread();
-    thread.append({
-      role: "user",
-      content: [{ type: "text", text: userText }],
-      metadata,
-      startRun: false,
-    });
-    thread.append({
-      role: "assistant",
-      content: [{ type: "text", text: assistantText }],
-      metadata,
-      startRun: false,
-    });
+    return metadata;
+  };
+
+  /**
+   * Legacy helper that mirrors the original append order (user → assistant)
+   * for callers that do NOT need to interleave a routing-decision bubble.
+   * Prefer `appendCodexUserMessage` + (optional routing decision) +
+   * `appendCodexAssistantMessage` when the bubble order matters.
+   */
+  const appendCodexMessages = (data: CodexRunResponse, fallbackUserText: string) => {
+    const metadata = buildCodexMetadata(data);
+    appendCodexUserMessage(data, fallbackUserText, metadata);
+    appendCodexAssistantMessage(data, fallbackUserText, metadata);
   };
 
   const createDraft = async () => {
@@ -1160,6 +1263,7 @@ const ComposerAction: FC<{
       const runThreadId = threadId ?? (await onEnsureCodingThread?.()) ?? null;
       const routingDecision: RoutingDecisionPayload | null = codingHarnessRecommendation
         ? {
+            kind: "routing_decision",
             messageType: "routing_decision",
             includeInModelContext: false,
             auditId: routingDecisionAuditId({
@@ -1205,14 +1309,34 @@ const ComposerAction: FC<{
       });
       const data = (await res.json().catch(() => null)) as CodexRunResponse | null;
       if (data?.run) setCodexRun(data.run);
-      if (routingDecision) {
-        aui.thread().append({
-          role: "assistant",
-          content: [routingDecisionTextPart(routingDecision) as never, routingDecisionPart(routingDecision) as never],
-          startRun: false,
-        });
+      // IMPORTANT: append user → routing-decision → assistant output, in
+      // that order, so the visible chat matches the DB order. The
+      // routing decision is its own assistant message bubble; appending
+      // it BEFORE the user message would put it ahead of the turn.
+      if (data && data.assistantText?.trim()) {
+        const metadata = buildCodexMetadata(data);
+        appendCodexUserMessage(data, instruction, metadata);
+        if (routingDecision) {
+          aui.thread().append({
+            role: "assistant",
+            content: [
+              routingDecisionTextPart(routingDecision) as never,
+              routingDecisionPart(routingDecision) as never,
+            ],
+            metadata: {
+              custom: {
+                kind: "routing_decision",
+                messageType: "routing_decision",
+                includeInModelContext: false,
+                auditId: routingDecision.auditId,
+                routingDecision,
+              },
+            },
+            startRun: false,
+          });
+        }
+        appendCodexAssistantMessage(data, instruction, metadata);
       }
-      if (data) appendCodexMessages(data, instruction);
       onCodingRunComplete?.(runThreadId);
       aui.composer().setText("");
       if (!res.ok) {

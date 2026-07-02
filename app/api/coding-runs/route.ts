@@ -213,9 +213,8 @@ export async function POST(req: NextRequest) {
   });
 
   if (threadId) {
-    if (isRoutingDecisionPayload(body.routingDecision)) {
-      await persistRoutingDecisionIfAbsent(threadId, body.routingDecision);
-    }
+    // Persist user FIRST so the reload-order matches the visible
+    // bubble order: user → routing-decision → assistant output.
     await createMessage({
       threadId,
       role: "user",
@@ -223,6 +222,9 @@ export async function POST(req: NextRequest) {
       parts: textPart(prompt),
       modelId: harnessEntry.id,
     });
+    if (isRoutingDecisionPayload(body.routingDecision)) {
+      await persistRoutingDecisionIfAbsent(threadId, body.routingDecision);
+    }
   }
 
   let completed;

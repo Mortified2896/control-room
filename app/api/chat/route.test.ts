@@ -18,6 +18,7 @@ import { isDbConfigured } from "@/lib/db";
 
 test("routing decision parts should include both text and data parts", () => {
   const payload: RoutingDecisionPayload = {
+    kind: "routing_decision",
     messageType: "routing_decision",
     includeInModelContext: false,
     auditId: "test-audit-123",
@@ -53,6 +54,7 @@ test("routing decision parts should include both text and data parts", () => {
 
 test("routing decision parts can be serialized and included in message parts array", () => {
   const payload: RoutingDecisionPayload = {
+    kind: "routing_decision",
     messageType: "routing_decision",
     includeInModelContext: false,
     auditId: "test-audit-456",
@@ -87,13 +89,14 @@ test("routing decision parts can be serialized and included in message parts arr
   assert.strictEqual((parts[1] as { type: string }).type, "data-routing-decision");
 });
 
-test("DB persistence returns routing decision parts for re-injection into stream", async () => {
+test("DB persistence keeps routing decision as its own message row with both text and data parts", async () => {
   if (!isDbConfigured()) {
     // Skip if DB is not configured
     return;
   }
 
   const payload: RoutingDecisionPayload = {
+    kind: "routing_decision",
     messageType: "routing_decision",
     includeInModelContext: false,
     auditId: `test-persist-${Date.now()}`,
@@ -170,6 +173,7 @@ test("RouterAbDataParts includes routing-decision type", async () => {
 
 test("isRoutingDecisionPart correctly identifies routing decision parts", () => {
   const payload: RoutingDecisionPayload = {
+    kind: "routing_decision",
     messageType: "routing_decision",
     includeInModelContext: false,
     auditId: "test-is-part",
@@ -202,4 +206,24 @@ test("isRoutingDecisionPart correctly identifies routing decision parts", () => 
   assert.strictEqual(isRoutingDecisionPart(undefined), false);
   assert.strictEqual(isRoutingDecisionPart("string"), false);
   assert.strictEqual(isRoutingDecisionPart({ type: "data-other", data: {} }), false);
+});
+
+test("routing decision payloads always carry the durable audit tag", () => {
+  // Hard contract: every persisted routing decision must carry kind,
+  // messageType, includeInModelContext, and auditId so the live view,
+  // reload rehydration, and `filterModelContextMessages` can all
+  // recognize it without re-parsing the data part payload.
+  const minimal: RoutingDecisionPayload = {
+    kind: "routing_decision",
+    messageType: "routing_decision",
+    includeInModelContext: false,
+    auditId: "audit-minimal",
+    route: "normal_chat",
+  };
+  const dataPart = routingDecisionPart(minimal);
+  assert.strictEqual(dataPart.type, "data-routing-decision");
+  assert.strictEqual((dataPart.data as { kind: unknown }).kind, "routing_decision");
+  assert.strictEqual((dataPart.data as { messageType: unknown }).messageType, "routing_decision");
+  assert.strictEqual((dataPart.data as { includeInModelContext: unknown }).includeInModelContext, false);
+  assert.strictEqual((dataPart.data as { auditId: unknown }).auditId, "audit-minimal");
 });

@@ -9,6 +9,7 @@ import {
 } from "./routing-decision";
 
 const payload: RoutingDecisionPayload = {
+  kind: "routing_decision",
   messageType: "routing_decision",
   includeInModelContext: false,
   auditId: "audit-1",
@@ -46,6 +47,7 @@ test("routing decision markdown documents audit-only behavior", () => {
 
 test("manual direct normal-chat routing decision records current selection and stays out of context", () => {
   const manual: RoutingDecisionPayload = {
+    kind: "routing_decision",
     messageType: "routing_decision",
     includeInModelContext: false,
     auditId: "manual-1",
@@ -71,4 +73,49 @@ test("manual direct normal-chat routing decision records current selection and s
   assert.match(text, /Router\/recommender engine: not used/);
   assert.match(text, /Execution model: MiniMax-M2\.7-highspeed/);
   assert.match(text, /Execution reasoning level: provider_default/);
+});
+
+test("routing decision message-level metadata tag is recognized even before parts are parsed", () => {
+  // Live view: the client appends the routing decision as its own
+  // assistant message with `metadata.custom.kind = "routing_decision"`.
+  // `isRoutingDecisionMessage` must recognize this WITHOUT requiring
+  // the data part to be present (the data part is only added on reload).
+  const liveRouting = {
+    id: "r",
+    role: "assistant" as const,
+    parts: [],
+    metadata: {
+      custom: {
+        kind: "routing_decision",
+        messageType: "routing_decision",
+        includeInModelContext: false,
+        auditId: "audit-live",
+        routingDecision: payload,
+      },
+    },
+  };
+  assert.equal(isRoutingDecisionMessage(liveRouting), true);
+  assert.deepEqual(filterModelContextMessages([liveRouting]), []);
+});
+
+test("routing decision stays out of model context across a multi-turn thread", () => {
+  // Simulates the user's manual proof: second prompt's context must
+  // exclude the previous turn's routing decision even though it sits in
+  // the linear message tree between turns.
+  const r1 = { id: "r1", role: "assistant" as const, parts: [routingDecisionPart(payload)] };
+  const a1 = { id: "a1", role: "assistant" as const, parts: [{ type: "text" as const, text: "Hi there." }] };
+  const u2 = { id: "u2", role: "user" as const, parts: [{ type: "text" as const, text: "second prompt" }] };
+  const r2 = { id: "r2", role: "assistant" as const, parts: [routingDecisionPart({ ...payload, auditId: "audit-2" })] };
+  const a2 = { id: "a2", role: "assistant" as const, parts: [{ type: "text" as const, text: "second answer" }] };
+
+  const visible = [r1, a1, u2, r2, a2];
+  const modelContext = filterModelContextMessages(visible);
+
+  // Both routing decisions are filtered; user + assistant text remain.
+  assert.deepEqual(modelContext, [a1, u2, a2]);
+  // The remaining chat messages are well-ordered (audit bubbles
+  // removed, but relative order of the surviving messages preserved).
+  assert.equal(modelContext[0].id, "a1");
+  assert.equal(modelContext[1].id, "u2");
+  assert.equal(modelContext[2].id, "a2");
 });

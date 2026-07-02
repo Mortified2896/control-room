@@ -134,6 +134,7 @@ async function persistManualRoutingDecision(input: {
   const prompt = latest ? uiMessageText(latest).trim() : "";
   if (!prompt) return;
   const payload: RoutingDecisionPayload = {
+    kind: "routing_decision",
     messageType: "routing_decision",
     includeInModelContext: false,
     auditId: routingDecisionAuditId({
@@ -233,6 +234,7 @@ export type RouterAbDataParts = {
     completed_at: string;
   };
   "routing-decision": {
+    kind: "routing_decision";
     messageType: "routing_decision";
     includeInModelContext: false;
     auditId: string;
@@ -457,23 +459,22 @@ export async function POST(req: Request) {
     }
   }
 
-  // Persist the UI-only routing decision after the user message, so reload
-  // hydration orders it next to the turn instead of above prior turns or in a
-  // separate bottom fallback list. It is never included in modelMessages above.
-  // Store the routing decision parts so we can emit them in the stream AND
-  // include them in the assistant message for correct display/hydration.
-  let routingDecisionParts: unknown[] = [];
+  // Persist the UI-only routing decision as its OWN assistant message row
+  // immediately after the user message, so reload hydration shows it as a
+  // separate bubble between the user and the model output. It is never
+  // included in modelMessages above, and it is NEVER merged into the
+  // streamed assistant message (the client appends it as a separate bubble
+  // via `thread.runStart`; see `appendQueuedManualRoutingDecision` in
+  // `components/assistant-ui/thread.tsx`). Storing the routing decision as
+  // its own row keeps audit and execution-model visibility cleanly separated.
   if (threadId && isDbConfigured()) {
     try {
       if (routingDecision) {
-        const persisted = await persistRoutingDecisionMessage({
+        await persistRoutingDecisionMessage({
           threadId,
           payload: routingDecision,
           modelId: routingDecision.recommenderEngine ?? routingDecision.routerEngine ?? null,
         });
-        if (persisted) {
-          routingDecisionParts = persisted.parts;
-        }
       } else {
         await persistManualRoutingDecision({
           threadId,
@@ -665,19 +666,15 @@ export async function POST(req: Request) {
         ? "MiniMax provider error. Check MINIMAX_API_KEY, MINIMAX_BASE_URL, and MINIMAX_DEFAULT_MODEL."
         : "An error occurred.",
     execute: async ({ writer }) => {
-      // Emit routing decision data parts at the start of the stream so they're
-      // visible in the assistant message alongside Side A's text. The
-      // `routing-decision` data part is registered in `RouterAbDataParts` and
-      // consumed by the UI via `AssistantMessage` which reads
-      // `routingDecisionFromMessage(s.message)`.
-      for (const part of routingDecisionParts) {
-        if (isRoutingDecisionPart(part)) {
-          writer.write({
-            type: "data-routing-decision" as const,
-            data: part.data,
-          });
-        }
-      }
+      // The routing decision is intentionally NOT emitted in the stream.
+      // It is its own assistant message (created by the client via
+      // `aui.thread().append({ role: "assistant", startRun: false })`
+      // inside the `thread.runStart` handler). Merging it into the
+      // streamed assistant message would (a) hide the model's text
+      // output because the client suppresses text parts when a routing
+      // decision part is present, and (b) cause the model output to be
+      // persisted together with the routing decision, so reload would
+      // re-render the merged bubble instead of two separate bubbles.
 
       writer.write({
         type: "data-router-execution-estimate",
@@ -868,19 +865,15 @@ export async function POST(req: Request) {
         tokenResult,
         success: !isAborted,
       });
-      // Build the complete response message by adding:
-      // 1. Routing decision parts (for the recommend-accept path, emitted live in execute)
-      // 2. Telemetry parts (router-execution-outcome)
-      // This ensures the assistant message in DB + client state has the routing decision
-      // bubble visible both in the live stream AND after reload.
-      const responseWithRoutingDecision = {
-        ...responseMessage,
-        parts: [...responseMessage.parts, ...routingDecisionParts],
-      } as UIMessage;
+      // Build the complete response message by adding telemetry parts. The
+      // routing decision is intentionally NOT merged into this message —
+      // it lives in its own assistant message row (see
+      // `persistRoutingDecisionMessage` above) and is rendered as a
+      // separate bubble by the client.
       const responseWithTelemetry = {
-        ...responseWithRoutingDecision,
+        ...responseMessage,
         parts: [
-          ...responseWithRoutingDecision.parts,
+          ...responseMessage.parts,
           {
             type: "data-router-execution-outcome",
             data: {
