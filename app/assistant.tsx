@@ -12,6 +12,7 @@ import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
 import { RouterAbToggle, ReasoningControls } from "@/components/assistant-ui/router-ab-controls";
 import type { RecommenderModelOption } from "@/components/assistant-ui/recommender-model-selector";
+import { UsageQuotasButton } from "@/components/assistant-ui/usage-quotas";
 import { type ReasoningCapability } from "@/lib/providers/capability";
 import type { ThinkingMode } from "@/lib/providers/runtime";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -1114,6 +1115,9 @@ const ChatTopBar: FC<{
     ? selectedModel.reasoningLevels
     : ["low"];
   const supportsRouterAb = selectedModel?.providerId === "openai";
+  const openAiApiEnabled = models.some(
+    (m) => m.enabled && (m.accessPath === "openai_api" || m.providerId === "openai"),
+  );
   // If the persisted reasoning level is no longer supported by the new
   // model, snap to the cheapest supported level so the dropdown stays sane.
   useEffect(() => {
@@ -1155,6 +1159,7 @@ const ChatTopBar: FC<{
           Router A/B is OpenAI-only.
         </div>
       )}
+      <UsageQuotasButton openAiApiEnabled={openAiApiEnabled} />
       <div className="ml-auto shrink-0">
         <ThemeToggle />
       </div>
