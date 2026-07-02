@@ -2292,7 +2292,7 @@ export const Assistant = () => {
         setRecommendationEta(null);
       }
     },
-    [activeProjectId, activeThreadId],
+    [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
   );
 
   const handleDecisionAction = useCallback(
