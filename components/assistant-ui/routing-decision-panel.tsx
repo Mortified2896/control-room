@@ -302,9 +302,9 @@ export function RoutingDecisionPanel({
         <div className="flex items-center justify-between">
           <Label className="font-medium text-foreground">Execution package</Label>
         </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(140px,1fr)_minmax(160px,1fr)]">
           {/* Model dropdown */}
-          <div className="grid gap-1">
+          <div className="min-w-0 grid gap-1 overflow-hidden">
             <Label htmlFor="routing-decision-model-select" className="text-[11px] text-muted-foreground">
               Model
             </Label>
@@ -312,7 +312,7 @@ export function RoutingDecisionPanel({
               id="routing-decision-model-select"
               data-testid="routing-decision-model-select"
               data-current-model={modelId}
-              className="h-7 rounded-md border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-7 w-full max-w-full overflow-hidden rounded-md border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
               value={modelId}
               disabled={loudFailure || executionEligibleModels.length === 0}
               onChange={(e) => setModelId(e.target.value)}
@@ -329,7 +329,7 @@ export function RoutingDecisionPanel({
             </select>
           </div>
           {/* Reasoning dropdown */}
-          <div className="grid gap-1">
+          <div className="min-w-0 grid gap-1 overflow-hidden">
             <Label htmlFor="routing-decision-reasoning-select" className="text-[11px] text-muted-foreground">
               Reasoning
             </Label>
@@ -337,7 +337,7 @@ export function RoutingDecisionPanel({
               id="routing-decision-reasoning-select"
               data-testid="routing-decision-reasoning-select"
               data-current-reasoning={reasoningLevel}
-              className="h-7 rounded-md border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-7 w-full max-w-full overflow-hidden rounded-md border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
               value={reasoningLevel}
               disabled={!selectedModel?.supportsReasoningControls}
               onChange={(e) => setReasoningLevel(e.target.value)}
@@ -350,7 +350,7 @@ export function RoutingDecisionPanel({
             </select>
           </div>
           {/* Harness dropdown */}
-          <div className="grid gap-1">
+          <div className="min-w-0 grid gap-1 overflow-hidden">
             <Label htmlFor="routing-decision-harness-select" className="text-[11px] text-muted-foreground">
               Harness
             </Label>
@@ -358,7 +358,7 @@ export function RoutingDecisionPanel({
               id="routing-decision-harness-select"
               data-testid="routing-decision-harness-select"
               data-current-harness={harness}
-              className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+              className="h-7 w-full max-w-full overflow-hidden rounded-md border border-input bg-background px-2 text-xs"
               value={harness}
               onChange={(e) => setHarness(e.target.value as PanelHarness)}
             >
