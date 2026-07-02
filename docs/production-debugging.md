@@ -36,6 +36,68 @@ Recent `/api/projects` incident:
 - Build succeeded, but production runtime was stale.
 - One restart attempt also missed `/etc/hermes/control_room_postgres.env`.
 
+Recent blank-page incident (2026-07-02):
+
+**Problem:**
+
+- User reported `https://hermes-agent.taile0361b.ts.net:9443/` was not loading.
+- `scripts/smoke-prod.sh` reported all green (every API route returned valid JSON).
+- `curl -fsS http://127.0.0.1:18100/` returned a full HTML page (10,531 bytes).
+- The browser rendered only a blank `<div class="h-dvh"></div>` because two
+  client bundles referenced by the HTML returned `500 Internal Server Error`
+  from the running `next start`:
+  - `/_next/static/chunks/1z2juf2f2ud87.js` → 500
+  - `/_next/static/chunks/2q0mlc27l6nz9.js` → 500
+
+**Root cause:**
+
+- An earlier task had run `npm run build` in the live serving repo to validate
+  the change set. The build rewrote `.next` with new Turbopack chunk hashes
+  (e.g. `0bs6bah8l4ycj.js`, `3w7n4pzkqwvnp.js`).
+- The running `next start` (PID 1618597, started before the build) had already
+  cached the previous chunk names in its in-memory page render. After the
+  rebuild, the running server kept returning HTML that referenced the
+  *previous* chunk names (`1z2juf2f2ud87.js`, `2q0mlc27l6nz9.js`), which
+  no longer existed on disk.
+- The script-based API smoke checks did not catch this: `/api/projects`,
+  `/api/threads`, etc. were server-rendered and unaffected by the client
+  bundle mismatch. Only the client-bundle HTML was broken.
+- The user-facing symptom was "page is not loading" — the HTML loaded, the
+  CSS loaded, but two script tags 500'd, so the React tree never hydrated.
+- The build report said `npm run build` succeeded and `scripts/smoke-prod.sh`
+  passed, so the previous turn's final report claimed the change was
+  validated. Neither check is sufficient to detect this failure mode.
+
+**Fix:**
+
+- Ran `scripts/restart-prod.sh` from an external Pi session. The script
+  killed the stale `next start`, spawned a new one with
+  `CONTROL_ROOM_DATABASE_URL` loaded from
+  `/etc/hermes/control_room_postgres.env`, waited for readiness, and ran
+  the smoke checks. The new `next start` (PID 1650219) served the
+  rebuilt HTML and the missing chunks now 404 instead of 500 (they are
+  no longer requested by the new HTML).
+- Verified all 13 chunks referenced by the post-restart HTML return `200`.
+
+**Lesson:**
+
+- `npm run build` mutates the live serving directory's `.next`. A successful
+  build is necessary but not sufficient — the running `next start` must be
+  restarted to load the new build cleanly. The previous version of this
+  document already called this out under "Live `.next` mutation hazard",
+  but the lesson was missed because no concrete example of the failure
+  was logged here.
+- A new safety net, `scripts/check-prod-stale.sh`, was added. It compares
+  `.next/BUILD_ID` on disk against the `BUILD_ID` embedded in the HTML
+  served by the running `next start`. Exit `0` ⇒ production matches the
+  build. Exit `1` ⇒ production is stale and must be restarted via
+  `scripts/restart-prod.sh`. Run it after every restart and before
+  claiming the live site is fixed.
+- The validation ladder in `AGENTS.md` was updated to include
+  `scripts/check-prod-stale.sh` and to call out the worktree-based
+  build pattern for routine validation (so the live `.next` is only
+  mutated together with the restart that consumes it).
+
 ## Live `.next` mutation hazard
 
 The production app serves its built routes, manifests, and client assets from

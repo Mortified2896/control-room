@@ -163,6 +163,7 @@ config, the required sequence is:
 npm run typecheck
 npm run build
 scripts/restart-prod.sh
+scripts/check-prod-stale.sh   # exit 0 = production matches the build
 ```
 
 Then run smoke/render verification as applicable.
@@ -178,6 +179,27 @@ and include the recovery command:
 ```bash
 scripts/restart-prod.sh
 ```
+
+### Detecting a stale production build
+
+`scripts/check-prod-stale.sh` compares the on-disk `.next/BUILD_ID` against
+the `BUILD_ID` embedded in the HTML served by the running `next start`. It
+exits `0` when they match and `1` when the server is still serving the
+previous build (the "Live `.next` mutation hazard" — see the postmortem in
+`docs/production-debugging.md` for the 2026-07-02 incident where this
+mismatch rendered the live site as a blank `<div class="h-dvh"></div>`).
+Always run this after `scripts/restart-prod.sh` and before claiming the live
+site is fixed; never declare success when it exits non-zero.
+
+### Build in an isolated worktree when possible
+
+The safest pattern for validating a code change is to build in an
+isolated worktree (so the live `.next` is not mutated) and only swap the
+build into the live serving directory together with the restart. Use a
+worktree for routine typecheck + build validation; only the final deploy
+needs to touch the live `.next`. If the change is only a smoke check
+(e.g. a CI run, an isolated test pass), prefer `git worktree add` and
+build there.
 
 The final report must not say “done”, “deployed”, or “working” unless this
 production state risk is clearly stated.
