@@ -486,14 +486,6 @@ export const Thread: FC<{
               decisionApproved={decisionApproved}
               onSendToCodingHarness={onSendToCodingHarness}
               onAnswerInChatInstead={onAnswerInChatInstead}
-              routingPanel={routingPanel}
-              routingPanelLoudFailure={routingPanelLoudFailure}
-              routingPanelDraftText={routingPanelDraftText}
-              routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-              onSendWithRouting={onSendWithRouting}
-              onSendDefault={onSendDefault}
-              onDismissRoutingPanel={onDismissRoutingPanel}
-              onOpenRoutingPanel={onOpenRoutingPanel}
             />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />

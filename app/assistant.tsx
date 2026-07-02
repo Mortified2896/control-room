@@ -43,6 +43,7 @@ import {
   executionPayloadModelId,
   mapHarnessValueToInternal,
 } from "@/lib/router/routing-decision-panel-types";
+import { clientPromptHash as getClientPromptHash } from "@/lib/assistant-ui/prompt-hash";
 import {
   RoutingDecisionPanel,
   type RoutingDecisionPanelModelOption,
@@ -607,14 +608,6 @@ const CodexChatPane: FC<{
         decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
-        routingPanel={routingPanel}
-        routingPanelLoudFailure={routingPanelLoudFailure}
-        routingPanelDraftText={routingPanelDraftText}
-        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-        onSendWithRouting={onSendWithRouting}
-        onSendDefault={onSendDefault}
-        onDismissRoutingPanel={onDismissRoutingPanel}
-        onOpenRoutingPanel={onOpenRoutingPanel}
       />
     </AssistantRuntimeProvider>
   );
@@ -834,14 +827,6 @@ const ChatPane: FC<{
         decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
-        routingPanel={routingPanel}
-        routingPanelLoudFailure={routingPanelLoudFailure}
-        routingPanelDraftText={routingPanelDraftText}
-        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-        onSendWithRouting={onSendWithRouting}
-        onSendDefault={onSendDefault}
-        onDismissRoutingPanel={onDismissRoutingPanel}
-        onOpenRoutingPanel={onOpenRoutingPanel}
       />
     );
   }
@@ -981,14 +966,6 @@ const ChatPane: FC<{
         decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
-        routingPanel={routingPanel}
-        routingPanelLoudFailure={routingPanelLoudFailure}
-        routingPanelDraftText={routingPanelDraftText}
-        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-        onSendWithRouting={onSendWithRouting}
-        onSendDefault={onSendDefault}
-        onDismissRoutingPanel={onDismissRoutingPanel}
-        onOpenRoutingPanel={onOpenRoutingPanel}
       />
     </AssistantRuntimeProvider>
   );
@@ -2129,9 +2106,7 @@ export const Assistant = () => {
         registry: null,
       });
       try {
-        const promptHash = await import("@/lib/router/telemetry").then((m) =>
-          m.promptHash(draftText),
-        );
+        const promptHash = await getClientPromptHash(draftText);
         await fetch("/api/routing-decision-panel/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2747,14 +2722,6 @@ export const Assistant = () => {
               decisionApproved={decisionApproved}
               onSendToCodingHarness={handleSendToCodingHarness}
               onAnswerInChatInstead={handleAnswerInChatInstead}
-              routingPanel={routingPanel}
-              routingPanelLoudFailure={routingPanelLoudFailure}
-              routingPanelDraftText={routingPanelDraftText}
-              routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-              onSendWithRouting={handleSendWithRouting}
-              onSendDefault={handleSendDefault}
-              onDismissRoutingPanel={handleDismissRoutingPanel}
-              onOpenRoutingPanel={handleOpenRoutingPanel}
             />
           )}
         </div>
