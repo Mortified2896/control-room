@@ -607,6 +607,14 @@ const CodexChatPane: FC<{
         decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
+        routingPanel={routingPanel}
+        routingPanelLoudFailure={routingPanelLoudFailure}
+        routingPanelDraftText={routingPanelDraftText}
+        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+        onSendWithRouting={onSendWithRouting}
+        onSendDefault={onSendDefault}
+        onDismissRoutingPanel={onDismissRoutingPanel}
+        onOpenRoutingPanel={onOpenRoutingPanel}
       />
     </AssistantRuntimeProvider>
   );
@@ -826,6 +834,14 @@ const ChatPane: FC<{
         decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
+        routingPanel={routingPanel}
+        routingPanelLoudFailure={routingPanelLoudFailure}
+        routingPanelDraftText={routingPanelDraftText}
+        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+        onSendWithRouting={onSendWithRouting}
+        onSendDefault={onSendDefault}
+        onDismissRoutingPanel={onDismissRoutingPanel}
+        onOpenRoutingPanel={onOpenRoutingPanel}
       />
     );
   }
@@ -965,6 +981,14 @@ const ChatPane: FC<{
         decisionApproved={decisionApproved}
         onSendToCodingHarness={onSendToCodingHarness}
         onAnswerInChatInstead={onAnswerInChatInstead}
+        routingPanel={routingPanel}
+        routingPanelLoudFailure={routingPanelLoudFailure}
+        routingPanelDraftText={routingPanelDraftText}
+        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+        onSendWithRouting={onSendWithRouting}
+        onSendDefault={onSendDefault}
+        onDismissRoutingPanel={onDismissRoutingPanel}
+        onOpenRoutingPanel={onOpenRoutingPanel}
       />
     </AssistantRuntimeProvider>
   );
@@ -2236,8 +2260,15 @@ export const Assistant = () => {
         if (!res.ok) throw new Error(`status ${res.status}`);
         const data: ModelRecommendation = await res.json();
         setRecommendation(data);
+        const panel = (data as unknown as { panel?: RoutingDecisionPanelPayload }).panel;
+        setRoutingPanel(panel ?? null);
+        setRoutingPanelLoudFailure(Boolean(data.loudFailure));
+        setRoutingPanelDraftText(trimmed);
       } catch {
         const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
+        setRoutingPanel(null);
+        setRoutingPanelLoudFailure(true);
+        setRoutingPanelDraftText(trimmed);
         setRecommendation({
           recommendedRoute: "normal_chat",
           routeReason: "The recommender could not run; defaulting to normal chat route.",
