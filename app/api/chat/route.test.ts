@@ -7,8 +7,11 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { convertToModelMessages, type UIMessage } from "ai";
 import {
   type RoutingDecisionPayload,
+  filterModelContextMessages,
+  isRoutingDecisionMessage,
   routingDecisionPart,
   routingDecisionTextPart,
   isRoutingDecisionPart,
@@ -226,4 +229,115 @@ test("routing decision payloads always carry the durable audit tag", () => {
   assert.strictEqual((dataPart.data as { messageType: unknown }).messageType, "routing_decision");
   assert.strictEqual((dataPart.data as { includeInModelContext: unknown }).includeInModelContext, false);
   assert.strictEqual((dataPart.data as { auditId: unknown }).auditId, "audit-minimal");
+});
+
+/**
+ * End-to-end proof that the chat route excludes the routing decision
+ * audit bubble from the model context BEFORE handing the message list
+ * to `convertToModelMessages` (the AI SDK function that turns UI
+ * messages into the wire shape the model actually sees).
+ *
+ * The chat route is the single source of truth for what reaches the
+ * model: it calls `filterModelContextMessages(messages)` immediately
+ * before `convertToModelMessages(...)`. The proof below constructs
+ * the exact four-message shape a real thread ends up in
+ * (user → R → A → user) and asserts the model sees only the user +
+ * assistant text messages, with the routing decision stripped.
+ */
+test("chat route excludes routing decision from convertToModelMessages input", async () => {
+  const payload: RoutingDecisionPayload = {
+    kind: "routing_decision",
+    messageType: "routing_decision",
+    includeInModelContext: false,
+    auditId: "audit-e2e",
+    route: "normal_chat",
+    selectionSource: "recommender_output",
+    harness: null,
+    routerEngine: null,
+    recommenderEngine: "gpt-5.4-mini",
+    recommenderReasoningLevel: "low",
+    executionModel: "gpt-5.4-mini",
+    executionReasoningLevel: "low",
+    fallback: null,
+    whyRoute: "Test route rationale",
+    whyModel: "Test model rationale",
+    alternatives: [{ harness: "minimax_cli", modelId: "MiniMax-M3" }],
+  };
+
+  // Build the exact 4-message shape the live thread ends up in:
+  //   1. user: Hi
+  //   2. assistant: routing decision (R)
+  //   3. assistant: model reply (A)
+  //   4. user: second prompt
+  const messages: UIMessage[] = [
+    {
+      id: "u1",
+      role: "user",
+      parts: [{ type: "text", text: "Hi" }],
+    },
+    {
+      id: "r1",
+      role: "assistant",
+      parts: [routingDecisionTextPart(payload), routingDecisionPart(payload)],
+    },
+    {
+      id: "a1",
+      role: "assistant",
+      parts: [{ type: "text", text: "Hi there! How can I help you today?" }],
+    },
+    {
+      id: "u2",
+      role: "user",
+      parts: [{ type: "text", text: "second prompt" }],
+    },
+  ];
+
+  // Sanity: every part-carrying message we expect is correctly typed.
+  assert.strictEqual(isRoutingDecisionMessage(messages[1]!), true);
+  assert.strictEqual(isRoutingDecisionMessage(messages[2]!), false);
+  assert.strictEqual(isRoutingDecisionMessage(messages[0]!), false);
+  assert.strictEqual(isRoutingDecisionMessage(messages[3]!), false);
+
+  // Mirror the chat route: filter then convert.
+  const contextMessages = filterModelContextMessages(messages);
+  const modelMessages = await convertToModelMessages(
+    contextMessages as Array<Omit<UIMessage, "id">>,
+  );
+
+  // Routing decision row is dropped; user + assistant text remain,
+  // and the surviving order matches the visible bubble order.
+  assert.deepEqual(
+    contextMessages.map((m) => m.id),
+    ["u1", "a1", "u2"],
+    "filterModelContextMessages must drop R1 but keep u1/a1/u2",
+  );
+
+  // convertToModelMessages collapses to model-role messages. The model
+  // must NEVER see the routing decision text or its data part. We
+  // assert the full text payload of the model messages — that catches
+  // any leak of the audit bubble's markdown (route/engine/fallback
+  // /alternatives) into the context.
+  const flat = JSON.stringify(modelMessages);
+  assert.match(flat, /Hi there/, "model must see the assistant reply text");
+  assert.match(flat, /second prompt/, "model must see the second user prompt");
+  assert.doesNotMatch(flat, /Routing decision/, "model must NOT see the audit header");
+  assert.doesNotMatch(flat, /audit-e2e/, "model must NOT see the routing decision auditId");
+  assert.doesNotMatch(flat, /recommender_output/, "model must NOT see selection source");
+  assert.doesNotMatch(flat, /gpt-5\.4-mini.*recommender/, "model must NOT see the recommender engine label");
+  assert.doesNotMatch(flat, /Test route rationale/, "model must NOT see whyRoute rationale");
+  assert.doesNotMatch(flat, /Test model rationale/, "model must NOT see whyModel rationale");
+  assert.doesNotMatch(flat, /MiniMax-M3/, "model must NOT see the alternatives JSON");
+  assert.doesNotMatch(
+    flat,
+    /Saved for visibility only/,
+    "model must NOT see the audit-bubble visibility footer",
+  );
+
+  // Final model-message shape: user (Hi), assistant (Hi there...),
+  // user (second prompt). Three messages, in order, no routing
+  // decision, no audit metadata, no alternatives, no fallback trace.
+  assert.strictEqual(modelMessages.length, 3);
+  assert.strictEqual(modelMessages[0]!.role, "user");
+  assert.strictEqual(modelMessages[1]!.role, "assistant");
+  assert.strictEqual(modelMessages[2]!.role, "user");
 });

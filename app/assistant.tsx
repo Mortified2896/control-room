@@ -832,6 +832,25 @@ const ChatPane: FC<{
     // keep them attached to the assistant message state so the panel can
     // pick them up via `useAuiState((s) => s.message.parts)`.
     dataPartSchemas: routerAbDataSchemas,
+    // Consecutive assistant messages must render as SEPARATE bubbles.
+    // The client appends the routing decision R as its own assistant
+    // message via `aui.thread().append({ role: "assistant", startRun: false })`
+    // inside the `thread.runStart` handler (see
+    // `appendQueuedRoutingDecision` in `components/assistant-ui/thread.tsx`).
+    // The streamed model response A is then appended by the AI SDK
+    // transport as a second assistant message in the same branch.
+    //
+    // The default `joinStrategy: "concat-content"` in
+    // `useExternalMessageConverter` collapses consecutive assistant
+    // messages into a single thread message, which renders R and A
+    // inside one bubble and hides the model's text inside the routing
+    // decision card. Setting `joinStrategy: "none"` keeps each
+    // assistant message as its own thread message, so R and A render
+    // as two distinct bubbles in the order they were inserted
+    // (user → R → A). The same rule applies to the hydration path
+    // (DB rows re-loaded as `initialMessages`), so the visible order
+    // is identical between the live view and a hard refresh.
+    joinStrategy: "none",
   });
 
   return (
