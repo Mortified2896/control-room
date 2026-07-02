@@ -16,6 +16,7 @@ import {
   formatRoutingDecisionMarkdown,
   routingDecisionAuditId,
   routingDecisionPart,
+  routingDecisionTextPart,
   routingDecisionFromMessage,
   type RoutingDecisionPayload,
 } from "@/lib/assistant-ui/routing-decision";
@@ -221,6 +222,7 @@ export const Thread: FC<{
   workflowContent?: ReactNode;
   showWelcome?: boolean;
   routerAbOn?: boolean;
+
   /**
    * When `true`, the chat composer intercepts the Send action and
    * fetches a model recommendation before letting the message go
@@ -246,6 +248,7 @@ export const Thread: FC<{
     comment: string,
   ) => void;
   onRecommend?: (message: string) => void;
+  onManualRoutingDecision?: (message: string) => RoutingDecisionPayload | null;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
@@ -331,6 +334,7 @@ export const Thread: FC<{
   fallbackEngineSummary,
   onDecisionAction,
   onRecommend,
+  onManualRoutingDecision,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
@@ -412,6 +416,7 @@ export const Thread: FC<{
               fallbackEngineSummary={fallbackEngineSummary}
               onDecisionAction={onDecisionAction}
               onRecommend={onRecommend}
+              onManualRoutingDecision={onManualRoutingDecision}
               onUseRecommendation={onUseRecommendation}
               onKeepCurrent={onKeepCurrent}
               pendingRecommendedSend={pendingRecommendedSend}
@@ -544,6 +549,7 @@ const Composer: FC<{
     comment: string,
   ) => void;
   onRecommend?: (message: string) => void;
+  onManualRoutingDecision?: (message: string) => RoutingDecisionPayload | null;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
@@ -581,6 +587,7 @@ const Composer: FC<{
   fallbackEngineSummary,
   onDecisionAction,
   onRecommend,
+  onManualRoutingDecision,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
@@ -596,6 +603,7 @@ const Composer: FC<{
   onSendToCodingHarness,
   onAnswerInChatInstead,
 }) => {
+  const aui = useAui();
   const [error, setError] = useState<string | null>(null);
   const composerText = useAuiState((s) => s.composer.text);
   // useAuiState uses useSyncExternalStore, which reads the current store value
@@ -750,6 +758,7 @@ const Composer: FC<{
             fallbackEngineSummary={fallbackEngineSummary}
             onDecisionAction={onDecisionAction}
             onRecommend={onRecommend}
+            onManualRoutingDecision={onManualRoutingDecision}
             onUseRecommendation={onUseRecommendation}
             onKeepCurrent={onKeepCurrent}
             pendingRecommendedSend={pendingRecommendedSend}
@@ -800,6 +809,7 @@ const ComposerAction: FC<{
     comment: string,
   ) => void;
   onRecommend?: (message: string) => void;
+  onManualRoutingDecision?: (message: string) => RoutingDecisionPayload | null;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
@@ -839,6 +849,7 @@ const ComposerAction: FC<{
   fallbackEngineSummary,
   onDecisionAction,
   onRecommend,
+  onManualRoutingDecision,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
@@ -855,6 +866,29 @@ const ComposerAction: FC<{
   onAnswerInChatInstead,
 }) => {
   const aui = useAui();
+  const pendingManualRoutingDecisionRef = useRef<RoutingDecisionPayload | null>(null);
+  const lastAppendedRoutingAuditIdRef = useRef<string | null>(null);
+  const queueManualRoutingDecision = useCallback(
+    (text: string) => {
+      if (text.trim().length === 0) return;
+      const routingDecision = onManualRoutingDecision?.(text) ?? null;
+      if (!routingDecision || lastAppendedRoutingAuditIdRef.current === routingDecision.auditId) return;
+      pendingManualRoutingDecisionRef.current = routingDecision;
+    },
+    [onManualRoutingDecision],
+  );
+  const appendQueuedManualRoutingDecision = useCallback(() => {
+    const routingDecision = pendingManualRoutingDecisionRef.current;
+    if (!routingDecision || lastAppendedRoutingAuditIdRef.current === routingDecision.auditId) return;
+    pendingManualRoutingDecisionRef.current = null;
+    lastAppendedRoutingAuditIdRef.current = routingDecision.auditId;
+    aui.thread().append({
+      role: "assistant",
+      content: [routingDecisionTextPart(routingDecision) as never, routingDecisionPart(routingDecision) as never],
+      startRun: false,
+    });
+  }, [aui]);
+  useAuiEvent("thread.runEnd", appendQueuedManualRoutingDecision);
   const [creatingDraft, setCreatingDraft] = useState(false);
   const [codexRun, setCodexRun] = useState<null | {
     id: string;
@@ -1123,6 +1157,7 @@ const ComposerAction: FC<{
               executionModel: input.modelId,
             }),
             route: "coding_task",
+            selectionSource: "recommender_output",
             harness: input.harnessId === "minimax_cli" ? "MiniMax CLI" : "Codex CLI",
             routerEngine: routerDecision?.recommender_model_id ?? null,
             recommenderEngine: routerDecision?.recommender_model_id ?? null,
@@ -1160,7 +1195,7 @@ const ComposerAction: FC<{
       if (routingDecision) {
         aui.thread().append({
           role: "assistant",
-          content: [routingDecisionPart(routingDecision) as never],
+          content: [routingDecisionTextPart(routingDecision) as never, routingDecisionPart(routingDecision) as never],
           startRun: false,
         });
       }
@@ -1794,6 +1829,7 @@ const ComposerAction: FC<{
                     size="icon"
                     className="aui-composer-send size-7 rounded-full"
                     aria-label="Send message"
+                    onClickCapture={() => queueManualRoutingDecision(composerText)}
                   >
                     <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
                   </TooltipIconButton>
@@ -2375,10 +2411,12 @@ const RoutingDecisionCard: FC<{ decision: RoutingDecisionPayload }> = ({ decisio
       <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs">
         <dt className="text-muted-foreground">Route</dt>
         <dd>{decision.route === "coding_task" ? "coding" : "normal chat"}</dd>
+        <dt className="text-muted-foreground">Selection source</dt>
+        <dd>{decision.selectionSource ?? "unknown"}</dd>
         <dt className="text-muted-foreground">Harness</dt>
         <dd>{decision.harness ?? "none"}</dd>
         <dt className="text-muted-foreground">Router/recommender engine</dt>
-        <dd>{decision.recommenderEngine ?? decision.routerEngine ?? "unknown"}</dd>
+        <dd>{decision.recommenderEngine ?? decision.routerEngine ?? "not used"}</dd>
         <dt className="text-muted-foreground">Recommender reasoning</dt>
         <dd>{decision.recommenderReasoningLevel ?? "unknown"}</dd>
         <dt className="text-muted-foreground">Execution model</dt>
@@ -2387,13 +2425,15 @@ const RoutingDecisionCard: FC<{ decision: RoutingDecisionPayload }> = ({ decisio
         <dd>{decision.executionReasoningLevel ?? "unknown"}</dd>
         <dt className="text-muted-foreground">Fallback recommender</dt>
         <dd>
-          {decision.fallback?.used
-            ? "used"
-            : decision.fallback?.attempted
-              ? "attempted"
-              : decision.fallback?.configured
-                ? "configured"
-                : "not configured"}
+          {decision.fallback == null
+            ? "not used"
+            : decision.fallback.used
+              ? "used"
+              : decision.fallback.attempted
+                ? "attempted"
+                : decision.fallback.configured
+                  ? "configured"
+                  : "not configured"}
           {decision.fallback?.engine ? ` · ${decision.fallback.engine}` : ""}
         </dd>
       </dl>

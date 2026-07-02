@@ -31,9 +31,7 @@ import {
 import { messageRowsToUIMessages } from "@/lib/assistant-ui/thread-messages";
 import {
   filterModelContextMessages,
-  formatRoutingDecisionMarkdown,
   routingDecisionAuditId,
-  routingDecisionPart,
   type RoutingDecisionPayload,
 } from "@/lib/assistant-ui/routing-decision";
 
@@ -303,21 +301,37 @@ function isLocalThreadId(id: string | null | undefined): boolean {
 }
 
 function uiMessagesToThreadMessageLikes(messages: readonly UIMessage[]): ThreadMessageLike[] {
-  return filterModelContextMessages([...messages])
+  return messages
     .filter(
       (message) =>
         message.role === "user" || message.role === "assistant" || message.role === "system",
     )
-    .map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.parts
-        .filter(
-          (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
-            part.type === "text",
-        )
-        .map((part) => ({ type: "text" as const, text: part.text })),
-    }));
+    .map((message) => {
+      const routingParts = message.parts.filter(
+        (part) =>
+          part &&
+          typeof part === "object" &&
+          (part as { type?: unknown }).type === "data-routing-decision",
+      );
+      return {
+        id: message.id,
+        role: message.role,
+        content: routingParts.length
+          ? (message.parts.filter(
+              (part) =>
+                (part &&
+                  typeof part === "object" &&
+                  (part as { type?: unknown }).type === "data-routing-decision") ||
+                (part && typeof part === "object" && (part as { type?: unknown }).type === "text"),
+            ) as never)
+          : message.parts
+              .filter(
+                (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
+                  part.type === "text",
+              )
+              .map((part) => ({ type: "text" as const, text: part.text })),
+      };
+    });
 }
 
 function extractTextFromLocalMessages(messages: readonly unknown[]): string {
@@ -384,6 +398,7 @@ const CodexChatPane: FC<{
     comment: string,
   ) => void;
   onRecommend?: (message: string) => void;
+  onManualRoutingDecision?: (message: string) => RoutingDecisionPayload | null;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
@@ -444,6 +459,7 @@ const CodexChatPane: FC<{
   fallbackEngineSummary,
   onDecisionAction,
   onRecommend,
+  onManualRoutingDecision,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
@@ -535,6 +551,7 @@ const CodexChatPane: FC<{
         fallbackEngineSummary={fallbackEngineSummary}
         onDecisionAction={onDecisionAction}
         onRecommend={onRecommend}
+        onManualRoutingDecision={onManualRoutingDecision}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
         pendingRecommendedSend={pendingRecommendedSend}
@@ -595,9 +612,11 @@ const ChatPane: FC<{
     comment: string,
   ) => void;
   onRecommend?: (message: string) => void;
+  onManualRoutingDecision?: (message: string) => RoutingDecisionPayload | null;
   onUseRecommendation?: (draftText?: string) => void;
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
+  pendingRoutingDecision?: RoutingDecisionPayload | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
   onEnsureCodingThread?: () => Promise<string | null>;
   onCodingRunComplete?: (threadId: string | null) => void;
@@ -666,9 +685,11 @@ const ChatPane: FC<{
   fallbackEngineSummary,
   onDecisionAction,
   onRecommend,
+  onManualRoutingDecision,
   onUseRecommendation,
   onKeepCurrent,
   pendingRecommendedSend = null,
+  pendingRoutingDecision = null,
   onPendingRecommendedSendConsumed,
   onEnsureCodingThread,
   onCodingRunComplete,
@@ -711,6 +732,7 @@ const ChatPane: FC<{
         fallbackEngineSummary={fallbackEngineSummary}
         onDecisionAction={onDecisionAction}
         onRecommend={onRecommend}
+        onManualRoutingDecision={onManualRoutingDecision}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
         pendingRecommendedSend={pendingRecommendedSend}
@@ -743,7 +765,10 @@ const ChatPane: FC<{
         prepareSendMessagesRequest: ({ body, messages }) => ({
           body: {
             ...body,
-            messages,
+            // Routing-decision bubbles are UI-only audit messages. Keep
+            // them out of the execution model context before the request
+            // leaves the browser; /api/chat also filters defensively.
+            messages: filterModelContextMessages([...messages]),
             modelId,
             threadId,
             // Send the provider-native value verbatim — the chat
@@ -753,10 +778,11 @@ const ChatPane: FC<{
             thinkingMode,
             selectionSource,
             routerAb: effectiveRouterAbOn,
+            routingDecision: pendingRoutingDecision,
           },
         }),
       }),
-    [modelId, threadId, reasoningLevel, thinkingMode, selectionSource, effectiveRouterAbOn],
+    [modelId, threadId, reasoningLevel, thinkingMode, selectionSource, effectiveRouterAbOn, pendingRoutingDecision],
   );
 
   const runtime = useChatRuntime({
@@ -794,6 +820,7 @@ const ChatPane: FC<{
         fallbackEngineSummary={fallbackEngineSummary}
         onDecisionAction={onDecisionAction}
         onRecommend={onRecommend}
+        onManualRoutingDecision={onManualRoutingDecision}
         onUseRecommendation={onUseRecommendation}
         onKeepCurrent={onKeepCurrent}
         pendingRecommendedSend={pendingRecommendedSend}
@@ -1170,27 +1197,11 @@ const SidebarPanel: FC<{
   );
 };
 
-const harnessLabel = (harness: ThreadHarness) =>
-  harness === "opencode"
-    ? "OpenCode"
-    : harness === "codex"
-      ? "Codex"
-      : harness === "minimax"
-        ? "MiniMax"
-        : "Pi";
-
-type HarnessRecommendation = {
-  recommendedHarness: ThreadHarness;
-  reasoning: string;
-  alternatives?: Array<{ harness: ThreadHarness; reason: string }>;
-};
-
 /**
  * Generic coding-harness recommendation returned by
- * `/api/coding-harness/recommend`. Distinct from `HarnessRecommendation`
- * (which is the NewChatDialog payload from `/api/harness/recommend`):
- * the generic recommendation carries the model id + reasoning level
- * the harness should run with, the task type, and a `fallback` flag.
+ * `/api/coding-harness/recommend`. The recommendation carries the
+ * model id + reasoning level the harness should run with, the task
+ * type, and a `fallback` flag.
  */
 type CodingHarnessRecommendation = {
   taskType: "coding" | "debugging" | "repo_edit" | "code_review" | "other";
@@ -1232,170 +1243,6 @@ type HarnessRegistryView = {
   unavailableReason: string | null;
 };
 
-const NewChatDialog: FC<{
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  project: ProjectListItem | null;
-  onCreate: (input: {
-    threadMode: ThreadMode;
-    harness?: ThreadHarness | null;
-    firstMessage?: string;
-  }) => void;
-}> = ({ open, onOpenChange, project, onCreate }) => {
-  const [threadMode, setThreadMode] = useState<ThreadMode>("chat");
-  const [instruction, setInstruction] = useState("");
-  const [selectedHarness, setSelectedHarness] = useState<ThreadHarness | null>(null);
-  const [recommendation, setRecommendation] = useState<HarnessRecommendation | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setThreadMode("chat");
-    setInstruction("");
-    setSelectedHarness(null);
-    setRecommendation(null);
-    setError(null);
-  }, [open]);
-
-  const recommend = async () => {
-    if (!project) return;
-    const task = instruction.trim();
-    if (!task) {
-      setError("Paste the first coding task before requesting a recommendation.");
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/harness/recommend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: project.id, instruction: task }),
-      });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = (await res.json()) as HarnessRecommendation;
-      setRecommendation(data);
-      setSelectedHarness(data.recommendedHarness);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Recommendation failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const create = () => {
-    if (threadMode === "chat") {
-      onCreate({ threadMode: "chat" });
-      onOpenChange(false);
-      return;
-    }
-    if (!project) return;
-    if (!instruction.trim()) {
-      setError("Coding task requires the first task prompt.");
-      return;
-    }
-    if (!selectedHarness) {
-      setError("Choose a harness before creating the coding task thread.");
-      return;
-    }
-    onCreate({
-      threadMode: "coding_task",
-      harness: selectedHarness,
-      firstMessage: instruction.trim(),
-    });
-    onOpenChange(false);
-  };
-
-  return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
-      <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/40" />
-        <DialogPrimitive.Content className="fixed left-1/2 top-1/2 z-50 w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-background p-4 shadow-xl">
-          <DialogPrimitive.Title className="text-base font-semibold">
-            New chat
-          </DialogPrimitive.Title>
-          <DialogPrimitive.Description className="mt-1 text-sm text-muted-foreground">
-            {project ? `Create a chat in ${project.name}.` : "Create a general chat."}
-          </DialogPrimitive.Description>
-
-          <div className="mt-4 flex gap-2 text-sm">
-            <Button
-              variant={threadMode === "chat" ? "default" : "outline"}
-              onClick={() => setThreadMode("chat")}
-            >
-              Chat
-            </Button>
-            {project ? (
-              <Button
-                variant={threadMode === "coding_task" ? "default" : "outline"}
-                onClick={() => setThreadMode("coding_task")}
-              >
-                Coding task
-              </Button>
-            ) : null}
-          </div>
-
-          {threadMode === "coding_task" && project ? (
-            <div className="mt-4 space-y-3">
-              <textarea
-                value={instruction}
-                onChange={(e) => setInstruction(e.target.value)}
-                className="min-h-28 w-full rounded-lg border border-border bg-background p-3 text-sm outline-none focus:border-foreground"
-                placeholder="What should this coding chat work on?"
-              />
-              <Button type="button" variant="outline" onClick={recommend} disabled={loading}>
-                {loading ? "Recommending…" : "Recommend harness"}
-              </Button>
-              {recommendation ? (
-                <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
-                  <div className="font-medium">
-                    Recommended harness: {harnessLabel(recommendation.recommendedHarness)}
-                  </div>
-                  <p className="mt-1 text-muted-foreground">{recommendation.reasoning}</p>
-                  {recommendation.alternatives?.length ? (
-                    <ul className="mt-2 list-disc pl-5 text-xs text-muted-foreground">
-                      {recommendation.alternatives.map((alt) => (
-                        <li key={alt.harness}>
-                          {harnessLabel(alt.harness)}: {alt.reason}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="flex flex-wrap gap-2 text-sm">
-                {(["pi", "codex", "opencode", "minimax"] as const).map((harness) => (
-                  <Button
-                    key={harness}
-                    type="button"
-                    variant={selectedHarness === harness ? "default" : "outline"}
-                    onClick={() => setSelectedHarness(harness)}
-                  >
-                    {harnessLabel(harness)}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {error ? <div className="mt-3 text-sm text-destructive">{error}</div> : null}
-          <div className="mt-5 flex justify-end gap-2">
-            <DialogPrimitive.Close asChild>
-              <Button type="button" variant="ghost">
-                Cancel
-              </Button>
-            </DialogPrimitive.Close>
-            <Button type="button" onClick={create}>
-              Create thread
-            </Button>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
-    </DialogPrimitive.Root>
-  );
-};
-
 export const Assistant = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -1412,7 +1259,7 @@ export const Assistant = () => {
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesReloadNonce, setMessagesReloadNonce] = useState(0);
-  const [newChatOpen, setNewChatOpen] = useState(false);
+
   const [deletingThreads, setDeletingThreads] = useState(false);
   const [dbConfigured, setDbConfigured] = useState(true);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -1491,8 +1338,8 @@ export const Assistant = () => {
    * coding-task shapes:
    *
    *   1. Legacy path: `isCodingTask === true` because the thread
-   *      was opened directly as coding_task (NewChatDialog). The
-   *      composer shows the legacy "Send to Codex" / handoff-draft
+   *      was opened directly as coding_task (removed: NewChatDialog).
+   *      The composer shows the legacy "Send to Codex" / handoff-draft
    *      pills.
    *   2. Intermediate state: the user approved a router decision
    *      as coding_task and we are awaiting the harness
@@ -1522,6 +1369,8 @@ export const Assistant = () => {
   } | null>(null);
   const [pendingRecommendedSend, setPendingRecommendedSend] =
     useState<PendingRecommendedSend | null>(null);
+  const [pendingRoutingDecision, setPendingRoutingDecision] =
+    useState<RoutingDecisionPayload | null>(null);
   const pendingRecommendedSendCounter = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCoarsePointer = useMediaQuery("(pointer: coarse)");
@@ -1857,9 +1706,8 @@ export const Assistant = () => {
   );
 
   const handleNewThread = useCallback(() => {
-    if (activeProjectId) setNewChatOpen(true);
-    else void handleCreateThread({ threadMode: "chat" });
-  }, [activeProjectId, handleCreateThread]);
+    void handleCreateThread({ threadMode: "chat" });
+  }, [handleCreateThread]);
 
   const handleDeleteAllThreads = useCallback(async () => {
     if (threads.length === 0 || deletingThreads) return;
@@ -1994,29 +1842,54 @@ export const Assistant = () => {
       setRouterDecision(null);
       setThreadModeOverride(null);
       setHarnessOverride(null);
-      setRouterDecisionLoading(true);
-      setRouterDecisionEta({
-        expected_latency_ms: 750,
-        upper_latency_ms: 2000,
-        estimate_quality: "rough",
+      setRecommendationLoading(true);
+      const promptTokens = Math.max(1, Math.ceil(trimmed.length / 4));
+      const expectedMs = Math.min(15_000, Math.max(3_000, 2_000 + promptTokens * 3));
+      setRecommendationEta({
+        expected_latency_ms: expectedMs,
+        upper_latency_ms: Math.round(expectedMs * 2.5),
+        estimate_quality: promptTokens > 2_000 ? "uncertain" : "likely",
         started_at: new Date().toISOString(),
       });
       try {
-        const res = await fetch("/api/router/decision", {
+        const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
+        const res = await fetch("/api/model/recommend", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
             projectId: activeProjectId,
             message: trimmed,
+            currentModelId: selectedModelId,
+            currentProvider: selected?.providerId ?? null,
+            currentReasoningLevel: selectedReasoningLevel,
+            mode: "normal_chat",
           }),
         });
         if (!res.ok) throw new Error(`status ${res.status}`);
-        const data = (await res.json()) as Omit<RouterDecision, "prompt">;
-        setRouterDecision({ ...data, prompt: trimmed });
+        const data: ModelRecommendation = await res.json();
+        setRecommendation(data);
+      } catch {
+        const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
+        setRecommendation({
+          recommendedModelId: selectedModelId ?? "gpt-5.4-mini",
+          recommendedProvider: selected?.providerId ?? "openai",
+          recommendedReasoningLevel: selectedReasoningLevel,
+          reasoning:
+            "The recommender request failed. Control Room will not auto-substitute a different model.",
+          loudFailure: true,
+          proposedSubscriptionFallbacks: [],
+          diagnostics: {
+            recommenderProvider: "unknown",
+            recommenderModelId: "unknown",
+            fallback: true,
+            fallbackReason: "model_recommendation_failed",
+            attemptedCandidateModel: null,
+          },
+        });
       } finally {
-        setRouterDecisionLoading(false);
-        setRouterDecisionEta(null);
+        setRecommendationLoading(false);
+        setRecommendationEta(null);
       }
     },
     [activeProjectId, activeThreadId],
@@ -2131,43 +2004,8 @@ export const Assistant = () => {
     setRouterDecision(null);
   }, []);
 
-  const persistRoutingDecisionBubble = useCallback(
-    async (payload: RoutingDecisionPayload) => {
-      if (isLocalThreadId(activeThreadId)) return;
-      if (
-        threadMessages.some((message) =>
-          message.parts.some(
-            (part) =>
-              part &&
-              typeof part === "object" &&
-              (part as { type?: unknown }).type === "data-routing-decision" &&
-              (part as { data?: { auditId?: unknown } }).data?.auditId === payload.auditId,
-          ),
-        )
-      ) {
-        return;
-      }
-      const parts = [routingDecisionPart(payload)];
-      setThreadMessages((prev) => [
-        ...prev,
-        { id: `routing-${Date.now()}`, role: "assistant", parts } as UIMessage,
-      ]);
-      await fetch(`/api/threads/${activeThreadId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          role: "assistant",
-          content: formatRoutingDecisionMarkdown(payload),
-          parts,
-          modelId: payload.recommenderEngine ?? payload.routerEngine ?? null,
-        }),
-      }).catch(() => undefined);
-    },
-    [activeThreadId, threadMessages],
-  );
-
   const handleUseRecommendation = useCallback(
-    (draftText?: string) => {
+    async (draftText?: string) => {
       if (!recommendation) return;
       const proposed = recommendation.loudFailure
         ? (recommendation.proposedSubscriptionFallbacks?.[0] ?? null)
@@ -2178,16 +2016,21 @@ export const Assistant = () => {
         setSelectedReasoningLevel(recommendation.recommendedReasoningLevel);
       }
       if (draftText?.trim()) {
+        const runThreadId =
+          activeThreadId && !isLocalThreadId(activeThreadId)
+            ? activeThreadId
+            : await handleCreateThread({ threadMode: "chat" });
         const payload: RoutingDecisionPayload = {
           messageType: "routing_decision",
           includeInModelContext: false,
           auditId: routingDecisionAuditId({
-            threadId: activeThreadId,
+            threadId: runThreadId,
             prompt: draftText,
             route: "normal_chat",
             executionModel: proposed?.toModelId ?? recommendation.recommendedModelId,
           }),
           route: "normal_chat",
+          selectionSource: "recommender_output",
           harness: null,
           routerEngine: routerDecision?.recommender_model_id ?? null,
           recommenderEngine: recommendation.diagnostics.recommenderModelId,
@@ -2207,7 +2050,7 @@ export const Assistant = () => {
           whyModel: proposed?.reason ?? recommendation.reasoning,
           alternatives: recommendation.alternatives,
         };
-        void persistRoutingDecisionBubble(payload);
+        setPendingRoutingDecision(payload);
         pendingRecommendedSendCounter.current += 1;
         setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
       }
@@ -2215,7 +2058,7 @@ export const Assistant = () => {
     },
     [
       activeThreadId,
-      persistRoutingDecisionBubble,
+      handleCreateThread,
       recommendation,
       recommenderFallbackModelId,
       recommenderReasoningLevel,
@@ -2231,6 +2074,48 @@ export const Assistant = () => {
     }
     setRecommendation(null);
   }, []);
+
+  const handleManualRoutingDecision = useCallback(
+    (draftText: string) => {
+      const prompt = draftText.trim();
+      if (!prompt) return null;
+      const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
+      const reasoningOrThinking =
+        selected?.reasoningCapability.kind === "thinking_budget"
+          ? selectedThinkingMode
+          : selectedReasoningLevel;
+      const payload: RoutingDecisionPayload = {
+        messageType: "routing_decision",
+        includeInModelContext: false,
+        auditId: routingDecisionAuditId({
+          threadId: activeThreadId,
+          prompt,
+          route: "normal_chat",
+          executionModel: selectedModelId,
+        }),
+        route: "normal_chat",
+        selectionSource: "manual_current_selection",
+        harness: null,
+        routerEngine: null,
+        recommenderEngine: null,
+        recommenderReasoningLevel: null,
+        executionModel: selected?.modelLabel ?? selectedModelId ?? "unknown",
+        executionReasoningLevel: reasoningOrThinking,
+        fallback: null,
+        whyRoute: "Direct normal chat send using the current manual selection.",
+        whyModel: "Recommender was not used; Control Room used the currently selected model and reasoning/thinking setting.",
+        alternatives: [],
+      };
+      return payload;
+    },
+    [
+      activeThreadId,
+      models,
+      selectedModelId,
+      selectedReasoningLevel,
+      selectedThinkingMode,
+    ],
+  );
 
   // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
   // full registry. The typing guard (isTypingTarget) is enforced here for
@@ -2315,13 +2200,6 @@ export const Assistant = () => {
 
   return (
     <div className="flex h-dvh overflow-hidden">
-      <NewChatDialog
-        open={newChatOpen}
-        onOpenChange={setNewChatOpen}
-        project={activeProject}
-        onCreate={(input) => void handleCreateThread(input)}
-      />
-
       <SidebarPanel
         threads={threads}
         projects={projects}
@@ -2405,12 +2283,15 @@ export const Assistant = () => {
               fallbackEngineSummary={fallbackEngineSummary}
               onDecisionAction={handleDecisionAction}
               onRecommend={handleRecommendModel}
+              onManualRoutingDecision={handleManualRoutingDecision}
               onUseRecommendation={handleUseRecommendation}
               onKeepCurrent={handleKeepCurrent}
               pendingRecommendedSend={pendingRecommendedSend}
-              onPendingRecommendedSendConsumed={(id) =>
-                setPendingRecommendedSend((pending) => (pending?.id === id ? null : pending))
-              }
+              pendingRoutingDecision={pendingRoutingDecision}
+              onPendingRecommendedSendConsumed={(id) => {
+                setPendingRecommendedSend((pending) => (pending?.id === id ? null : pending));
+                setPendingRoutingDecision(null);
+              }}
               onEnsureCodingThread={() =>
                 activeThreadId && !isLocalThreadId(activeThreadId)
                   ? Promise.resolve(activeThreadId)
@@ -2421,7 +2302,10 @@ export const Assistant = () => {
                 setMessagesReloadNonce((n) => n + 1);
                 void refreshThreads();
               }}
-              onFinish={() => void refreshThreads()}
+              onFinish={() => {
+                void refreshThreads();
+                setMessagesReloadNonce((n) => n + 1);
+              }}
               harnessRegistry={harnessRegistry}
               codingHarnessRecommendation={codingHarnessRecommendation}
               codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}

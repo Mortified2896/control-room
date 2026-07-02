@@ -88,16 +88,46 @@ const routerExecutionOutcomeSchema = z.object({
   completed_at: z.string(),
 });
 
+const routingDecisionSchema = z.object({
+  messageType: z.literal("routing_decision"),
+  includeInModelContext: z.literal(false),
+  auditId: z.string(),
+  route: z.enum(["normal_chat", "coding_task"]),
+  selectionSource: z.string().nullable().optional(),
+  harness: z.string().nullable().optional(),
+  routerEngine: z.string().nullable().optional(),
+  recommenderEngine: z.string().nullable().optional(),
+  recommenderReasoningLevel: z.string().nullable().optional(),
+  executionModel: z.string().nullable().optional(),
+  executionReasoningLevel: z.string().nullable().optional(),
+  fallback: z
+    .object({
+      configured: z.boolean().optional(),
+      attempted: z.boolean().optional(),
+      used: z.boolean().optional(),
+      engine: z.string().nullable().optional(),
+      reason: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+  whyRoute: z.string().nullable().optional(),
+  whyHarness: z.string().nullable().optional(),
+  whyModel: z.string().nullable().optional(),
+  alternatives: z.array(z.record(z.string(), z.unknown())).optional(),
+});
+
 export const routerAbDataSchemas: {
   "router-ab": typeof routerAbSchema;
   "router-ab-side-b": typeof routerAbSideBSchema;
   "router-execution-estimate": typeof routerExecutionEstimateSchema;
   "router-execution-outcome": typeof routerExecutionOutcomeSchema;
+  "routing-decision": typeof routingDecisionSchema;
 } = {
   "router-ab": routerAbSchema,
   "router-ab-side-b": routerAbSideBSchema,
   "router-execution-estimate": routerExecutionEstimateSchema,
   "router-execution-outcome": routerExecutionOutcomeSchema,
+  "routing-decision": routingDecisionSchema,
 };
 
 // Re-export so consumers don't need to import from `@/app/api/chat/route`.

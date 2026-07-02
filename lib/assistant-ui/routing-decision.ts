@@ -8,6 +8,7 @@ export type RoutingDecisionPayload = {
   includeInModelContext: false;
   auditId: string;
   route: "normal_chat" | "coding_task";
+  selectionSource?: "manual_current_selection" | "recommender_output" | "manual_override" | string | null;
   harness?: string | null;
   routerEngine?: string | null;
   recommenderEngine?: string | null;
@@ -48,6 +49,10 @@ export function routingDecisionPart(payload: RoutingDecisionPayload) {
   return { type: ROUTING_DECISION_PART_TYPE, data: payload };
 }
 
+export function routingDecisionTextPart(payload: RoutingDecisionPayload) {
+  return { type: "text" as const, text: formatRoutingDecisionMarkdown(payload) };
+}
+
 export function isRoutingDecisionPart(part: unknown): part is { type: typeof ROUTING_DECISION_PART_TYPE; data: RoutingDecisionPayload } {
   return Boolean(
     part &&
@@ -59,18 +64,29 @@ export function isRoutingDecisionPart(part: unknown): part is { type: typeof ROU
   );
 }
 
-export function routingDecisionFromMessage(message: { parts: readonly unknown[] }): RoutingDecisionPayload | null {
+export function routingDecisionFromMessage(message: { parts?: readonly unknown[] }): RoutingDecisionPayload | null {
+  if (!message.parts || !Array.isArray(message.parts)) return null;
   for (const part of message.parts) {
     if (isRoutingDecisionPart(part)) return part.data;
   }
   return null;
 }
 
-export function isRoutingDecisionMessage(message: { parts: readonly unknown[] }): boolean {
-  return routingDecisionFromMessage(message) != null;
+export function isRoutingDecisionMessage(message: { parts?: readonly unknown[] }): boolean {
+  if (!message.parts || !Array.isArray(message.parts)) return false;
+  if (routingDecisionFromMessage(message) != null) return true;
+  return message.parts.some(
+    (part) =>
+      part &&
+      typeof part === "object" &&
+      (part as { type?: unknown }).type === "text" &&
+      typeof (part as { text?: unknown }).text === "string" &&
+      (part as { text: string }).text.includes("Saved for visibility only. Not sent to the execution model.") &&
+      (part as { text: string }).text.includes("Routing decision"),
+  );
 }
 
-export function filterModelContextMessages<T extends { parts: readonly unknown[] }>(messages: T[]): T[] {
+export function filterModelContextMessages<T extends { parts?: readonly unknown[] }>(messages: T[]): T[] {
   return messages.filter((message) => !isRoutingDecisionMessage(message));
 }
 
@@ -79,12 +95,13 @@ export function formatRoutingDecisionMarkdown(payload: RoutingDecisionPayload): 
     "### Routing decision",
     "Saved for visibility only. Not sent to the execution model.",
     `- Route: ${payload.route === "coding_task" ? "coding" : "normal chat"}`,
+    `- Selection source: ${payload.selectionSource ?? "unknown"}`,
     `- Harness: ${payload.harness ?? "none"}`,
-    `- Router/recommender engine: ${payload.recommenderEngine ?? payload.routerEngine ?? "unknown"}`,
+    `- Router/recommender engine: ${payload.recommenderEngine ?? payload.routerEngine ?? "not used"}`,
     `- Recommender reasoning level: ${payload.recommenderReasoningLevel ?? "unknown"}`,
     `- Execution model: ${payload.executionModel ?? "unknown"}`,
     `- Execution reasoning level: ${payload.executionReasoningLevel ?? "unknown"}`,
-    `- Fallback recommender: ${payload.fallback?.used ? "used" : payload.fallback?.attempted ? "attempted" : payload.fallback?.configured ? "configured" : "not configured"}${payload.fallback?.engine ? ` (${payload.fallback.engine})` : ""}`,
+    `- Fallback recommender: ${payload.fallback == null ? "not used" : payload.fallback.used ? "used" : payload.fallback.attempted ? "attempted" : payload.fallback.configured ? "configured" : "not configured"}${payload.fallback?.engine ? ` (${payload.fallback.engine})` : ""}`,
   ];
   if (payload.whyRoute) lines.push(`\n**Why this route/harness**\n\n${payload.whyRoute}`);
   if (payload.whyHarness) lines.push(`\n**Why this harness**\n\n${payload.whyHarness}`);

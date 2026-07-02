@@ -6,6 +6,7 @@ import {
   formatRoutingDecisionMarkdown,
   isRoutingDecisionPart,
   routingDecisionPart,
+  routingDecisionTextPart,
   type RoutingDecisionPayload,
 } from "@/lib/assistant-ui/routing-decision";
 import { getProject } from "@/lib/repo/projects";
@@ -60,7 +61,7 @@ async function persistRoutingDecisionIfAbsent(threadId: string, payload: Routing
     threadId,
     role: "assistant",
     content: formatRoutingDecisionMarkdown(payload),
-    parts: [routingDecisionPart(payload)],
+    parts: [routingDecisionTextPart(payload), routingDecisionPart(payload)],
     modelId: payload.recommenderEngine ?? payload.routerEngine ?? null,
   });
 }

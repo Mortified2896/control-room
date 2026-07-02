@@ -13,8 +13,16 @@ import {
 import { fakeAssistantText, isFakeLlmEnabled } from "@/lib/router/fake-llm";
 import { isDbConfigured } from "@/lib/db";
 import { extractLatestUserMessage, uiMessageText } from "@/lib/assistant-ui/thread-messages";
-import { filterModelContextMessages } from "@/lib/assistant-ui/routing-decision";
-import { createMessage, getThread } from "@/lib/repo/threads";
+import {
+  filterModelContextMessages,
+  formatRoutingDecisionMarkdown,
+  routingDecisionAuditId,
+  routingDecisionPart,
+  routingDecisionTextPart,
+  isRoutingDecisionPart,
+  type RoutingDecisionPayload,
+} from "@/lib/assistant-ui/routing-decision";
+import { createMessage, getThread, listMessages } from "@/lib/repo/threads";
 import { getProject } from "@/lib/repo/projects";
 import { getModelMeta, resolveModel, getDefaultRouterModelId } from "@/lib/providers";
 import { getEffectiveModelsResponse } from "@/lib/providers/registry";
@@ -77,6 +85,78 @@ async function persistAssistantMessage(threadId: string, message: UIMessage, mod
     parts: message.parts,
     modelId,
   });
+}
+
+function messageHasRoutingAuditId(message: { parts: unknown }, auditId: string): boolean {
+  const parts = Array.isArray(message.parts) ? message.parts : [];
+  return parts.some(
+    (part) =>
+      part &&
+      typeof part === "object" &&
+      (part as { type?: unknown }).type === "data-routing-decision" &&
+      (part as { data?: { auditId?: unknown } }).data?.auditId === auditId,
+  );
+}
+
+async function persistRoutingDecisionMessage(input: {
+  threadId: string;
+  payload: RoutingDecisionPayload;
+  modelId?: string | null;
+}): Promise<{ auditId: string; parts: unknown[] } | null> {
+  if (input.payload.messageType !== "routing_decision" || input.payload.includeInModelContext !== false) return null;
+  const existing = await listMessages(input.threadId);
+  if (existing.some((message) => messageHasRoutingAuditId(message, input.payload.auditId))) {
+    // Return existing parts for deduplication in the stream response
+    const existingMessage = existing.find((message) => messageHasRoutingAuditId(message, input.payload.auditId));
+    const existingParts = Array.isArray(existingMessage?.parts) ? existingMessage.parts : [];
+    return existingMessage ? { auditId: input.payload.auditId, parts: existingParts } : null;
+  }
+  const parts = [routingDecisionTextPart(input.payload), routingDecisionPart(input.payload)];
+  await createMessage({
+    threadId: input.threadId,
+    role: "assistant",
+    content: formatRoutingDecisionMarkdown(input.payload),
+    parts,
+    modelId: input.modelId ?? null,
+  });
+  return { auditId: input.payload.auditId, parts };
+}
+
+async function persistManualRoutingDecision(input: {
+  threadId: string;
+  contextMessages: UIMessage[];
+  modelId: string;
+  reasoningOrThinking: string;
+  selectionSource: SelectionSource;
+}) {
+  if (input.selectionSource === "user_accepted") return;
+  const latest = extractLatestUserMessage(input.contextMessages);
+  const prompt = latest ? uiMessageText(latest).trim() : "";
+  if (!prompt) return;
+  const payload: RoutingDecisionPayload = {
+    messageType: "routing_decision",
+    includeInModelContext: false,
+    auditId: routingDecisionAuditId({
+      threadId: input.threadId,
+      prompt,
+      route: "normal_chat",
+      executionModel: input.modelId,
+    }),
+    route: "normal_chat",
+    selectionSource: "manual_current_selection",
+    harness: null,
+    routerEngine: null,
+    recommenderEngine: null,
+    recommenderReasoningLevel: null,
+    executionModel: input.modelId,
+    executionReasoningLevel: input.reasoningOrThinking,
+    fallback: null,
+    whyRoute: "Direct normal chat send using the current manual selection.",
+    whyModel:
+      "Recommender was not used; Control Room used the currently selected model and reasoning/thinking setting.",
+    alternatives: [],
+  };
+  await persistRoutingDecisionMessage({ threadId: input.threadId, payload });
 }
 
 /**
@@ -152,6 +232,30 @@ export type RouterAbDataParts = {
     token_result: string;
     completed_at: string;
   };
+  "routing-decision": {
+    messageType: "routing_decision";
+    includeInModelContext: false;
+    auditId: string;
+    route: "normal_chat" | "coding_task";
+    selectionSource?: string | null;
+    harness?: string | null;
+    routerEngine?: string | null;
+    recommenderEngine?: string | null;
+    recommenderReasoningLevel?: string | null;
+    executionModel?: string | null;
+    executionReasoningLevel?: string | null;
+    fallback?: {
+      configured?: boolean;
+      attempted?: boolean;
+      used?: boolean;
+      engine?: string | null;
+      reason?: string | null;
+    } | null;
+    whyRoute?: string | null;
+    whyHarness?: string | null;
+    whyModel?: string | null;
+    alternatives?: Array<Record<string, unknown>>;
+  };
 };
 
 /**
@@ -213,6 +317,7 @@ export async function POST(req: Request) {
     thinkingMode: rawThinkingMode,
     routerAb: routerAbOn,
     selectionSource: rawSelectionSource,
+    routingDecision,
   }: {
     messages: UIMessage[];
     system?: string;
@@ -239,6 +344,7 @@ export async function POST(req: Request) {
     thinkingMode?: string;
     routerAb?: boolean;
     selectionSource?: SelectionSource;
+    routingDecision?: RoutingDecisionPayload | null;
   } = await req.json();
 
   const effectiveModels = await getEffectiveModelsResponse();
@@ -346,6 +452,41 @@ export async function POST(req: Request) {
     } catch (err: unknown) {
       console.error(
         "[api/chat] failed to persist user message:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // Persist the UI-only routing decision after the user message, so reload
+  // hydration orders it next to the turn instead of above prior turns or in a
+  // separate bottom fallback list. It is never included in modelMessages above.
+  // Store the routing decision parts so we can emit them in the stream AND
+  // include them in the assistant message for correct display/hydration.
+  let routingDecisionParts: unknown[] = [];
+  if (threadId && isDbConfigured()) {
+    try {
+      if (routingDecision) {
+        const persisted = await persistRoutingDecisionMessage({
+          threadId,
+          payload: routingDecision,
+          modelId: routingDecision.recommenderEngine ?? routingDecision.routerEngine ?? null,
+        });
+        if (persisted) {
+          routingDecisionParts = persisted.parts;
+        }
+      } else {
+        await persistManualRoutingDecision({
+          threadId,
+          contextMessages,
+          modelId: result.resolved.modelId,
+          reasoningOrThinking:
+            reasoningCapability.kind === "thinking_budget" ? thinkingMode : reasoningOption,
+          selectionSource: preflight.selectionSource,
+        });
+      }
+    } catch (err: unknown) {
+      console.error(
+        "[api/chat] failed to persist routing decision:",
         err instanceof Error ? err.message : err,
       );
     }
@@ -524,6 +665,20 @@ export async function POST(req: Request) {
         ? "MiniMax provider error. Check MINIMAX_API_KEY, MINIMAX_BASE_URL, and MINIMAX_DEFAULT_MODEL."
         : "An error occurred.",
     execute: async ({ writer }) => {
+      // Emit routing decision data parts at the start of the stream so they're
+      // visible in the assistant message alongside Side A's text. The
+      // `routing-decision` data part is registered in `RouterAbDataParts` and
+      // consumed by the UI via `AssistantMessage` which reads
+      // `routingDecisionFromMessage(s.message)`.
+      for (const part of routingDecisionParts) {
+        if (isRoutingDecisionPart(part)) {
+          writer.write({
+            type: "data-routing-decision" as const,
+            data: part.data,
+          });
+        }
+      }
+
       writer.write({
         type: "data-router-execution-estimate",
         data: {
@@ -713,10 +868,19 @@ export async function POST(req: Request) {
         tokenResult,
         success: !isAborted,
       });
-      const responseWithTelemetry = {
+      // Build the complete response message by adding:
+      // 1. Routing decision parts (for the recommend-accept path, emitted live in execute)
+      // 2. Telemetry parts (router-execution-outcome)
+      // This ensures the assistant message in DB + client state has the routing decision
+      // bubble visible both in the live stream AND after reload.
+      const responseWithRoutingDecision = {
         ...responseMessage,
+        parts: [...responseMessage.parts, ...routingDecisionParts],
+      } as UIMessage;
+      const responseWithTelemetry = {
+        ...responseWithRoutingDecision,
         parts: [
-          ...responseMessage.parts,
+          ...responseWithRoutingDecision.parts,
           {
             type: "data-router-execution-outcome",
             data: {
