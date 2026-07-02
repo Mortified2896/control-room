@@ -34,6 +34,15 @@ import { tryRecoverJsonObjectFromAiSdkError } from "@/lib/router/parse-json-fall
 export const dynamic = "force-dynamic";
 
 type RecommendationResponse = {
+  /**
+   * Route classification the recommender picked for the user's
+   * message. The approval card shows "Recommended route: Normal chat"
+   * or "Recommended route: Coding task" before the model + reasoning
+   * level lines so the user sees the routing decision first.
+   */
+  recommendedRoute: "normal_chat" | "coding_task";
+  /** Why this route was chosen. */
+  routeReason: string;
   recommendedModelId: string;
   recommendedProvider: string;
   /**
@@ -144,6 +153,8 @@ const bodySchema = z.object({
 });
 
 const outputSchema = z.object({
+  recommendedRoute: z.enum(["normal_chat", "coding_task"]),
+  routeReason: z.string().min(1).max(300),
   recommendedModelId: z.string().min(1),
   recommendedProvider: z.string().min(1),
   // Provider-native reasoning-effort value. The recommender may
@@ -176,7 +187,7 @@ async function runCodexRecommender(args: {
     ? args.modelId.slice("codex:".length)
     : args.modelId;
   if (!isCodexModelId(codexModelId)) throw new Error("invalid_codex_recommender_model");
-  const schemaHint = `Return ONLY minified JSON with this shape: {"recommendedModelId":"string","recommendedProvider":"string","recommendedReasoningLevel":null,"reasoning":"short reason","alternatives":[{"modelId":"string","provider":"string","recommendedReasoningLevel":null,"reason":"short reason"}]}. No markdown, no code fences.`;
+  const schemaHint = `Return ONLY minified JSON with this shape: {"recommendedRoute":"normal_chat","routeReason":"short reason for route","recommendedModelId":"string","recommendedProvider":"string","recommendedReasoningLevel":null,"reasoning":"short reason","alternatives":[{"modelId":"string","provider":"string","recommendedReasoningLevel":null,"reason":"short reason"}]}. No markdown, no code fences. recommendedRoute must be "normal_chat" or "coding_task".`;
   const result = await runCodexExec(
     binary,
     `${args.system}\n\n${schemaHint}\n\nInput JSON:\n${args.user}`,
@@ -344,6 +355,10 @@ function fallbackResponse(
     // A silent third-fallback default would hide the configured
     // primary → configured fallback contract behind a generic
     // "GPT-5.4 Mini" line.
+    recommendedRoute: "normal_chat",
+    routeReason:
+      reasoningOverride ??
+      "The recommender could not run; defaulting to normal chat route.",
     recommendedModelId: input.currentModelId ?? "",
     recommendedProvider: input.currentProvider ?? "",
     recommendedReasoningLevel: input.currentReasoningLevel ?? null,
@@ -743,6 +758,8 @@ export async function POST(request: Request) {
       });
       return Response.json({
         ...value,
+        recommendedRoute: value.recommendedRoute,
+        routeReason: value.routeReason,
         recommendedReasoningLevel: level,
         alternatives: filteredAlternatives,
         recommendationTelemetry: {

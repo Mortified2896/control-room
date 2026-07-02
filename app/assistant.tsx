@@ -170,6 +170,10 @@ type RouterDecision = {
 };
 
 type ModelRecommendation = {
+  /** Route classification from the recommender. */
+  recommendedRoute?: "normal_chat" | "coding_task";
+  /** Why this route was chosen. */
+  routeReason?: string;
   recommendedModelId: string;
   recommendedProvider: string;
   /**
@@ -1875,6 +1879,8 @@ export const Assistant = () => {
         setRecommendation(data);
       } catch {
         setRecommendation({
+          recommendedRoute: "normal_chat",
+          routeReason: "The recommender could not run; defaulting to normal chat route.",
           recommendedModelId: selectedModelId ?? "gpt-5.4-mini",
           recommendedProvider: selected?.providerId ?? "openai",
           recommendedReasoningLevel: selectedReasoningLevel,
@@ -1936,6 +1942,8 @@ export const Assistant = () => {
       } catch {
         const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
         setRecommendation({
+          recommendedRoute: "normal_chat",
+          routeReason: "The recommender could not run; defaulting to normal chat route.",
           recommendedModelId: selectedModelId ?? "gpt-5.4-mini",
           recommendedProvider: selected?.providerId ?? "openai",
           recommendedReasoningLevel: selectedReasoningLevel,
@@ -2091,10 +2099,10 @@ export const Assistant = () => {
           auditId: routingDecisionAuditId({
             threadId: runThreadId,
             prompt: draftText,
-            route: "normal_chat",
+            route: recommendation.recommendedRoute ?? "normal_chat",
             executionModel: proposed?.toModelId ?? recommendation.recommendedModelId,
           }),
-          route: "normal_chat",
+          route: recommendation.recommendedRoute ?? "normal_chat",
           selectionSource: "recommender_output",
           harness: null,
           routerEngine: routerDecision?.recommender_model_id ?? null,
@@ -2111,7 +2119,7 @@ export const Assistant = () => {
             engine: recommenderFallbackModelId,
             reason: recommendation.diagnostics.fallbackReason,
           },
-          whyRoute: routerDecision?.reason ?? "User accepted normal chat route.",
+          whyRoute: recommendation.routeReason ?? routerDecision?.reason ?? "User accepted the recommended route.",
           whyModel: proposed?.reason ?? recommendation.reasoning,
           alternatives: recommendation.alternatives,
         };

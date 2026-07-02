@@ -48,6 +48,10 @@ export type RecommenderCallAttempt = {
  * helper doesn't need to depend on the route's zod schema.
  */
 export type RecommenderOutputShape = {
+  /** Route classification ("normal_chat" or "coding_task"). */
+  recommendedRoute: "normal_chat" | "coding_task";
+  /** Why this route was chosen. */
+  routeReason: string;
   recommendedModelId: string;
   recommendedProvider: string;
   /** Provider-native reasoning-effort value. Null when the model doesn't support controls. */

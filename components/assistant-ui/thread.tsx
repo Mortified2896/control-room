@@ -18,6 +18,7 @@ import {
   routingDecisionPart,
   routingDecisionTextPart,
   routingDecisionFromMessage,
+  isRoutingDecisionMessage,
   type RoutingDecisionPayload,
 } from "@/lib/assistant-ui/routing-decision";
 import { SHORTCUT_TARGETS } from "@/lib/shortcuts";
@@ -191,6 +192,10 @@ type RouterDecision = {
 };
 
 type ModelRecommendation = {
+  /** Route classification from the recommender ("normal_chat" or "coding_task"). */
+  recommendedRoute?: "normal_chat" | "coding_task";
+  /** Why this route was chosen. */
+  routeReason?: string;
   recommendedModelId: string;
   recommendedProvider: string;
   recommendedReasoningLevel: ReasoningLevel | null;
@@ -1766,6 +1771,13 @@ const ComposerAction: FC<{
                     The recommender engine could not run: {recommenderEngineSummary ?? "unknown"}
                   </div>
                   <div className="mt-0.5 text-muted-foreground">
+                    Recommended route:{" "}
+                    {recommendation.recommendedRoute === "coding_task"
+                      ? "Coding task"
+                      : "Normal chat"}
+                    {recommendation.routeReason ? ` — ${recommendation.routeReason}` : ""}
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
                     Current manual model remains:{" "}
                     {manualModelSummary ?? recommendation.recommendedModelId}
                   </div>
@@ -1773,19 +1785,26 @@ const ComposerAction: FC<{
                     Configured fallback engine: {fallbackEngineSummary ?? "No fallback configured"}
                   </div>
                   <div className="mt-1 text-muted-foreground">
-                    Reason: {recommendation.reasoning}
+                    Why model: {recommendation.reasoning}
                   </div>
                 </div>
               ) : (
                 <>
                   <div className="font-medium text-foreground">
-                    Recommended: {recommendation.recommendedModelId}
+                    Recommended route:{" "}
+                    {recommendation.recommendedRoute === "coding_task"
+                      ? "Coding task"
+                      : "Normal chat"}
+                    {recommendation.routeReason ? ` — ${recommendation.routeReason}` : ""}
+                  </div>
+                  <div className="mt-1 font-medium text-foreground">
+                    Recommended model: {recommendation.recommendedModelId}
                     {recommendation.recommendedReasoningLevel
                       ? ` · ${recommendation.recommendedReasoningLevel}`
                       : ""}
                   </div>
                   <div className="mt-0.5 text-muted-foreground">
-                    Reason: {recommendation.reasoning}
+                    Why model: {recommendation.reasoning}
                   </div>
                   {recommendation.recommendationTelemetry ? (
                     <div className="mt-1 text-muted-foreground">
@@ -2599,6 +2618,7 @@ const AssistantMessage: FC<{
   const parts = useAuiState((s) => s.message.parts);
   const messageStatusType = useAuiState((s) => s.message.status?.type);
   const routingDecision = useAuiState((s) => routingDecisionFromMessage(s.message));
+  const isRoutingDecision = useAuiState((s) => isRoutingDecisionMessage(s.message));
   const codexMetadata = useAuiState((s) => {
     const custom = (s.message.metadata as { custom?: unknown } | undefined)?.custom;
     if (!custom || typeof custom !== "object") return null;
@@ -2647,55 +2667,43 @@ const AssistantMessage: FC<{
       : null;
   });
   const [notesOpen, setNotesOpen] = useState(false);
-  const ACTION_BAR_PT = "pt-1.5";
-  const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
+
+  if (isRoutingDecision) {
+    return (
+      <MessagePrimitive.Root
+        data-slot="aui_assistant-message-root"
+        data-role="assistant"
+        className="fade-in slide-in-from-bottom-1 animate-in relative flex flex-col gap-2 overflow-visible duration-150"
+      >
+        {routingDecision ? (
+          <RoutingDecisionCard decision={routingDecision} />
+        ) : (
+          <AssistantAnswerBubble
+            routerAbOn={false}
+            parts={parts}
+            messageStatusType={messageStatusType}
+            codexMetadata={null}
+          />
+        )}
+      </MessagePrimitive.Root>
+    );
+  }
 
   return (
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
       data-role="assistant"
-      className="fade-in slide-in-from-bottom-1 animate-in relative duration-150"
+      className="fade-in slide-in-from-bottom-1 animate-in relative flex flex-col gap-1.5 overflow-visible duration-150"
     >
+      <AssistantAnswerBubble
+        routerAbOn={routerAbOn}
+        parts={parts}
+        messageStatusType={messageStatusType}
+        codexMetadata={codexMetadata}
+      />
       <div
-        data-slot="aui_assistant-message-content"
-        // [contain-intrinsic-size:auto_24px] fixes issue #4104, don't change without checking for regressions
-        className="text-foreground px-2 leading-relaxed wrap-break-word [contain-intrinsic-size:auto_24px] [content-visibility:auto]"
-      >
-        {routingDecision ? (
-          <RoutingDecisionCard decision={routingDecision} />
-        ) : (
-          <MessagePrimitive.Parts>
-            {({ part }) => {
-              if (part.type === "text") return <MarkdownText />;
-              if (part.type === "tool-call") return part.toolUI ?? <ToolFallback {...part} />;
-              return null;
-            }}
-          </MessagePrimitive.Parts>
-        )}
-        <AuiIf
-          condition={(s) => s.message.status?.type === "running" && s.message.parts.length === 0}
-        >
-          <span
-            data-slot="aui_assistant-message-indicator"
-            className="animate-pulse font-sans"
-            aria-label="Assistant is working"
-          >
-            {"●"}
-          </span>
-        </AuiIf>
-        {codexMetadata ? (
-          <CodexMetadataLine
-            metadata={codexMetadata.metadata}
-            harnessLabel={codexMetadata.harnessLabel}
-          />
-        ) : null}
-        <ExecutionTelemetryLine parts={parts} statusType={messageStatusType} />
-        <MessageError />
-      </div>
-
-      <div
-        data-slot="aui_assistant-message-footer"
-        className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
+        data-slot="aui_assistant-message-actions"
+        className="ms-2 mt-1.5 flex max-w-[85%] items-center overflow-visible"
       >
         <FeedbackButtons messageId={messageId} />
         <ThreadNoteToggle open={notesOpen} onOpenChange={setNotesOpen} />
@@ -2704,12 +2712,77 @@ const AssistantMessage: FC<{
         <AssistantActionBar />
       </div>
       {notesOpen && <ThreadNoteEditor threadId={threadId} disabled={notesDisabled} />}
+    </MessagePrimitive.Root>
+  );
+};
+
+/**
+ * Type for the codex metadata extracted from message metadata.
+ * Matches the return type of the useAuiState selector in AssistantMessage.
+ */
+type CodexMetadataValue = {
+  metadata: {
+    executor?: string;
+    model?: string;
+    reasoning?: string;
+    durationMs?: number | null;
+    projectName?: string | null;
+    projectPath?: string | null;
+    status?: string | null;
+  };
+  harnessLabel: string | null;
+} | null;
+
+const AssistantAnswerBubble: FC<{
+  routerAbOn: boolean;
+  parts: ReadonlyArray<{ type: string; name?: string; data?: unknown }>;
+  messageStatusType: string | undefined;
+  codexMetadata: CodexMetadataValue;
+}> = ({
+  routerAbOn,
+  parts,
+  messageStatusType,
+  codexMetadata,
+}) => {
+  return (
+    <div
+      data-slot="aui_assistant-message-content"
+      // Bubble styling for assistant messages
+      className="ms-2 max-w-[85%] rounded-2xl border border-border/60 bg-muted/40 px-4 py-3 text-foreground leading-relaxed wrap-break-word [contain-intrinsic-size:auto_24px] [content-visibility:auto]"
+    >
+      <MessagePrimitive.Parts>
+        {({ part }) => {
+          if (part.type === "text") return <MarkdownText />;
+          if (part.type === "tool-call") return part.toolUI ?? <ToolFallback {...part} />;
+          return null;
+        }}
+      </MessagePrimitive.Parts>
+      <AuiIf
+        condition={(s) => s.message.status?.type === "running" && s.message.parts.length === 0}
+      >
+        <span
+          data-slot="aui_assistant-message-indicator"
+          className="animate-pulse font-sans"
+          aria-label="Assistant is working"
+        >
+          {"●"}
+        </span>
+      </AuiIf>
+      {codexMetadata ? (
+        <CodexMetadataLine
+          metadata={codexMetadata.metadata}
+          harnessLabel={codexMetadata.harnessLabel}
+        />
+      ) : null}
+      <ExecutionTelemetryLine parts={parts} statusType={messageStatusType} />
+      <MessageError />
+
       {routerAbOn && (
         <PanelErrorBoundary>
           <RouterAbPanel initialPayload={payloadFromMessageParts(parts)} />
         </PanelErrorBoundary>
       )}
-    </MessagePrimitive.Root>
+    </div>
   );
 };
 
@@ -2788,7 +2861,7 @@ const ThreadNoteEditor: FC<{ threadId: string | null; disabled: boolean }> = ({
   const unavailable = disabled || !threadId || threadId.startsWith("local-");
 
   return (
-    <div className="aui-thread-note-editor mt-9 rounded-xl border border-border/60 bg-muted/10 px-3 py-2 shadow-sm">
+    <div className="aui-thread-note-editor ms-2 mt-2 max-w-[85%] rounded-xl border border-border/60 bg-muted/10 px-3 py-2 shadow-sm">
       <label className="block text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
         Thread notes
       </label>

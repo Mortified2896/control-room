@@ -55,6 +55,8 @@ test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT requires the exact zod field names",
   // from the zod schema and so the AI SDK's Output.object call
   // validates the response. Aliases (modelId / provider /
   // reasoningLevel) are forbidden.
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedRoute"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"routeReason"/);
   assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedModelId"/);
   assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedProvider"/);
   assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedReasoningLevel"/);
@@ -90,6 +92,8 @@ test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT forbids markdown fences and prose", 
 test("NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT includes a minimal valid JSON example", () => {
   // The example anchors the exact field names and shape so the model
   // doesn't drift into any wrapper / fence / alias form.
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedRoute": "normal_chat"/);
+  assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"routeReason":/);
   assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedModelId": "MiniMax-M3"/);
   assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedProvider": "minimax"/);
   assert.match(NORMAL_CHAT_RECOMMENDER_SYSTEM_PROMPT, /"recommendedReasoningLevel": null/);

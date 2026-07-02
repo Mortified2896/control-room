@@ -76,6 +76,8 @@ function makeChain(args: {
 
 function goodRecommendation(modelId: string, reasoning: string | null): RecommenderOutputShape {
   return {
+    recommendedRoute: "normal_chat",
+    routeReason: "Simple conversational message; no coding harness needed.",
     recommendedModelId: modelId,
     recommendedProvider: "openai",
     recommendedReasoningLevel: reasoning,
