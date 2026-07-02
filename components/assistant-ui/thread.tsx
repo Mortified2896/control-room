@@ -253,6 +253,12 @@ export const Thread: FC<{
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  /**
+   * Called by the parent (ChatPane) after the transport has built the
+   * request body containing the routing decision. The parent uses
+   * this to clear React state that powered the one-shot ref lifecycle.
+   */
+  onRoutingDecisionRequestBodyPrepared?: (auditId: string | null) => void;
   onEnsureCodingThread?: () => Promise<string | null>;
   onCodingRunComplete?: (threadId: string | null) => void;
   /**
@@ -339,6 +345,7 @@ export const Thread: FC<{
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onRoutingDecisionRequestBodyPrepared,
   onEnsureCodingThread,
   onCodingRunComplete,
   harnessRegistry = null,
@@ -421,6 +428,7 @@ export const Thread: FC<{
               onKeepCurrent={onKeepCurrent}
               pendingRecommendedSend={pendingRecommendedSend}
               onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+              onRoutingDecisionRequestBodyPrepared={onRoutingDecisionRequestBodyPrepared}
               onEnsureCodingThread={onEnsureCodingThread}
               onCodingRunComplete={onCodingRunComplete}
               harnessRegistry={harnessRegistry}
@@ -554,6 +562,7 @@ const Composer: FC<{
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  onRoutingDecisionRequestBodyPrepared?: (auditId: string | null) => void;
   onEnsureCodingThread?: () => Promise<string | null>;
   onCodingRunComplete?: (threadId: string | null) => void;
   harnessRegistry?: ReadonlyArray<HarnessRegistryView> | null;
@@ -592,6 +601,7 @@ const Composer: FC<{
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onRoutingDecisionRequestBodyPrepared,
   onEnsureCodingThread,
   onCodingRunComplete,
   harnessRegistry = null,
@@ -763,6 +773,7 @@ const Composer: FC<{
             onKeepCurrent={onKeepCurrent}
             pendingRecommendedSend={pendingRecommendedSend}
             onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+            onRoutingDecisionRequestBodyPrepared={onRoutingDecisionRequestBodyPrepared}
             onEnsureCodingThread={onEnsureCodingThread}
             onCodingRunComplete={onCodingRunComplete}
             harnessRegistry={harnessRegistry}
@@ -814,6 +825,7 @@ const ComposerAction: FC<{
   onKeepCurrent?: (draftText?: string) => void;
   pendingRecommendedSend?: PendingRecommendedSend | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  onRoutingDecisionRequestBodyPrepared?: (auditId: string | null) => void;
   onEnsureCodingThread?: () => Promise<string | null>;
   onCodingRunComplete?: (threadId: string | null) => void;
   harnessRegistry?: ReadonlyArray<HarnessRegistryView> | null;
@@ -854,6 +866,7 @@ const ComposerAction: FC<{
   onKeepCurrent,
   pendingRecommendedSend = null,
   onPendingRecommendedSendConsumed,
+  onRoutingDecisionRequestBodyPrepared,
   onEnsureCodingThread,
   onCodingRunComplete,
   harnessRegistry = null,

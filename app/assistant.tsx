@@ -618,6 +618,18 @@ const ChatPane: FC<{
   pendingRecommendedSend?: PendingRecommendedSend | null;
   pendingRoutingDecision?: RoutingDecisionPayload | null;
   onPendingRecommendedSendConsumed?: (id: number) => void;
+  /**
+   * Called after `prepareSendMessagesRequest` has copied the routing
+   * decision into the request body. Used to clear React state that
+   * powered the one-shot ref lifecycle.
+   */
+  onRoutingDecisionRequestBodyPrepared?: (auditId: string | null) => void;
+  /**
+   * Ref-backed one-shot for the next send. Passed from the parent
+   * `Assistant` component so `prepareSendMessagesRequest` can access
+   * the routing decision even after React state is cleared.
+   */
+  routingDecisionForNextSendRef?: React.MutableRefObject<RoutingDecisionPayload | null>;
   onEnsureCodingThread?: () => Promise<string | null>;
   onCodingRunComplete?: (threadId: string | null) => void;
   /**
@@ -691,6 +703,8 @@ const ChatPane: FC<{
   pendingRecommendedSend = null,
   pendingRoutingDecision = null,
   onPendingRecommendedSendConsumed,
+  onRoutingDecisionRequestBodyPrepared,
+  routingDecisionForNextSendRef,
   onEnsureCodingThread,
   onCodingRunComplete,
   harnessRegistry = null,
@@ -762,27 +776,50 @@ const ChatPane: FC<{
         // model's `reasoningCapability` (effort_levels → reasoningEffort,
         // thinking_budget → minimax.reasoning.enabled, etc.).
         body: { modelId, threadId },
-        prepareSendMessagesRequest: ({ body, messages }) => ({
-          body: {
-            ...body,
-            // Routing-decision bubbles are UI-only audit messages. Keep
-            // them out of the execution model context before the request
-            // leaves the browser; /api/chat also filters defensively.
-            messages: filterModelContextMessages([...messages]),
-            modelId,
-            threadId,
-            // Send the provider-native value verbatim — the chat
-            // route's capability validator rejects stale values
-            // before forwarding to the runtime adapter.
-            reasoningOption: reasoningLevel,
-            thinkingMode,
-            selectionSource,
-            routerAb: effectiveRouterAbOn,
-            routingDecision: pendingRoutingDecision,
-          },
-        }),
+        prepareSendMessagesRequest: ({ body, messages }) => {
+          // Prefer the one-shot ref (set by handleUseRecommendation) over
+          // React state. This prevents a race where state was cleared
+          // before the transport built the request body.
+          const routingDecision =
+            routingDecisionForNextSendRef?.current ?? pendingRoutingDecision;
+
+          const result = {
+            body: {
+              ...body,
+              // Routing-decision bubbles are UI-only audit messages. Keep
+              // them out of the execution model context before the request
+              // leaves the browser; /api/chat also filters defensively.
+              messages: filterModelContextMessages([...messages]),
+              modelId,
+              threadId,
+              // Send the provider-native value verbatim — the chat
+              // route's capability validator rejects stale values
+              // before forwarding to the runtime adapter.
+              reasoningOption: reasoningLevel,
+              thinkingMode,
+              selectionSource,
+              routerAb: effectiveRouterAbOn,
+              routingDecision,
+            },
+          };
+
+          // Consume the one-shot ref so the next send (manual or otherwise)
+          // starts with a clean slate and cannot accidentally reuse the
+          // previous routing decision.
+          const consumed = routingDecisionForNextSendRef?.current;
+          if (routingDecisionForNextSendRef) {
+            routingDecisionForNextSendRef.current = null;
+          }
+
+          // Notify the parent so it can clear React state after the body
+          // has been built. The auditId is the canonical identity for
+          // matching which routing decision was consumed.
+          onRoutingDecisionRequestBodyPrepared?.(consumed?.auditId ?? null);
+
+          return result;
+        },
       }),
-    [modelId, threadId, reasoningLevel, thinkingMode, selectionSource, effectiveRouterAbOn, pendingRoutingDecision],
+    [modelId, threadId, reasoningLevel, thinkingMode, selectionSource, effectiveRouterAbOn, pendingRoutingDecision, onRoutingDecisionRequestBodyPrepared],
   );
 
   const runtime = useChatRuntime({
@@ -825,6 +862,7 @@ const ChatPane: FC<{
         onKeepCurrent={onKeepCurrent}
         pendingRecommendedSend={pendingRecommendedSend}
         onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
+        onRoutingDecisionRequestBodyPrepared={onRoutingDecisionRequestBodyPrepared}
         onEnsureCodingThread={onEnsureCodingThread}
         onCodingRunComplete={onCodingRunComplete}
         harnessRegistry={harnessRegistry}
@@ -1371,6 +1409,13 @@ export const Assistant = () => {
     useState<PendingRecommendedSend | null>(null);
   const [pendingRoutingDecision, setPendingRoutingDecision] =
     useState<RoutingDecisionPayload | null>(null);
+  /**
+   * Ref-backed one-shot for the next send. Written by `handleUseRecommendation`
+   * via `onSetRoutingDecisionForNextSend` and read by ChatPane's transport's
+   * `prepareSendMessagesRequest`. This prevents a race where React state is
+   * cleared before the transport builds the request body.
+   */
+  const routingDecisionForNextSendRef = useRef<RoutingDecisionPayload | null>(null);
   const pendingRecommendedSendCounter = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCoarsePointer = useMediaQuery("(pointer: coarse)");
@@ -2050,6 +2095,9 @@ export const Assistant = () => {
           whyModel: proposed?.reason ?? recommendation.reasoning,
           alternatives: recommendation.alternatives,
         };
+        // Also store in the ref so `prepareSendMessagesRequest` can pick it up
+        // even if React state is cleared before the transport builds the body.
+        routingDecisionForNextSendRef.current = payload;
         setPendingRoutingDecision(payload);
         pendingRecommendedSendCounter.current += 1;
         setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
@@ -2073,6 +2121,21 @@ export const Assistant = () => {
       setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
     }
     setRecommendation(null);
+  }, []);
+
+  /**
+   * Clears the routing decision React state after the transport has copied
+   * it into the request body. This is called from
+   * `prepareSendMessagesRequest` via the
+   * `onRoutingDecisionRequestBodyPrepared` prop, ensuring the state is
+   * only cleared AFTER the body is built — not when `composer.send()`
+   * returns, which was the root cause of the race condition.
+   */
+  const handleRoutingDecisionRequestBodyPrepared = useCallback((auditId: string | null) => {
+    if (!auditId) return;
+    setPendingRoutingDecision((current) =>
+      current?.auditId === auditId ? null : current,
+    );
   }, []);
 
   const handleManualRoutingDecision = useCallback(
@@ -2290,8 +2353,13 @@ export const Assistant = () => {
               pendingRoutingDecision={pendingRoutingDecision}
               onPendingRecommendedSendConsumed={(id) => {
                 setPendingRecommendedSend((pending) => (pending?.id === id ? null : pending));
-                setPendingRoutingDecision(null);
+                // NOTE: Do NOT clear pendingRoutingDecision here. The routing
+                // decision is consumed in the transport's prepareSendMessagesRequest
+                // callback, then this handler is called via
+                // onRoutingDecisionRequestBodyPrepared to clear state.
               }}
+              onRoutingDecisionRequestBodyPrepared={handleRoutingDecisionRequestBodyPrepared}
+              routingDecisionForNextSendRef={routingDecisionForNextSendRef}
               onEnsureCodingThread={() =>
                 activeThreadId && !isLocalThreadId(activeThreadId)
                   ? Promise.resolve(activeThreadId)
