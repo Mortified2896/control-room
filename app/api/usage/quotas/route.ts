@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { tryDb } from "@/lib/db";
+import { latestSnapshotByProvider } from "@/lib/repo/provider-usage-snapshots";
 
 export const runtime = "nodejs";
 
@@ -10,7 +11,7 @@ type UsageQuotaProvider = {
   label: string;
   accessType: "subscription" | "api" | "local" | "unknown";
   status: "active" | "disabled" | "unknown";
-  confidence: "exact" | "estimated" | "unknown";
+  confidence: "exact" | "observed" | "estimated" | "unknown";
   estimatedInputTokens?: number | null;
   estimatedOutputTokens?: number | null;
   estimatedTotalTokens?: number | null;
@@ -158,26 +159,85 @@ export async function GET() {
   }, empty);
 
   const usageByProvider = new Map(local.usage.map((row) => [row.provider_id, row]));
-  const eventsByProvider = new Map(local.events.map((row) => [row.provider_id, toNumber(row.count) ?? 0]));
+  const eventsByProvider = new Map(
+    local.events.map((row) => [row.provider_id, toNumber(row.count) ?? 0]),
+  );
+
+  // Overlay the latest confirmed snapshot per provider on top of the
+  // local-log estimate. The snapshot takes precedence for the
+  // user-confirmed fields (shortWindow*, weeklyWindow*, resetWindow*)
+  // and stamps `confidence: "observed"`. Local estimates remain the
+  // source of truth for token counts.
+  const snapshotByProvider: Record<
+    string,
+    Awaited<ReturnType<typeof latestSnapshotByProvider>>
+  > = {};
+  await Promise.all(
+    baseProviders.map(async (p) => {
+      snapshotByProvider[p.providerId] = await latestSnapshotByProvider(p.providerId);
+    }),
+  );
 
   const providers = baseProviders.map((provider) => {
     const row = usageByProvider.get(provider.providerId);
     const total = toNumber(row?.total_tokens);
     const input = toNumber(row?.input_tokens);
     const output = toNumber(row?.output_tokens);
+    const snap = snapshotByProvider[provider.providerId] ?? null;
+    const snapReset = snap?.shortWindowResetLabel ?? snap?.weeklyWindowResetLabel ?? null;
+    const hasSnapshotWindow =
+      snap !== null &&
+      (snap.shortWindowUsedPercent !== null ||
+        snap.shortWindowRemainingPercent !== null ||
+        snap.weeklyWindowUsedPercent !== null ||
+        snap.weeklyWindowRemainingPercent !== null);
     return {
       ...provider,
-      confidence: total === null ? provider.confidence : "estimated",
+      confidence: hasSnapshotWindow
+        ? (snap?.confidence ?? "observed")
+        : total === null
+          ? provider.confidence
+          : "estimated",
       estimatedInputTokens: input,
       estimatedOutputTokens: output,
       estimatedTotalTokens: total,
-      // v1 intentionally does not invent subscription limits or reset windows.
       configuredLimitTokens: null,
       estimatedRemainingTokens: null,
-      resetWindowLabel: null,
+      resetWindowLabel: snapReset,
       recentLimitEvents: eventsByProvider.get(provider.providerId) ?? 0,
-      lastUpdated: iso(row?.last_updated),
-    } satisfies UsageQuotaProvider;
+      lastUpdated: iso(snap?.capturedAt ?? row?.last_updated),
+      // New snapshot-derived fields. The UI reads these directly when
+      // available so it does not have to do a second fetch.
+      shortWindowLabel: snap?.shortWindowLabel ?? null,
+      shortWindowUsedPercent: snap?.shortWindowUsedPercent ?? null,
+      shortWindowRemainingPercent: snap?.shortWindowRemainingPercent ?? null,
+      weeklyWindowLabel: snap?.weeklyWindowLabel ?? null,
+      weeklyWindowUsedPercent: snap?.weeklyWindowUsedPercent ?? null,
+      weeklyWindowRemainingPercent: snap?.weeklyWindowRemainingPercent ?? null,
+      creditsRemaining: snap?.creditsRemaining ?? null,
+      planName: snap?.planName ?? null,
+      last7DaysUsage: snap?.last7DaysUsage ?? null,
+      last30DaysUsage: snap?.last30DaysUsage ?? null,
+      usageAtTimestampValue: snap?.usageAtTimestampValue ?? null,
+      usageAtTimestampLabel: snap?.usageAtTimestampLabel ?? null,
+      snapshotCapturedAt: snap?.capturedAt ?? null,
+      snapshotSourceType: snap?.sourceType ?? null,
+    } satisfies UsageQuotaProvider & {
+      shortWindowLabel: string | null;
+      shortWindowUsedPercent: number | null;
+      shortWindowRemainingPercent: number | null;
+      weeklyWindowLabel: string | null;
+      weeklyWindowUsedPercent: number | null;
+      weeklyWindowRemainingPercent: number | null;
+      creditsRemaining: number | null;
+      planName: string | null;
+      last7DaysUsage: string | null;
+      last30DaysUsage: string | null;
+      usageAtTimestampValue: string | null;
+      usageAtTimestampLabel: string | null;
+      snapshotCapturedAt: string | null;
+      snapshotSourceType: string | null;
+    };
   });
 
   const labelByProvider = new Map(providers.map((p) => [p.providerId, p.label]));
@@ -194,6 +254,7 @@ export async function GET() {
     providers,
     recentRuns,
     generatedAt: new Date().toISOString(),
-    source: local.usage.length || local.events.length || local.runs.length ? "local_logs" : "placeholder",
+    source:
+      local.usage.length || local.events.length || local.runs.length ? "local_logs" : "placeholder",
   });
 }

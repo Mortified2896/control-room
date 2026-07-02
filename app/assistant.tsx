@@ -395,6 +395,14 @@ const CodexChatPane: FC<{
     estimate_quality: "likely" | "uncertain" | "rough";
     started_at: string;
   } | null;
+  routingPanel?: RoutingDecisionPanelPayload | null;
+  routingPanelLoudFailure?: boolean;
+  routingPanelDraftText?: string;
+  routingPanelExecutionEligibleModels?: ReadonlyArray<RoutingDecisionPanelModelOption>;
+  onSendWithRouting?: (selection: RoutingDecisionPanelSelection) => void;
+  onSendDefault?: () => void;
+  onDismissRoutingPanel?: () => void;
+  onOpenRoutingPanel?: (prompt: string) => void;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -459,6 +467,14 @@ const CodexChatPane: FC<{
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
+  routingPanel = null,
+  routingPanelLoudFailure = false,
+  routingPanelDraftText = "",
+  routingPanelExecutionEligibleModels,
+  onSendWithRouting,
+  onSendDefault,
+  onDismissRoutingPanel,
+  onOpenRoutingPanel,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -551,6 +567,14 @@ const CodexChatPane: FC<{
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
         recommendationEta={recommendationEta}
+        routingPanel={routingPanel}
+        routingPanelLoudFailure={routingPanelLoudFailure}
+        routingPanelDraftText={routingPanelDraftText}
+        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+        onSendWithRouting={onSendWithRouting}
+        onSendDefault={onSendDefault}
+        onDismissRoutingPanel={onDismissRoutingPanel}
+        onOpenRoutingPanel={onOpenRoutingPanel}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
@@ -609,6 +633,14 @@ const ChatPane: FC<{
     estimate_quality: "likely" | "uncertain" | "rough";
     started_at: string;
   } | null;
+  routingPanel?: RoutingDecisionPanelPayload | null;
+  routingPanelLoudFailure?: boolean;
+  routingPanelDraftText?: string;
+  routingPanelExecutionEligibleModels?: ReadonlyArray<RoutingDecisionPanelModelOption>;
+  onSendWithRouting?: (selection: RoutingDecisionPanelSelection) => void;
+  onSendDefault?: () => void;
+  onDismissRoutingPanel?: () => void;
+  onOpenRoutingPanel?: (prompt: string) => void;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -697,6 +729,14 @@ const ChatPane: FC<{
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
+  routingPanel = null,
+  routingPanelLoudFailure = false,
+  routingPanelDraftText = "",
+  routingPanelExecutionEligibleModels,
+  onSendWithRouting,
+  onSendDefault,
+  onDismissRoutingPanel,
+  onOpenRoutingPanel,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -746,6 +786,14 @@ const ChatPane: FC<{
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
         recommendationEta={recommendationEta}
+        routingPanel={routingPanel}
+        routingPanelLoudFailure={routingPanelLoudFailure}
+        routingPanelDraftText={routingPanelDraftText}
+        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+        onSendWithRouting={onSendWithRouting}
+        onSendDefault={onSendDefault}
+        onDismissRoutingPanel={onDismissRoutingPanel}
+        onOpenRoutingPanel={onOpenRoutingPanel}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
@@ -876,6 +924,14 @@ const ChatPane: FC<{
         recommendation={recommendation}
         recommendationLoading={recommendationLoading}
         recommendationEta={recommendationEta}
+        routingPanel={routingPanel}
+        routingPanelLoudFailure={routingPanelLoudFailure}
+        routingPanelDraftText={routingPanelDraftText}
+        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+        onSendWithRouting={onSendWithRouting}
+        onSendDefault={onSendDefault}
+        onDismissRoutingPanel={onDismissRoutingPanel}
+        onOpenRoutingPanel={onOpenRoutingPanel}
         manualModelSummary={manualModelSummary}
         recommenderEngineSummary={recommenderEngineSummary}
         fallbackEngineSummary={fallbackEngineSummary}
@@ -2416,6 +2472,14 @@ export const Assistant = () => {
               decisionApproved={decisionApproved}
               onSendToCodingHarness={handleSendToCodingHarness}
               onAnswerInChatInstead={handleAnswerInChatInstead}
+              routingPanel={routingPanel}
+              routingPanelLoudFailure={routingPanelLoudFailure}
+              routingPanelDraftText={routingPanelDraftText}
+              routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+              onSendWithRouting={handleSendWithRouting}
+              onSendDefault={handleSendDefault}
+              onDismissRoutingPanel={handleDismissRoutingPanel}
+              onOpenRoutingPanel={handleOpenRoutingPanel}
             />
           )}
         </div>

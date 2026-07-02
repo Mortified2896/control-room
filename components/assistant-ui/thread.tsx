@@ -245,6 +245,14 @@ export const Thread: FC<{
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: RecommendationEta | null;
+  routingPanel?: RoutingDecisionPanelPayload | null;
+  routingPanelLoudFailure?: boolean;
+  routingPanelDraftText?: string;
+  routingPanelExecutionEligibleModels?: ReadonlyArray<RoutingDecisionPanelModelOption>;
+  onSendWithRouting?: (selection: RoutingDecisionPanelSelection) => void;
+  onSendDefault?: () => void;
+  onDismissRoutingPanel?: () => void;
+  onOpenRoutingPanel?: (prompt: string) => void;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -350,6 +358,14 @@ export const Thread: FC<{
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
+  routingPanel = null,
+  routingPanelLoudFailure = false,
+  routingPanelDraftText = "",
+  routingPanelExecutionEligibleModels,
+  onSendWithRouting,
+  onSendDefault,
+  onDismissRoutingPanel,
+  onOpenRoutingPanel,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -456,6 +472,14 @@ export const Thread: FC<{
               decisionApproved={decisionApproved}
               onSendToCodingHarness={onSendToCodingHarness}
               onAnswerInChatInstead={onAnswerInChatInstead}
+              routingPanel={routingPanel}
+              routingPanelLoudFailure={routingPanelLoudFailure}
+              routingPanelDraftText={routingPanelDraftText}
+              routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+              onSendWithRouting={onSendWithRouting}
+              onSendDefault={onSendDefault}
+              onDismissRoutingPanel={onDismissRoutingPanel}
+              onOpenRoutingPanel={onOpenRoutingPanel}
             />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
@@ -566,6 +590,14 @@ const Composer: FC<{
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: RecommendationEta | null;
+  routingPanel?: RoutingDecisionPanelPayload | null;
+  routingPanelLoudFailure?: boolean;
+  routingPanelDraftText?: string;
+  routingPanelExecutionEligibleModels?: ReadonlyArray<RoutingDecisionPanelModelOption>;
+  onSendWithRouting?: (selection: RoutingDecisionPanelSelection) => void;
+  onSendDefault?: () => void;
+  onDismissRoutingPanel?: () => void;
+  onOpenRoutingPanel?: (prompt: string) => void;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -609,6 +641,14 @@ const Composer: FC<{
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
+  routingPanel = null,
+  routingPanelLoudFailure = false,
+  routingPanelDraftText = "",
+  routingPanelExecutionEligibleModels,
+  onSendWithRouting,
+  onSendDefault,
+  onDismissRoutingPanel,
+  onOpenRoutingPanel,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,
@@ -803,6 +843,14 @@ const Composer: FC<{
             decisionApproved={decisionApproved}
             onSendToCodingHarness={onSendToCodingHarness}
             onAnswerInChatInstead={onAnswerInChatInstead}
+            routingPanel={routingPanel}
+            routingPanelLoudFailure={routingPanelLoudFailure}
+            routingPanelDraftText={routingPanelDraftText}
+            routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
+            onSendWithRouting={onSendWithRouting}
+            onSendDefault={onSendDefault}
+            onDismissRoutingPanel={onDismissRoutingPanel}
+            onOpenRoutingPanel={onOpenRoutingPanel}
           />
           {isCodingTask && error ? (
             <div className="px-2 text-xs font-medium text-destructive" role="alert">
@@ -831,6 +879,14 @@ const ComposerAction: FC<{
   recommendation?: ModelRecommendation | null;
   recommendationLoading?: boolean;
   recommendationEta?: RecommendationEta | null;
+  routingPanel?: RoutingDecisionPanelPayload | null;
+  routingPanelLoudFailure?: boolean;
+  routingPanelDraftText?: string;
+  routingPanelExecutionEligibleModels?: ReadonlyArray<RoutingDecisionPanelModelOption>;
+  onSendWithRouting?: (selection: RoutingDecisionPanelSelection) => void;
+  onSendDefault?: () => void;
+  onDismissRoutingPanel?: () => void;
+  onOpenRoutingPanel?: (prompt: string) => void;
   manualModelSummary?: string;
   recommenderEngineSummary?: string;
   fallbackEngineSummary?: string;
@@ -876,6 +932,14 @@ const ComposerAction: FC<{
   recommendation = null,
   recommendationLoading = false,
   recommendationEta = null,
+  routingPanel = null,
+  routingPanelLoudFailure = false,
+  routingPanelDraftText = "",
+  routingPanelExecutionEligibleModels,
+  onSendWithRouting,
+  onSendDefault,
+  onDismissRoutingPanel,
+  onOpenRoutingPanel,
   manualModelSummary,
   recommenderEngineSummary,
   fallbackEngineSummary,

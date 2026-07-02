@@ -60,6 +60,8 @@ pass "homepage responds"
 
 check_json_api "/api/projects" "/api/projects"
 check_json_api "/api/threads?projectId=null" "/api/threads?projectId=null"
+check_json_api "/api/usage/quotas" "/api/usage/quotas"
+check_json_api "/api/usage/snapshots?limit=1" "/api/usage/snapshots?limit=1"
 
 echo
 echo "[smoke-prod] UI reminder: API smoke checks alone do not prove the client bundle updated."
