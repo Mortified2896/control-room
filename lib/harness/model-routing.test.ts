@@ -55,6 +55,7 @@ test("coding candidates are derived from central availability and reasoning leve
       reasoningCapability: { kind: "effort_levels", control: "supported", options: [{ value: "low", label: "low" }] },
       reasoningLevels: ["low"],
       tier: "expensive",
+      vision: true,
     },
     {
       providerId: "codex",
@@ -71,6 +72,7 @@ test("coding candidates are derived from central availability and reasoning leve
       reasoningCapability: { kind: "effort_levels", control: "supported", options: [{ value: "low", label: "low" }] },
       reasoningLevels: ["low"],
       tier: "cheap",
+      vision: true,
     },
   ], snapshots());
   assert.ok(candidates.some((c) => c.harnessId === "codex_cli" && c.modelId === "gpt-5.5" && c.reasoningLevel === "low"));

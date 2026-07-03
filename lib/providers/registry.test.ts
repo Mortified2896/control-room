@@ -35,6 +35,7 @@ const PROD_ALIASES = new Map<
     label: string;
     tier: "cheap" | "expensive";
     reasoningCapability: ReasoningCapability;
+    supportsVision: boolean;
   }
 >([
   [
@@ -43,6 +44,7 @@ const PROD_ALIASES = new Map<
       label: "GPT-5.4 Mini",
       tier: "cheap",
       reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported"),
+      supportsVision: true,
     },
   ],
   [
@@ -54,6 +56,7 @@ const PROD_ALIASES = new Map<
         ["none", "minimal", "low", "medium", "high", "xhigh"],
         "supported",
       ),
+      supportsVision: true,
     },
   ],
 ]);
@@ -65,6 +68,7 @@ FAKE_ALIASES.set("gpt-fake-known-extra", {
   label: "GPT-Fake Known Extra",
   tier: "cheap",
   reasoningCapability: effortLevelsCapability(["low", "medium"], "supported"),
+  supportsVision: true,
 });
 
 const NO_PREFS: SelectorPreferences = Object.freeze({});
@@ -82,6 +86,7 @@ function makeOverrides(includeFake: boolean) {
             label: string;
             tier: "cheap" | "expensive";
             reasoningCapability: ReasoningCapability;
+            supportsVision: boolean;
           },
         ]
       >,
@@ -347,10 +352,12 @@ test("buildEffectiveRegistry capabilities include reasoning for configured model
   assert.ok(unclassified);
   assert.equal(mini.capabilities.reasoning, true);
   assert.equal(mini.capabilities.streaming, true);
-  // Future capability placeholders are always false until the
+  // Vision/image capabilities are sourced from the model's static
+  // metadata. `gpt-5.4-mini` advertises vision support in the test
+  // fixture. The remaining capabilities are always false until the
   // capability registry ships.
-  assert.equal(mini.capabilities.vision, false);
-  assert.equal(mini.capabilities.images, false);
+  assert.equal(mini.capabilities.vision, true);
+  assert.equal(mini.capabilities.images, true);
   assert.equal(mini.capabilities.functionCalling, false);
   assert.equal(mini.capabilities.structuredOutput, false);
   // Unconfigured / discovered-only models do NOT pretend to support

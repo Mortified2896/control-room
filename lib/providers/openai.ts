@@ -74,6 +74,7 @@ export function getOpenAIModels(): ModelOption[] {
     reasoningCapability: m.reasoningCapability,
     reasoningLevels: m.reasoningLevels,
     tier: m.tier,
+    vision: getStaticOpenAIModelAlias(m.modelId)?.supportsVision ?? false,
     ...(hasKey ? {} : { reason: DISABLED_REASON }),
   }));
 }

@@ -421,6 +421,28 @@ export async function POST(req: Request) {
   // Only real chat messages go into model context. Ratings, notes, feedback,
   // traces, debug metadata, and routing-decision audit bubbles are not loaded here.
   const contextMessages = filterModelContextMessages(messages);
+
+  // Reject image messages when the selected model does not support vision.
+  if (!preflight.selectedModel.vision) {
+    const hasImageParts = contextMessages.some(
+      (m) =>
+        m.role === "user" &&
+        m.parts?.some(
+          (p: Record<string, unknown>) => p.type === "file" && String(p.mediaType ?? "").startsWith("image/"),
+        ),
+    );
+    if (hasImageParts) {
+      return Response.json(
+        {
+          error: "image_unsupported",
+          message: `${preflight.resolved.modelId} does not support image input. Switch to a vision-capable model or remove the image attachment.`,
+          modelId: preflight.resolved.modelId,
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   const modelMessages = await convertToModelMessages(contextMessages);
   const threadId = validThreadId(rawThreadId);
 

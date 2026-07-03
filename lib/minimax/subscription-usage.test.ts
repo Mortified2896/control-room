@@ -5,10 +5,67 @@ import {
   parseMiniMaxTokenPlanResponse,
   fetchMiniMaxSubscriptionUsage,
   getMiniMaxSubscriptionConfig,
-  type SubscriptionUsageStatus,
 } from "./subscription-usage.ts";
 
 const CHECKED_AT = "2026-07-03T12:00:00.000Z";
+
+function setEnv(
+  key: string | undefined,
+  value: string | undefined,
+): string | undefined {
+  const before = process.env[key as string];
+  if (value === undefined) {
+    delete process.env[key as string];
+  } else {
+    process.env[key as string] = value;
+  }
+  return before;
+}
+
+function withEnv(
+  vars: Record<string, string | undefined>,
+  fn: () => Promise<void> | void,
+): Promise<void> | void {
+  const restore: Array<[string, string | undefined]> = [];
+  for (const [k, v] of Object.entries(vars)) {
+    restore.push([k, process.env[k]]);
+    if (v === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = v;
+    }
+  }
+  const cleanup = () => {
+    for (const [k, v] of restore) {
+      if (v === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = v;
+      }
+    }
+  };
+  let result: unknown;
+  try {
+    result = fn();
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+  if (result instanceof Promise) {
+    return result.finally(cleanup);
+  }
+  cleanup();
+}
+
+function mockFetch(fn: (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>) {
+  const original = globalThis.fetch;
+  globalThis.fetch = fn;
+  return () => { globalThis.fetch = original; };
+}
+
+// ---------------------------------------------------------------------------
+// Parser tests
+// ---------------------------------------------------------------------------
 
 test("MiniMax subscription parser returns available status with rolling + weekly summary", () => {
   const status = parseMiniMaxTokenPlanResponse(
@@ -80,10 +137,7 @@ test("MiniMax subscription parser handles missing model_remains field", () => {
 test("MiniMax subscription parser handles base_resp error code", () => {
   const status = parseMiniMaxTokenPlanResponse(
     JSON.stringify({
-      base_resp: {
-        status_code: 1004,
-        status_msg: "authentication failed",
-      },
+      base_resp: { status_code: 1004, status_msg: "authentication failed" },
     }),
     CHECKED_AT,
   );
@@ -98,10 +152,7 @@ test("MiniMax subscription parser handles base_resp error code", () => {
 test("MiniMax subscription parser handles base_resp server error (MiniMax status code)", () => {
   const status = parseMiniMaxTokenPlanResponse(
     JSON.stringify({
-      base_resp: {
-        status_code: 5001,
-        status_msg: "internal server error",
-      },
+      base_resp: { status_code: 5001, status_msg: "internal server error" },
     }),
     CHECKED_AT,
   );
@@ -153,89 +204,209 @@ test("MiniMax subscription parser handles models not in plan (status 3)", () => 
   assert.equal(status.summary![0]!.window, "not_in_plan");
 });
 
-test("MiniMax subscription fetcher returns missing key error when env is not set", async () => {
-  const keyBefore = process.env.MINIMAX_SUBSCRIPTION_KEY;
-  delete process.env.MINIMAX_SUBSCRIPTION_KEY;
+// ---------------------------------------------------------------------------
+// getMiniMaxSubscriptionConfig tests
+// ---------------------------------------------------------------------------
 
-  try {
-    const status = await fetchMiniMaxSubscriptionUsage();
-
-    assert.equal(status.provider, "minimax");
-    assert.equal(status.ok, false);
-    assert.equal(status.error?.code, "missing_minimax_subscription_key");
-    assert.equal(status.error?.retryable, false);
-    assert.ok(status.error?.message.includes("MINIMAX_SUBSCRIPTION_KEY"));
-  } finally {
-    if (keyBefore !== undefined) {
-      process.env.MINIMAX_SUBSCRIPTION_KEY = keyBefore;
-    }
-  }
+test("getMiniMaxSubscriptionConfig prefers MINIMAX_SUBSCRIPTION_KEY over API key", () => {
+  withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: "sub-key",
+      MINIMAX_API_KEY: "api-key",
+    },
+    () => {
+      const config = getMiniMaxSubscriptionConfig();
+      assert.equal(config.keySet, true);
+      assert.equal(config.key, "sub-key");
+      assert.equal(config.credentialSource, "MINIMAX_SUBSCRIPTION_KEY");
+    },
+  );
 });
 
-test("MiniMax subscription fetcher handles HTTP 401 from endpoint", async () => {
-  const keyBefore = process.env.MINIMAX_SUBSCRIPTION_KEY;
-  process.env.MINIMAX_SUBSCRIPTION_KEY = "test-key-123";
+test("getMiniMaxSubscriptionConfig falls back to MINIMAX_API_KEY when subscription key is missing", () => {
+  withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: undefined,
+      MINIMAX_API_KEY: "api-key",
+    },
+    () => {
+      const config = getMiniMaxSubscriptionConfig();
+      assert.equal(config.keySet, true);
+      assert.equal(config.key, "api-key");
+      assert.equal(config.credentialSource, "MINIMAX_API_KEY_LEGACY");
+    },
+  );
+});
 
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: URL | RequestInfo, init?: RequestInit) => {
+test("getMiniMaxSubscriptionConfig returns missing when both env vars are absent", () => {
+  withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: undefined,
+      MINIMAX_API_KEY: undefined,
+    },
+    () => {
+      const config = getMiniMaxSubscriptionConfig();
+      assert.equal(config.keySet, false);
+      assert.equal(config.key, undefined);
+      assert.equal(config.credentialSource, "missing");
+    },
+  );
+});
+
+test("getMiniMaxSubscriptionConfig uses default base URL", () => {
+  withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: "sk",
+      MINIMAX_BASE_URL: undefined,
+    },
+    () => {
+      const config = getMiniMaxSubscriptionConfig();
+      assert.ok(config.baseURL.includes("api.minimax.io"));
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// fetchMiniMaxSubscriptionUsage tests
+// ---------------------------------------------------------------------------
+
+test("fetchMiniMaxSubscriptionUsage uses MINIMAX_SUBSCRIPTION_KEY when both are present", async () => {
+  const restoreFetch = mockFetch(async (input, init) => {
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers?.Authorization, "Bearer preferred-key");
+    return new Response(
+      JSON.stringify({
+        model_remains: [
+          {
+            model_name: "general",
+            current_interval_total_count: 100,
+            current_interval_usage_count: 10,
+            current_interval_remaining_percent: 90,
+            current_interval_status: 0,
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+
+  await withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: "preferred-key",
+      MINIMAX_API_KEY: "legacy-key",
+    },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
+
+      assert.equal(status.ok, true);
+      assert.equal(status.credentialSource, "MINIMAX_SUBSCRIPTION_KEY");
+    },
+  );
+
+  restoreFetch();
+});
+
+test("fetchMiniMaxSubscriptionUsage falls back to MINIMAX_API_KEY when subscription key is missing", async () => {
+  const restoreFetch = mockFetch(async (input, init) => {
+    const headers = init?.headers as Record<string, string>;
+    assert.equal(headers?.Authorization, "Bearer legacy-key");
+    return new Response(
+      JSON.stringify({
+        model_remains: [
+          {
+            model_name: "general",
+            current_interval_total_count: 100,
+            current_interval_usage_count: 10,
+            current_interval_remaining_percent: 90,
+            current_interval_status: 0,
+          },
+        ],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+
+  await withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: undefined,
+      MINIMAX_API_KEY: "legacy-key",
+    },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
+
+      assert.equal(status.ok, true);
+      assert.equal(status.credentialSource, "MINIMAX_API_KEY_LEGACY");
+    },
+  );
+
+  restoreFetch();
+});
+
+test("fetchMiniMaxSubscriptionUsage missing both returns loud error", async () => {
+  await withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: undefined,
+      MINIMAX_API_KEY: undefined,
+    },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
+
+      assert.equal(status.ok, false);
+      assert.equal(status.credentialSource, "missing");
+      assert.equal(status.error?.code, "missing_minimax_subscription_key");
+      assert.ok(status.error?.message.includes("MINIMAX_SUBSCRIPTION_KEY"));
+      assert.ok(status.error?.message.includes("MINIMAX_API_KEY"));
+    },
+  );
+});
+
+test("fetchMiniMaxSubscriptionUsage handles HTTP 401 from endpoint", async () => {
+  const restoreFetch = mockFetch(async () => {
     return new Response(
       JSON.stringify({
         base_resp: { status_code: 1004, status_msg: "invalid key" },
       }),
       { status: 401, headers: { "Content-Type": "application/json" } },
     );
-  };
+  });
 
-  try {
-    const status = await fetchMiniMaxSubscriptionUsage();
+  await withEnv(
+    { MINIMAX_SUBSCRIPTION_KEY: "test-key-123" },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
 
-    assert.equal(status.ok, false);
-    assert.equal(status.error?.code, "minimax_http_401");
-    assert.equal(status.error?.retryable, false);
-    assert.ok(status.error?.message.includes("invalid key"));
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (keyBefore !== undefined) {
-      process.env.MINIMAX_SUBSCRIPTION_KEY = keyBefore;
-    } else {
-      delete process.env.MINIMAX_SUBSCRIPTION_KEY;
-    }
-  }
+      assert.equal(status.ok, false);
+      assert.equal(status.credentialSource, "MINIMAX_SUBSCRIPTION_KEY");
+      assert.equal(status.error?.code, "minimax_http_401");
+      assert.equal(status.error?.retryable, false);
+      assert.ok(status.error?.message.includes("invalid key"));
+    },
+  );
+
+  restoreFetch();
 });
 
-test("MiniMax subscription fetcher handles HTTP 500 from endpoint as retryable", async () => {
-  const keyBefore = process.env.MINIMAX_SUBSCRIPTION_KEY;
-  process.env.MINIMAX_SUBSCRIPTION_KEY = "test-key-123";
+test("fetchMiniMaxSubscriptionUsage handles HTTP 500 from endpoint as retryable", async () => {
+  const restoreFetch = mockFetch(async () => {
+    return new Response("Internal Server Error", { status: 500 });
+  });
 
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    return new Response("Internal Server Error", {
-      status: 500,
-    });
-  };
+  await withEnv(
+    { MINIMAX_SUBSCRIPTION_KEY: "test-key-123" },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
 
-  try {
-    const status = await fetchMiniMaxSubscriptionUsage();
+      assert.equal(status.ok, false);
+      assert.equal(status.error?.code, "minimax_http_500");
+      assert.equal(status.error?.retryable, true);
+    },
+  );
 
-    assert.equal(status.ok, false);
-    assert.equal(status.error?.code, "minimax_http_500");
-    assert.equal(status.error?.retryable, true);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (keyBefore !== undefined) {
-      process.env.MINIMAX_SUBSCRIPTION_KEY = keyBefore;
-    } else {
-      delete process.env.MINIMAX_SUBSCRIPTION_KEY;
-    }
-  }
+  restoreFetch();
 });
 
-test("MiniMax subscription fetcher handles network timeout", async () => {
-  const keyBefore = process.env.MINIMAX_SUBSCRIPTION_KEY;
-  process.env.MINIMAX_SUBSCRIPTION_KEY = "test-key-123";
-
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: URL | RequestInfo, init?: RequestInit) => {
+test("fetchMiniMaxSubscriptionUsage handles network timeout", async () => {
+  const restoreFetch = mockFetch(async (_input, init) => {
     const signal = init?.signal as AbortSignal;
     return new Promise((_, reject) => {
       const onAbort = () => {
@@ -246,35 +417,28 @@ test("MiniMax subscription fetcher handles network timeout", async () => {
       };
       signal.addEventListener("abort", onAbort, { once: true });
     });
-  };
+  });
 
-  try {
-    const status = await fetchMiniMaxSubscriptionUsage();
+  await withEnv(
+    { MINIMAX_SUBSCRIPTION_KEY: "test-key-123" },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
 
-    assert.equal(status.ok, false);
-    assert.equal(status.error?.code, "minimax_subscription_timeout");
-    assert.equal(status.error?.retryable, true);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (keyBefore !== undefined) {
-      process.env.MINIMAX_SUBSCRIPTION_KEY = keyBefore;
-    } else {
-      delete process.env.MINIMAX_SUBSCRIPTION_KEY;
-    }
-  }
+      assert.equal(status.ok, false);
+      assert.equal(status.error?.code, "minimax_subscription_timeout");
+      assert.equal(status.error?.retryable, true);
+    },
+  );
+
+  restoreFetch();
 });
 
-test("MiniMax subscription fetcher handles successful fetch from endpoint", async () => {
-  const keyBefore = process.env.MINIMAX_SUBSCRIPTION_KEY;
-  process.env.MINIMAX_SUBSCRIPTION_KEY = "test-key-123";
-
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: URL | RequestInfo, init?: RequestInit) => {
+test("fetchMiniMaxSubscriptionUsage successful fetch with subscription key", async () => {
+  const restoreFetch = mockFetch(async (input, init) => {
     assert.ok(String(input).includes("token_plan/remains"));
     const headers = init?.headers as Record<string, string>;
     assert.equal(headers?.Authorization, "Bearer test-key-123");
     assert.equal(headers?.["Content-Type"], "application/json");
-
     return new Response(
       JSON.stringify({
         model_remains: [
@@ -290,90 +454,151 @@ test("MiniMax subscription fetcher handles successful fetch from endpoint", asyn
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
-  };
+  });
 
-  try {
-    const status = await fetchMiniMaxSubscriptionUsage();
+  await withEnv(
+    { MINIMAX_SUBSCRIPTION_KEY: "test-key-123" },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
 
-    assert.equal(status.ok, true);
-    assert.equal(status.provider, "minimax");
-    assert.equal(status.rawAvailable, true);
-    assert.equal(status.summary?.length, 1);
-    assert.equal(status.summary![0]!.label, "general");
-    assert.equal(status.summary![0]!.remainingPercent, 90);
-    assert.equal(status.error, undefined);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (keyBefore !== undefined) {
-      process.env.MINIMAX_SUBSCRIPTION_KEY = keyBefore;
-    } else {
-      delete process.env.MINIMAX_SUBSCRIPTION_KEY;
-    }
-  }
-});
-
-test("getMiniMaxSubscriptionConfig returns key when env is set", () => {
-  const keyBefore = process.env.MINIMAX_SUBSCRIPTION_KEY;
-  process.env.MINIMAX_SUBSCRIPTION_KEY = "my-key";
-
-  try {
-    const config = getMiniMaxSubscriptionConfig();
-    assert.equal(config.keySet, true);
-    assert.equal(config.key, "my-key");
-    assert.ok(config.baseURL.includes("api.minimax.io"));
-  } finally {
-    if (keyBefore !== undefined) {
-      process.env.MINIMAX_SUBSCRIPTION_KEY = keyBefore;
-    } else {
-      delete process.env.MINIMAX_SUBSCRIPTION_KEY;
-    }
-  }
-});
-
-test("getMiniMaxSubscriptionConfig returns unset when env is missing", () => {
-  const keyBefore = process.env.MINIMAX_SUBSCRIPTION_KEY;
-  delete process.env.MINIMAX_SUBSCRIPTION_KEY;
-
-  try {
-    const config = getMiniMaxSubscriptionConfig();
-    assert.equal(config.keySet, false);
-    assert.equal(config.key, undefined);
-  } finally {
-    if (keyBefore !== undefined) {
-      process.env.MINIMAX_SUBSCRIPTION_KEY = keyBefore;
-    }
-  }
-});
-
-test("MiniMax subscription response never contains auth header or key", () => {
-  const urlBefore = process.env.MINIMAX_BASE_URL;
-  process.env.MINIMAX_BASE_URL = "https://api.minimax.io/v1";
-
-  const status = parseMiniMaxTokenPlanResponse(
-    JSON.stringify({
-      model_remains: [
-        {
-          model_name: "general",
-          current_interval_total_count: 100,
-          current_interval_usage_count: 10,
-          current_interval_remaining_percent: 90,
-          current_interval_status: 0,
-        },
-      ],
-    }),
-    CHECKED_AT,
+      assert.equal(status.ok, true);
+      assert.equal(status.provider, "minimax");
+      assert.equal(status.credentialSource, "MINIMAX_SUBSCRIPTION_KEY");
+      assert.equal(status.rawAvailable, true);
+      assert.equal(status.summary?.length, 1);
+      assert.equal(status.summary![0]!.label, "general");
+      assert.equal(status.summary![0]!.remainingPercent, 90);
+      assert.equal(status.error, undefined);
+    },
   );
 
-  const json = JSON.stringify(status);
-  assert.doesNotMatch(json, /Authorization/i);
-  assert.doesNotMatch(json, /Bearer/i);
-  assert.doesNotMatch(json, /test-key/i);
-  assert.doesNotMatch(json, /MINIMAX_SUBSCRIPTION_KEY/i);
-  assert.doesNotMatch(json, /api_key|apiKey|apikey/i);
+  restoreFetch();
+});
 
-  if (urlBefore !== undefined) {
-    process.env.MINIMAX_BASE_URL = urlBefore;
-  } else {
-    delete process.env.MINIMAX_BASE_URL;
-  }
+test("legacy fallback wrong key type produces actionable error", async () => {
+  const restoreFetch = mockFetch(async () => {
+    return new Response(
+      JSON.stringify({
+        base_resp: {
+          status_code: 1004,
+          status_msg: "login fail: Please carry the API secret key in the 'Authorization' field of the request header",
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  });
+
+  await withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: undefined,
+      MINIMAX_API_KEY: "wrong-key-type",
+    },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
+
+      assert.equal(status.ok, false);
+      assert.equal(status.credentialSource, "MINIMAX_API_KEY_LEGACY");
+      assert.equal(status.error?.code, "minimax_legacy_key_rejected");
+      assert.equal(status.error?.retryable, false);
+      assert.ok(status.error?.message.includes("MINIMAX_API_KEY"));
+      assert.ok(status.error?.message.includes("MINIMAX_SUBSCRIPTION_KEY"));
+      assert.ok(status.error?.message.includes("rejected"));
+    },
+  );
+
+  restoreFetch();
+});
+
+test("legacy fallback HTTP 401 with login fail also produces actionable error", async () => {
+  const restoreFetch = mockFetch(async () => {
+    return new Response(
+      JSON.stringify({
+        base_resp: {
+          status_code: 1004,
+          status_msg: "login fail: invalid key",
+        },
+      }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    );
+  });
+
+  await withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: undefined,
+      MINIMAX_API_KEY: "bad-key",
+    },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
+
+      assert.equal(status.ok, false);
+      assert.equal(status.error?.code, "minimax_legacy_key_rejected");
+      assert.ok(status.error?.message.includes("MINIMAX_API_KEY"));
+      assert.ok(status.error?.message.includes("rejected"));
+    },
+  );
+
+  restoreFetch();
+});
+
+test("legacy fallback normal API error is not overridden", async () => {
+  const restoreFetch = mockFetch(async () => {
+    return new Response(
+      JSON.stringify({
+        base_resp: { status_code: 2001, status_msg: "rate limit exceeded" },
+      }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    );
+  });
+
+  await withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: undefined,
+      MINIMAX_API_KEY: "some-key",
+    },
+    async () => {
+      const status = await fetchMiniMaxSubscriptionUsage();
+
+      assert.equal(status.ok, false);
+      assert.equal(status.credentialSource, "MINIMAX_API_KEY_LEGACY");
+      assert.equal(status.error?.code, "minimax_http_429");
+      assert.equal(status.error?.retryable, true);
+    },
+  );
+
+  restoreFetch();
+});
+
+test("response never contains secret values", () => {
+  withEnv(
+    {
+      MINIMAX_SUBSCRIPTION_KEY: "hidden-sub-key",
+      MINIMAX_API_KEY: "hidden-api-key",
+      MINIMAX_BASE_URL: "https://api.minimax.io/v1",
+    },
+    () => {
+      const status = parseMiniMaxTokenPlanResponse(
+        JSON.stringify({
+          model_remains: [
+            {
+              model_name: "general",
+              current_interval_total_count: 100,
+              current_interval_usage_count: 10,
+              current_interval_remaining_percent: 90,
+              current_interval_status: 0,
+            },
+          ],
+        }),
+        CHECKED_AT,
+      );
+
+      const json = JSON.stringify(status);
+      assert.doesNotMatch(json, /Authorization/i);
+      assert.doesNotMatch(json, /Bearer/i);
+      assert.doesNotMatch(json, /hidden-sub-key/i);
+      assert.doesNotMatch(json, /hidden-api-key/i);
+      // The credentialSource label "MINIMAX_SUBSCRIPTION_KEY" is a safe
+      // label; only the credential value itself (hidden-sub-key) must
+      // never appear.
+    },
+  );
 });

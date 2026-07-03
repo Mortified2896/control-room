@@ -270,6 +270,7 @@ export type BuildRegistryInput = {
     label: string;
     tier: "cheap" | "expensive";
     reasoningCapability: ReasoningCapability;
+    supportsVision: boolean;
   } | null;
   /** Optional override for "is this id a known static model?". */
   isKnownOverride?: (modelId: string) => boolean;
@@ -281,6 +282,7 @@ export type BuildRegistryInput = {
         label: string;
         tier: "cheap" | "expensive";
         reasoningCapability: ReasoningCapability;
+        supportsVision: boolean;
       },
     ]
   >;
@@ -493,14 +495,14 @@ export function buildEffectiveRegistry(input: BuildRegistryInput): EffectiveRegi
       manualSelectorVisible,
       manuallyOverridden,
       routerEligible,
-      // Capability placeholders — only `reasoning` is sourced today
-      // from local metadata; the rest are always false until the
-      // capability registry ships. UI surfaces these as disabled
+      // Capability placeholders — only `reasoning` and `vision`/`images`
+      // are sourced from local metadata; the rest are always false until
+      // the capability registry ships. UI surfaces these as disabled
       // checkboxes so the layout is stable.
       capabilities: {
         reasoning: supportsReasoning,
-        vision: false,
-        images: false,
+        vision: alias?.supportsVision ?? false,
+        images: alias?.supportsVision ?? false,
         functionCalling: false,
         structuredOutput: false,
         streaming: true,
@@ -602,8 +604,8 @@ export async function getEffectiveModelsRegistry(): Promise<EffectiveRegistry> {
       routerEligible: true,
       capabilities: {
         reasoning: hasReasoningControls(refreshedCap),
-        vision: false,
-        images: false,
+        vision: m.supportsVision,
+        images: m.supportsVision,
         functionCalling: false,
         structuredOutput: false,
         streaming: true,
@@ -770,6 +772,7 @@ export async function getEffectiveModelsResponse(): Promise<{
       reasoningCapability: m.reasoningCapability,
       reasoningLevels: m.supportedReasoningLevels,
       tier: legacyTier(m.tier),
+      vision: m.capabilities.vision,
     };
     if (!canCallNow) {
       // Provide a precise reason string for the model picker when the
@@ -833,6 +836,7 @@ export async function getEffectiveModelsResponse(): Promise<{
       reasoningCapability: capability,
       reasoningLevels: getEffectiveReasoningLevels(capability),
       tier: m.tier,
+      vision: m.supportsVision,
       ...(codexEnabled
         ? {}
         : { reason: "Codex subscription manual chat is disabled in Settings." }),
@@ -863,6 +867,7 @@ export async function getEffectiveModelsResponse(): Promise<{
         supportsReasoningLevels: m.supportsReasoningLevels ?? true,
         reasoningCapability: capability,
         reasoningLevels: getEffectiveReasoningLevels(capability),
+        vision: false,
         enabled: Boolean(m.enabled && minimaxAccess?.enabled && minimaxAccess.allow_manual),
         reason: !minimaxAccess?.enabled
           ? "MiniMax API key provider is disabled in Settings."

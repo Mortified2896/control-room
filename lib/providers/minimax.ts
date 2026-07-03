@@ -105,6 +105,8 @@ function toMiniMaxModelOption(
     // (yet) accept a reasoning knob. We report `true` here so the
     // registry UI doesn't downgrade the row.
     supportsReasoningLevels: true,
+    // MiniMax models do not support vision / image input.
+    vision: false,
   };
   if (reason) {
     option.reason = reason;

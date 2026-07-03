@@ -42,6 +42,7 @@ export type StaticOpenAIModelAlias = {
   label: string;
   tier: ModelTier;
   reasoningCapability: ReasoningCapability;
+  supportsVision: boolean;
 };
 
 const OPENAI_STATIC_ALIASES: ReadonlyMap<string, StaticOpenAIModelAlias> = new Map([
@@ -50,10 +51,7 @@ const OPENAI_STATIC_ALIASES: ReadonlyMap<string, StaticOpenAIModelAlias> = new M
     {
       label: "GPT-5.4 Mini",
       tier: "cheap",
-      // Cheap-tier model — OpenAI's current docs list
-      // `none | low | medium | high` for `gpt-5.4-mini`. We surface
-      // every advertised value so the picker shows `none` literally
-      // and does not hide `none` behind a "default" copy.
+      supportsVision: true,
       reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported", {
         defaultOption: "low",
         source: "static",
@@ -65,9 +63,7 @@ const OPENAI_STATIC_ALIASES: ReadonlyMap<string, StaticOpenAIModelAlias> = new M
     {
       label: "GPT-5.5",
       tier: "expensive",
-      // Expensive-tier model — advertises the full
-      // `none | minimal | low | medium | high | xhigh` set. We
-      // surface every provider-native value literally.
+      supportsVision: true,
       reasoningCapability: effortLevelsCapability(
         ["none", "minimal", "low", "medium", "high", "xhigh"],
         "supported",
@@ -80,8 +76,7 @@ const OPENAI_STATIC_ALIASES: ReadonlyMap<string, StaticOpenAIModelAlias> = new M
     {
       label: "GPT-Fake Known Extra",
       tier: "cheap",
-      // Deterministic dev/Playwright-only entry — mirrors the
-      // `gpt-5.4-mini` cheap-tier option set.
+      supportsVision: false,
       reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported", {
         defaultOption: "low",
         source: "static",

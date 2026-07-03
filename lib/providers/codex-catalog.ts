@@ -50,6 +50,12 @@ export type CodexCatalogModel = {
    */
   supportsReasoningLevels: boolean;
   /**
+   * Whether this model supports vision / image input. When `false`,
+   * image attachments are rejected by the API with a clear error
+   * and the UI should disable the image upload button.
+   */
+  supportsVision: boolean;
+  /**
    * Honest reasoning / thinking capability for this Codex model.
    *
    * Codex CLI / config / IDE support `reasoning_effort` style controls
@@ -80,9 +86,7 @@ export const CODEX_CATALOG_MODELS = [
     requiresApiKey: false,
     supportedExecutionTargets: CODEX_BASE_TARGETS,
     supportsReasoningLevels: true,
-    // Codex CLI / GPT-5.5 supports the full
-    // `none | minimal | low | medium | high | xhigh` effort-level
-    // set. Surface every value literally.
+    supportsVision: true,
     reasoningCapability: effortLevelsCapability(
       ["none", "minimal", "low", "medium", "high", "xhigh"],
       "supported",
@@ -100,6 +104,7 @@ export const CODEX_CATALOG_MODELS = [
     requiresApiKey: false,
     supportedExecutionTargets: CODEX_BASE_TARGETS,
     supportsReasoningLevels: true,
+    supportsVision: true,
     reasoningCapability: effortLevelsCapability(
       ["none", "minimal", "low", "medium", "high", "xhigh"],
       "supported",
@@ -117,8 +122,7 @@ export const CODEX_CATALOG_MODELS = [
     requiresApiKey: false,
     supportedExecutionTargets: CODEX_BASE_TARGETS,
     supportsReasoningLevels: true,
-    // Cheap-tier model — `xhigh` is not documented for the mini
-    // tier. We still surface `none` literally.
+    supportsVision: true,
     reasoningCapability: effortLevelsCapability(["none", "low", "medium", "high"], "supported", {
       defaultOption: "low",
       source: "static",
@@ -136,10 +140,7 @@ export const CODEX_CATALOG_MODELS = [
     requiresApiKey: false,
     supportedExecutionTargets: CODEX_BASE_TARGETS,
     supportsReasoningLevels: true,
-    // Research-preview model — exact reasoning_effort support is not
-    // documented. We advertise a conservative `low` default so the UI
-    // can still render a single, honest option; the runtime forwards
-    // the user's pick to the Codex CLI, which is the source of truth.
+    supportsVision: false,
     reasoningCapability: effortLevelsCapability(["low"], "model_dependent", {
       defaultOption: "low",
       source: "static",

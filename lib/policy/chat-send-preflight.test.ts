@@ -60,6 +60,7 @@ function option(input: {
     reasoningCapability: input.capability ?? (isMiniMax ? thinkingBudget : noReasoning),
     reasoningLevels: input.capability?.kind === "effort_levels" ? ["low", "medium"] : [],
     tier: "cheap",
+    vision: true,
     supportedExecutionTargets,
     supportsReasoningLevels: input.capability?.kind === "effort_levels",
   };

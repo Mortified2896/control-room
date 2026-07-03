@@ -138,6 +138,12 @@ export type ModelOption = {
    * models off the default allowlist unless explicitly enabled.
    */
   tier: ModelTier;
+  /**
+   * Whether this model supports vision / image input. When `false`, the
+   * API must reject image messages with a clear 400 error and the UI
+   * should disable the image upload button.
+   */
+  vision: boolean;
 };
 
 export type ModelsResponse = {

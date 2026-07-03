@@ -10,12 +10,18 @@ export type SubscriptionUsageSummaryItem = {
   window?: string;
 };
 
+export type CredentialSource =
+  | "MINIMAX_SUBSCRIPTION_KEY"
+  | "MINIMAX_API_KEY_LEGACY"
+  | "missing";
+
 export type SubscriptionUsageStatus = {
   provider: string;
   ok: boolean;
   source: string;
   checkedAt: string;
   rawAvailable: boolean;
+  credentialSource: CredentialSource;
   summary?: SubscriptionUsageSummaryItem[];
   error?: {
     code: string;
@@ -24,7 +30,6 @@ export type SubscriptionUsageStatus = {
   };
 };
 
-const SUBSCRIPTION_KEY_ENV = "MINIMAX_SUBSCRIPTION_KEY";
 const DEFAULT_BASE_URL = "https://api.minimax.io/v1";
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -62,7 +67,7 @@ function epochMsToIso(ms: unknown): string | null {
 export function parseMiniMaxTokenPlanResponse(
   responseText: string,
   checkedAt: string,
-): SubscriptionUsageStatus {
+): SubscriptionUsageStatus & { _credentialSource?: CredentialSource } {
   try {
     const data = JSON.parse(responseText) as MiniMaxTokenPlanResponse;
 
@@ -74,6 +79,7 @@ export function parseMiniMaxTokenPlanResponse(
         source: "minimax:/v1/token_plan/remains",
         checkedAt,
         rawAvailable: false,
+        credentialSource: "missing",
         error: {
           code: "minimax_token_plan_api_error",
           message:
@@ -92,6 +98,7 @@ export function parseMiniMaxTokenPlanResponse(
         source: "minimax:/v1/token_plan/remains",
         checkedAt,
         rawAvailable: false,
+        credentialSource: "missing",
         summary: [],
       };
     }
@@ -155,6 +162,7 @@ export function parseMiniMaxTokenPlanResponse(
       source: "minimax:/v1/token_plan/remains",
       checkedAt,
       rawAvailable: summary.length > 0 && summary.some((s) => s.window !== "not_in_plan"),
+      credentialSource: "missing",
       summary: summary.length > 0 ? summary : undefined,
     };
   } catch (err) {
@@ -164,6 +172,7 @@ export function parseMiniMaxTokenPlanResponse(
       source: "minimax:/v1/token_plan/remains",
       checkedAt,
       rawAvailable: false,
+      credentialSource: "missing",
       error: {
         code: "invalid_minimax_usage_response",
         message: err instanceof Error ? err.message : "Failed to parse MiniMax Token Plan response",
@@ -173,17 +182,56 @@ export function parseMiniMaxTokenPlanResponse(
   }
 }
 
-export function getMiniMaxSubscriptionConfig(): {
+export type MiniMaxSubscriptionConfig = {
   keySet: boolean;
   key: string | undefined;
+  credentialSource: CredentialSource;
   baseURL: string;
-} {
-  const key = process.env[SUBSCRIPTION_KEY_ENV]?.trim() || undefined;
+};
+
+export function getMiniMaxSubscriptionConfig(): MiniMaxSubscriptionConfig {
+  const subscriptionKey = process.env.MINIMAX_SUBSCRIPTION_KEY?.trim();
+  if (subscriptionKey) {
+    return {
+      keySet: true,
+      key: subscriptionKey,
+      credentialSource: "MINIMAX_SUBSCRIPTION_KEY",
+      baseURL: process.env.MINIMAX_BASE_URL?.trim() || DEFAULT_BASE_URL,
+    };
+  }
+
+  const legacyKey = process.env.MINIMAX_API_KEY?.trim();
+  if (legacyKey) {
+    return {
+      keySet: true,
+      key: legacyKey,
+      credentialSource: "MINIMAX_API_KEY_LEGACY",
+      baseURL: process.env.MINIMAX_BASE_URL?.trim() || DEFAULT_BASE_URL,
+    };
+  }
+
   return {
-    keySet: Boolean(key),
-    key,
+    keySet: false,
+    key: undefined,
+    credentialSource: "missing",
     baseURL: process.env.MINIMAX_BASE_URL?.trim() || DEFAULT_BASE_URL,
   };
+}
+
+function isLoginFailResponse(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as { base_resp?: { status_code?: unknown; status_msg?: unknown } };
+    const statusCode = parsed.base_resp?.status_code;
+    const statusMsg = parsed.base_resp?.status_msg;
+    if (typeof statusCode === "number" && statusCode !== 0) {
+      if (typeof statusMsg === "string" && /login fail/i.test(statusMsg)) {
+        return true;
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+  return false;
 }
 
 export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsageStatus> {
@@ -197,9 +245,11 @@ export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsage
       source: "minimax:/v1/token_plan/remains",
       checkedAt,
       rawAvailable: false,
+      credentialSource: "missing",
       error: {
         code: "missing_minimax_subscription_key",
-        message: `MINIMAX_SUBSCRIPTION_KEY is not configured. Set ${SUBSCRIPTION_KEY_ENV} in the server environment.`,
+        message:
+          "Set MINIMAX_SUBSCRIPTION_KEY. Legacy fallback MINIMAX_API_KEY is also supported temporarily.",
         retryable: false,
       },
     };
@@ -212,7 +262,7 @@ export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsage
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-    let res;
+    let res: Response;
     try {
       res = await fetch(url, {
         method: "GET",
@@ -228,6 +278,27 @@ export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsage
 
     const text = await res.text();
 
+    const isLegacyWrongKey =
+      config.credentialSource === "MINIMAX_API_KEY_LEGACY" &&
+      isLoginFailResponse(text);
+
+    if (isLegacyWrongKey) {
+      return {
+        provider: "minimax",
+        ok: false,
+        source: "minimax:/v1/token_plan/remains",
+        checkedAt,
+        rawAvailable: false,
+        credentialSource: "MINIMAX_API_KEY_LEGACY",
+        error: {
+          code: "minimax_legacy_key_rejected",
+          message:
+            "The configured MINIMAX_API_KEY was tried as a legacy subscription key, but MiniMax rejected it. Set MINIMAX_SUBSCRIPTION_KEY to the Token Plan subscription key.",
+          retryable: false,
+        },
+      };
+    }
+
     if (!res.ok) {
       let detail: string | undefined;
       try {
@@ -242,6 +313,7 @@ export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsage
         source: `minimax:/v1/token_plan/remains (HTTP ${res.status})`,
         checkedAt,
         rawAvailable: false,
+        credentialSource: config.credentialSource,
         error: {
           code: `minimax_http_${res.status}`,
           message: detail ?? `MiniMax Token Plan endpoint returned HTTP ${res.status}`,
@@ -250,7 +322,11 @@ export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsage
       };
     }
 
-    return parseMiniMaxTokenPlanResponse(text, checkedAt);
+    const parsed = parseMiniMaxTokenPlanResponse(text, checkedAt);
+    return {
+      ...parsed,
+      credentialSource: config.credentialSource,
+    };
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       return {
@@ -259,6 +335,7 @@ export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsage
         source: "minimax:/v1/token_plan/remains",
         checkedAt,
         rawAvailable: false,
+        credentialSource: config.credentialSource,
         error: {
           code: "minimax_subscription_timeout",
           message: `MiniMax Token Plan request timed out after ${FETCH_TIMEOUT_MS}ms`,
@@ -272,6 +349,7 @@ export async function fetchMiniMaxSubscriptionUsage(): Promise<SubscriptionUsage
       source: "minimax:/v1/token_plan/remains",
       checkedAt,
       rawAvailable: false,
+      credentialSource: config.credentialSource,
       error: {
         code: "minimax_subscription_network_error",
         message: err instanceof Error ? err.message : "MiniMax Token Plan request failed",
