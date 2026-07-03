@@ -355,21 +355,20 @@ function StatusBody({ status, now }: { status: SubscriptionUsageStatus; now: num
   );
 }
 
-/**
- * Auto-loading card that shows the last known MiniMax subscription usage
- * status from the server-side fetcher.  Includes a Refresh button that
- * replaces the auto-loaded state.
- */
 function MiniMaxSubscriptionCard({
   status,
   now,
   onRefresh,
   refreshing,
+  onTest,
+  testing,
 }: {
   status: SubscriptionUsageStatus | null;
   now: number;
   onRefresh: () => void;
   refreshing: boolean;
+  onTest: () => void;
+  testing: boolean;
 }) {
   return (
     <section className="rounded-lg border border-border/60 bg-card/50 p-5 shadow-xs">
@@ -390,117 +389,32 @@ function MiniMaxSubscriptionCard({
 
       <div className="mt-3 flex items-center justify-between">
         {status ? <CheckedAt checkedAt={status.checkedAt} now={now} /> : <div />}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRefresh}
-          disabled={refreshing}
-          aria-label="Refresh MiniMax subscription usage"
-        >
-          <RefreshCw className={cn("size-3.5", refreshing ? "animate-spin" : "")} />
-          Refresh
-        </Button>
-      </div>
-    </section>
-  );
-}
-
-/**
- * Explicit one-shot test panel.  Clicking the button performs a fresh
- * live call to the MiniMax Token Plan endpoint and shows only the result
- * of that single call — it never mixes with the auto-loaded state.
- */
-function MiniMaxLiveTest({ now }: { now: number }) {
-  const [result, setResult] = useState<SubscriptionUsageStatus | "idle" | "loading">("idle");
-
-  const run = useCallback(async () => {
-    setResult("loading");
-    try {
-      const r = await fetch("/api/subscription-usage", { cache: "no-store" });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = (await r.json()) as RouteResponse;
-      const mm = data.statuses.find((s) => s.provider === "minimax");
-      setResult(mm ?? {
-        provider: "minimax",
-        ok: false,
-        source: "client",
-        checkedAt: new Date().toISOString(),
-        rawAvailable: false,
-        credentialSource: "missing",
-        error: { code: "no_status_returned", message: "No MiniMax status in response", retryable: false },
-      });
-    } catch (err) {
-      setResult({
-        provider: "minimax",
-        ok: false,
-        source: "client",
-        checkedAt: new Date().toISOString(),
-        rawAvailable: false,
-        credentialSource: "missing",
-        error: {
-          code: "request_failed",
-          message: err instanceof Error ? err.message : "Request failed",
-          retryable: true,
-        },
-      });
-    }
-  }, []);
-
-  return (
-    <section className="rounded-lg border border-border/60 bg-card/50 p-5 shadow-xs">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold">MiniMax live subscription endpoint</h2>
-            {result === "loading" ? (
-              <LoadingPill />
-            ) : typeof result === "object" ? (
-              <CardPill status={result} />
-            ) : null}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Calls{" "}
-            <code className="font-mono">GET /v1/token_plan/remains</code> live and shows the
-            normalized result. Does not use cached or estimated data.
-          </p>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onTest}
+            disabled={testing}
+            aria-label="Test live endpoint"
+          >
+            {testing ? (
+              <Loader2 className="mr-1 size-3.5 animate-spin" />
+            ) : (
+              <Activity className="mr-1 size-3.5" />
+            )}
+            Test live endpoint
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRefresh}
+            disabled={refreshing}
+            aria-label="Refresh MiniMax subscription usage"
+          >
+            <RefreshCw className={cn("size-3.5", refreshing ? "animate-spin" : "")} />
+            Refresh
+          </Button>
         </div>
-      </div>
-
-      {result === "idle" ? (
-        <div className="mt-4 rounded-md border border-border/60 bg-muted/20 p-4 text-center text-sm text-muted-foreground">
-          Click the button below to test the MiniMax subscription endpoint.
-        </div>
-      ) : null}
-
-      {result === "loading" ? (
-        <div className="mt-4 rounded-md border border-border/60 bg-muted/20 p-4 text-center text-sm text-muted-foreground">
-          <Loader2 className="mr-2 inline size-4 animate-spin" />
-          Calling MiniMax Token Plan endpoint…
-        </div>
-      ) : null}
-
-      {typeof result === "object" ? <StatusBody status={result} now={now} /> : null}
-
-      <div className="mt-3 flex items-center justify-between">
-        {typeof result === "object" ? (
-          <CheckedAt checkedAt={result.checkedAt} now={now} />
-        ) : (
-          <div />
-        )}
-        <Button
-          variant="default"
-          size="sm"
-          onClick={run}
-          disabled={result === "loading"}
-          aria-label="Test MiniMax live usage"
-        >
-          {result === "loading" ? (
-            <Loader2 className="mr-1 size-3.5 animate-spin" />
-          ) : (
-            <Activity className="mr-1 size-3.5" />
-          )}
-          Test MiniMax live usage
-        </Button>
       </div>
     </section>
   );
@@ -509,6 +423,7 @@ function MiniMaxLiveTest({ now }: { now: number }) {
 export function SubscriptionUsagePanel() {
   const [statuses, setStatuses] = useState<SubscriptionUsageStatus[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   const load = useCallback(async () => {
@@ -522,6 +437,32 @@ export function SubscriptionUsagePanel() {
       // keep stale status on failure
     } finally {
       setRefreshing(false);
+    }
+  }, []);
+
+  const testLive = useCallback(async () => {
+    setTesting(true);
+    try {
+      const r = await fetch("/api/subscription-usage", { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()) as RouteResponse;
+      setStatuses(data.statuses);
+    } catch (err) {
+      setStatuses([{
+        provider: "minimax",
+        ok: false,
+        source: "client",
+        checkedAt: new Date().toISOString(),
+        rawAvailable: false,
+        credentialSource: "missing",
+        error: {
+          code: "request_failed",
+          message: err instanceof Error ? err.message : "Request failed",
+          retryable: true,
+        },
+      }]);
+    } finally {
+      setTesting(false);
     }
   }, []);
 
@@ -548,10 +489,10 @@ export function SubscriptionUsagePanel() {
           now={now}
           onRefresh={load}
           refreshing={refreshing}
+          onTest={testLive}
+          testing={testing}
         />
       )}
-
-      <MiniMaxLiveTest now={now} />
     </div>
   );
 }
