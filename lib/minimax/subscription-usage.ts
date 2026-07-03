@@ -152,11 +152,13 @@ export function parseMiniMaxTokenPlanResponse(
     let intervalUsedSum = 0;
     let intervalAnyTotal = false;
     let intervalEarliestEndMs: number | null = null;
+    let intervalApiRemainingPercent: number | null = null;
 
     let weeklyTotalSum = 0;
     let weeklyUsedSum = 0;
     let weeklyAnyTotal = false;
     let weeklyEarliestEndMs: number | null = null;
+    let weeklyApiRemainingPercent: number | null = null;
 
     for (const model of models) {
       if (!model || typeof model !== "object") continue;
@@ -177,7 +179,7 @@ export function parseMiniMaxTokenPlanResponse(
       const weeklyReset = epochMsToIso(m.weekly_end_time);
       const weeklyEndMs = num(m.weekly_end_time);
 
-      const isNotInPlan = intervalStatus === 3 || (intervalTotal === 0 && intervalUsed === 0 && intervalRemainingPercent === 100);
+      const isNotInPlan = intervalStatus === 3;
 
       if (isNotInPlan && modelName !== "unknown") {
         summary.push({
@@ -203,6 +205,11 @@ export function parseMiniMaxTokenPlanResponse(
         if (intervalEndMs !== null && (intervalEarliestEndMs === null || intervalEndMs < intervalEarliestEndMs)) {
           intervalEarliestEndMs = intervalEndMs;
         }
+        if (intervalRemainingPercent !== null) {
+          intervalApiRemainingPercent = intervalApiRemainingPercent !== null
+            ? Math.min(intervalApiRemainingPercent, intervalRemainingPercent)
+            : intervalRemainingPercent;
+        }
       }
 
       if (weeklyTotal !== null && weeklyStatus !== 3) {
@@ -221,6 +228,11 @@ export function parseMiniMaxTokenPlanResponse(
         if (weeklyEndMs !== null && (weeklyEarliestEndMs === null || weeklyEndMs < weeklyEarliestEndMs)) {
           weeklyEarliestEndMs = weeklyEndMs;
         }
+        if (weeklyRemainingPercent !== null) {
+          weeklyApiRemainingPercent = weeklyApiRemainingPercent !== null
+            ? Math.min(weeklyApiRemainingPercent, weeklyRemainingPercent)
+            : weeklyRemainingPercent;
+        }
       }
     }
 
@@ -229,8 +241,10 @@ export function parseMiniMaxTokenPlanResponse(
       const usedCount = intervalUsedSum;
       const totalCount = intervalTotalSum;
       const remainingCount = totalCount - usedCount;
-      const usedPercent = totalCount > 0 ? Math.round((usedCount / totalCount) * 100) : 0;
-      const remainingPercent = 100 - usedPercent;
+      const remainingPercent = totalCount > 0
+        ? Math.round(((totalCount - usedCount) / totalCount) * 100)
+        : (intervalApiRemainingPercent ?? 100);
+      const usedPercent = 100 - remainingPercent;
       const resetAt = intervalEarliestEndMs ? epochMsToIso(intervalEarliestEndMs) ?? undefined : undefined;
       const resetInMs = intervalEarliestEndMs && !Number.isNaN(checkedAtMs)
         ? Math.max(0, intervalEarliestEndMs - checkedAtMs)
@@ -253,8 +267,10 @@ export function parseMiniMaxTokenPlanResponse(
       const usedCount = weeklyUsedSum;
       const totalCount = weeklyTotalSum;
       const remainingCount = totalCount - usedCount;
-      const usedPercent = totalCount > 0 ? Math.round((usedCount / totalCount) * 100) : 0;
-      const remainingPercent = 100 - usedPercent;
+      const remainingPercent = totalCount > 0
+        ? Math.round(((totalCount - usedCount) / totalCount) * 100)
+        : (weeklyApiRemainingPercent ?? 100);
+      const usedPercent = 100 - remainingPercent;
       const resetAt = weeklyEarliestEndMs ? epochMsToIso(weeklyEarliestEndMs) ?? undefined : undefined;
       const resetInMs = weeklyEarliestEndMs && !Number.isNaN(checkedAtMs)
         ? Math.max(0, weeklyEarliestEndMs - checkedAtMs)

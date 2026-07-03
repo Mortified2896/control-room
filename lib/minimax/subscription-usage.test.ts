@@ -287,6 +287,52 @@ test("MiniMax subscription parser computes unified windows across multiple model
   assert.equal(weekly.usedPercent, 24);
 });
 
+test("MiniMax subscription parser uses API remaining_percent when counts are zero", () => {
+  const status = parseMiniMaxTokenPlanResponse(
+    JSON.stringify({
+      model_remains: [
+        {
+          model_name: "general",
+          current_interval_total_count: 0,
+          current_interval_usage_count: 0,
+          current_interval_remaining_percent: 100,
+          current_interval_status: 1,
+          end_time: 1783072800000,
+          current_weekly_total_count: 0,
+          current_weekly_usage_count: 0,
+          current_weekly_remaining_percent: 9,
+          current_weekly_status: 1,
+          weekly_end_time: 1783296000000,
+        },
+      ],
+    }),
+    "2026-07-03T12:00:00.000Z",
+  );
+
+  assert.equal(status.ok, true);
+  assert.equal(status.rawAvailable, true);
+  assert.equal(status.windows?.length, 2);
+
+  const fiveH = status.windows![0]!;
+  assert.equal(fiveH.label, "5h limit");
+  assert.equal(fiveH.usedPercent, 0);
+  assert.equal(fiveH.remainingPercent, 100);
+  assert.ok(fiveH.resetInLabel !== undefined);
+
+  const weekly = status.windows![1]!;
+  assert.equal(weekly.label, "weekly limit");
+  assert.equal(weekly.usedPercent, 91);
+  assert.equal(weekly.remainingPercent, 9);
+  assert.ok(weekly.resetInLabel !== undefined);
+
+  // Summary should show the model with API remaining_percent, not "not_in_plan"
+  assert.equal(status.summary?.length, 2);
+  assert.equal(status.summary![0]!.window, "rolling_interval");
+  assert.equal(status.summary![0]!.remainingPercent, 100);
+  assert.equal(status.summary![1]!.window, "weekly");
+  assert.equal(status.summary![1]!.remainingPercent, 9);
+});
+
 test("MiniMax subscription parser does not emit windows when all models are not_in_plan", () => {
   const status = parseMiniMaxTokenPlanResponse(
     JSON.stringify({
