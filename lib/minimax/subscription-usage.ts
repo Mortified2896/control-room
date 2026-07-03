@@ -10,6 +10,30 @@ export type SubscriptionUsageSummaryItem = {
   window?: string;
 };
 
+export type MiniMaxUsageWindow = {
+  label: string;
+  windowType: "rolling_interval" | "weekly";
+  totalCount: number;
+  usedCount: number;
+  remainingCount: number;
+  usedPercent: number;
+  remainingPercent: number;
+  resetAt?: string;
+  resetInMs?: number;
+  resetInLabel?: string;
+};
+
+export type MiniMaxCredits = {
+  available: boolean;
+  balance?: number;
+  label?: string;
+};
+
+export type MiniMaxUsageDetail = {
+  label: string;
+  tokens: number;
+};
+
 export type CredentialSource =
   | "MINIMAX_SUBSCRIPTION_KEY"
   | "MINIMAX_API_KEY_LEGACY"
@@ -23,6 +47,9 @@ export type SubscriptionUsageStatus = {
   rawAvailable: boolean;
   credentialSource: CredentialSource;
   summary?: SubscriptionUsageSummaryItem[];
+  windows?: MiniMaxUsageWindow[];
+  credits?: MiniMaxCredits;
+  usageDetails?: MiniMaxUsageDetail[];
   error?: {
     code: string;
     message: string;
@@ -62,6 +89,21 @@ function epochMsToIso(ms: unknown): string | null {
   if (n === null) return null;
   const d = new Date(n);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+export function msToHuman(ms: number): string {
+  if (ms <= 0) return "any moment";
+  const totalMinutes = Math.floor(ms / 60_000);
+  if (totalMinutes < 1) return "<1m";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return `${days}d ${remainingHours}h`;
+  }
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 export function parseMiniMaxTokenPlanResponse(
@@ -104,6 +146,18 @@ export function parseMiniMaxTokenPlanResponse(
     }
 
     const summary: SubscriptionUsageSummaryItem[] = [];
+    const checkedAtMs = new Date(checkedAt).getTime();
+
+    let intervalTotalSum = 0;
+    let intervalUsedSum = 0;
+    let intervalAnyTotal = false;
+    let intervalEarliestEndMs: number | null = null;
+
+    let weeklyTotalSum = 0;
+    let weeklyUsedSum = 0;
+    let weeklyAnyTotal = false;
+    let weeklyEarliestEndMs: number | null = null;
+
     for (const model of models) {
       if (!model || typeof model !== "object") continue;
       const m = model as Record<string, unknown>;
@@ -114,12 +168,14 @@ export function parseMiniMaxTokenPlanResponse(
       const intervalRemainingPercent = num(m.current_interval_remaining_percent);
       const intervalStatus = num(m.current_interval_status);
       const intervalReset = epochMsToIso(m.end_time);
+      const intervalEndMs = num(m.end_time);
 
       const weeklyTotal = num(m.current_weekly_total_count);
       const weeklyUsed = num(m.current_weekly_usage_count);
       const weeklyRemainingPercent = num(m.current_weekly_remaining_percent);
       const weeklyStatus = num(m.current_weekly_status);
       const weeklyReset = epochMsToIso(m.weekly_end_time);
+      const weeklyEndMs = num(m.weekly_end_time);
 
       const isNotInPlan = intervalStatus === 3 || (intervalTotal === 0 && intervalUsed === 0 && intervalRemainingPercent === 100);
 
@@ -141,6 +197,12 @@ export function parseMiniMaxTokenPlanResponse(
           resetAt: intervalReset ?? undefined,
           window: "rolling_interval",
         });
+        intervalTotalSum += intervalTotal;
+        intervalUsedSum += intervalUsed ?? 0;
+        intervalAnyTotal = true;
+        if (intervalEndMs !== null && (intervalEarliestEndMs === null || intervalEndMs < intervalEarliestEndMs)) {
+          intervalEarliestEndMs = intervalEndMs;
+        }
       }
 
       if (weeklyTotal !== null && weeklyStatus !== 3) {
@@ -153,7 +215,62 @@ export function parseMiniMaxTokenPlanResponse(
           resetAt: weeklyReset ?? undefined,
           window: "weekly",
         });
+        weeklyTotalSum += weeklyTotal;
+        weeklyUsedSum += weeklyUsed ?? 0;
+        weeklyAnyTotal = true;
+        if (weeklyEndMs !== null && (weeklyEarliestEndMs === null || weeklyEndMs < weeklyEarliestEndMs)) {
+          weeklyEarliestEndMs = weeklyEndMs;
+        }
       }
+    }
+
+    const windows: MiniMaxUsageWindow[] = [];
+    if (intervalAnyTotal) {
+      const usedCount = intervalUsedSum;
+      const totalCount = intervalTotalSum;
+      const remainingCount = totalCount - usedCount;
+      const usedPercent = totalCount > 0 ? Math.round((usedCount / totalCount) * 100) : 0;
+      const remainingPercent = 100 - usedPercent;
+      const resetAt = intervalEarliestEndMs ? epochMsToIso(intervalEarliestEndMs) ?? undefined : undefined;
+      const resetInMs = intervalEarliestEndMs && !Number.isNaN(checkedAtMs)
+        ? Math.max(0, intervalEarliestEndMs - checkedAtMs)
+        : undefined;
+      windows.push({
+        label: "5h limit",
+        windowType: "rolling_interval",
+        totalCount,
+        usedCount,
+        remainingCount,
+        usedPercent,
+        remainingPercent,
+        resetAt,
+        resetInMs,
+        resetInLabel: resetInMs !== undefined ? msToHuman(resetInMs) : undefined,
+      });
+    }
+
+    if (weeklyAnyTotal) {
+      const usedCount = weeklyUsedSum;
+      const totalCount = weeklyTotalSum;
+      const remainingCount = totalCount - usedCount;
+      const usedPercent = totalCount > 0 ? Math.round((usedCount / totalCount) * 100) : 0;
+      const remainingPercent = 100 - usedPercent;
+      const resetAt = weeklyEarliestEndMs ? epochMsToIso(weeklyEarliestEndMs) ?? undefined : undefined;
+      const resetInMs = weeklyEarliestEndMs && !Number.isNaN(checkedAtMs)
+        ? Math.max(0, weeklyEarliestEndMs - checkedAtMs)
+        : undefined;
+      windows.push({
+        label: "weekly limit",
+        windowType: "weekly",
+        totalCount,
+        usedCount,
+        remainingCount,
+        usedPercent,
+        remainingPercent,
+        resetAt,
+        resetInMs,
+        resetInLabel: resetInMs !== undefined ? msToHuman(resetInMs) : undefined,
+      });
     }
 
     return {
@@ -164,6 +281,7 @@ export function parseMiniMaxTokenPlanResponse(
       rawAvailable: summary.length > 0 && summary.some((s) => s.window !== "not_in_plan"),
       credentialSource: "missing",
       summary: summary.length > 0 ? summary : undefined,
+      windows: windows.length > 0 ? windows : undefined,
     };
   } catch (err) {
     return {

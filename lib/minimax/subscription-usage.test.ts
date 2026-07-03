@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  msToHuman,
   parseMiniMaxTokenPlanResponse,
   fetchMiniMaxSubscriptionUsage,
   getMiniMaxSubscriptionConfig,
@@ -175,6 +176,140 @@ test("MiniMax subscription parser handles null input", () => {
 
   assert.equal(status.ok, false);
   assert.equal(status.error?.code, "invalid_minimax_usage_response");
+});
+
+test("msToHuman returns correct labels", () => {
+  assert.equal(msToHuman(0), "any moment");
+  assert.equal(msToHuman(-1), "any moment");
+  assert.equal(msToHuman(30_000), "<1m");
+  assert.equal(msToHuman(2 * 60_000), "2m");
+  assert.equal(msToHuman(65 * 60_000), "1h 5m");
+  assert.equal(msToHuman(5 * 3_600_000 + 30 * 60_000), "5h 30m");
+  assert.equal(msToHuman(24 * 3_600_000), "1d 0h");
+  assert.equal(msToHuman(50 * 3_600_000 + 15 * 60_000), "2d 2h");
+});
+
+test("MiniMax subscription parser computes unified windows from model data", () => {
+  const status = parseMiniMaxTokenPlanResponse(
+    JSON.stringify({
+      model_remains: [
+        {
+          model_name: "general",
+          current_interval_total_count: 1_000_000,
+          current_interval_usage_count: 350_000,
+          current_interval_remaining_percent: 65,
+          current_interval_status: 0,
+          end_time: 1780934400000,
+          current_weekly_total_count: 4_000_000,
+          current_weekly_usage_count: 3_600_000,
+          current_weekly_remaining_percent: 10,
+          current_weekly_status: 0,
+          weekly_end_time: 1781539200000,
+        },
+      ],
+    }),
+    "2026-07-03T12:00:00.000Z",
+  );
+
+  assert.equal(status.ok, true);
+  assert.ok(status.windows);
+  assert.equal(status.windows.length, 2);
+
+  const fiveH = status.windows[0]!;
+  assert.equal(fiveH.label, "5h limit");
+  assert.equal(fiveH.windowType, "rolling_interval");
+  assert.equal(fiveH.totalCount, 1_000_000);
+  assert.equal(fiveH.usedCount, 350_000);
+  assert.equal(fiveH.remainingCount, 650_000);
+  assert.equal(fiveH.usedPercent, 35);
+  assert.equal(fiveH.remainingPercent, 65);
+  assert.ok(fiveH.resetInMs !== undefined);
+  assert.ok(fiveH.resetInLabel !== undefined);
+
+  const weekly = status.windows[1]!;
+  assert.equal(weekly.label, "weekly limit");
+  assert.equal(weekly.windowType, "weekly");
+  assert.equal(weekly.totalCount, 4_000_000);
+  assert.equal(weekly.usedCount, 3_600_000);
+  assert.equal(weekly.usedPercent, 90);
+  assert.equal(weekly.remainingPercent, 10);
+});
+
+test("MiniMax subscription parser computes unified windows across multiple models", () => {
+  const status = parseMiniMaxTokenPlanResponse(
+    JSON.stringify({
+      model_remains: [
+        {
+          model_name: "general",
+          current_interval_total_count: 800_000,
+          current_interval_usage_count: 200_000,
+          current_interval_remaining_percent: 75,
+          current_interval_status: 0,
+          end_time: 1780934400000,
+          current_weekly_total_count: 2_000_000,
+          current_weekly_usage_count: 500_000,
+          current_weekly_remaining_percent: 75,
+          current_weekly_status: 0,
+          weekly_end_time: 1781539200000,
+        },
+        {
+          model_name: "video",
+          current_interval_total_count: 200_000,
+          current_interval_usage_count: 50_000,
+          current_interval_remaining_percent: 75,
+          current_interval_status: 0,
+          end_time: 1780934400000,
+          current_weekly_total_count: 500_000,
+          current_weekly_usage_count: 100_000,
+          current_weekly_remaining_percent: 80,
+          current_weekly_status: 0,
+          weekly_end_time: 1781539200000,
+        },
+      ],
+    }),
+    "2026-07-03T12:00:00.000Z",
+  );
+
+  assert.equal(status.ok, true);
+  assert.ok(status.windows);
+  assert.equal(status.windows.length, 2);
+
+  // Interval sums: total=1M, used=250K
+  const fiveH = status.windows[0]!;
+  assert.equal(fiveH.totalCount, 1_000_000);
+  assert.equal(fiveH.usedCount, 250_000);
+  assert.equal(fiveH.usedPercent, 25);
+
+  // Weekly sums: total=2.5M, used=600K
+  const weekly = status.windows[1]!;
+  assert.equal(weekly.totalCount, 2_500_000);
+  assert.equal(weekly.usedCount, 600_000);
+  assert.equal(weekly.usedPercent, 24);
+});
+
+test("MiniMax subscription parser does not emit windows when all models are not_in_plan", () => {
+  const status = parseMiniMaxTokenPlanResponse(
+    JSON.stringify({
+      model_remains: [
+        {
+          model_name: "general",
+          current_interval_total_count: 0,
+          current_interval_usage_count: 0,
+          current_interval_remaining_percent: 100,
+          current_interval_status: 3,
+          current_weekly_total_count: 0,
+          current_weekly_usage_count: 0,
+          current_weekly_remaining_percent: 100,
+          current_weekly_status: 3,
+        },
+      ],
+    }),
+    CHECKED_AT,
+  );
+
+  assert.equal(status.ok, true);
+  assert.equal(status.windows, undefined);
+  assert.equal(status.rawAvailable, false);
 });
 
 test("MiniMax subscription parser handles models not in plan (status 3)", () => {

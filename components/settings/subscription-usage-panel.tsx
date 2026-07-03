@@ -4,7 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
+  Coins,
+  Clock,
+  Database,
+  ExternalLink,
   Loader2,
   RefreshCw,
   XCircle,
@@ -13,7 +18,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-import type { SubscriptionUsageStatus } from "@/lib/minimax/subscription-usage";
+import type {
+  MiniMaxUsageWindow,
+  SubscriptionUsageStatus,
+} from "@/lib/minimax/subscription-usage";
 
 type RouteResponse = {
   statuses: SubscriptionUsageStatus[];
@@ -22,6 +30,13 @@ type RouteResponse = {
 function pct(value: number | undefined | null): string {
   if (value == null) return "—";
   return `${Math.round(value)}%`;
+}
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
 }
 
 function relativeTime(iso: string, now: number): string {
@@ -36,13 +51,11 @@ function relativeTime(iso: string, now: number): string {
   return `${h}h ago`;
 }
 
-function userFacingError(status: SubscriptionUsageStatus): {
+function userFacingError(error: NonNullable<SubscriptionUsageStatus["error"]>): {
   title: string;
   message: string;
 } {
-  const code = status.error?.code ?? "";
-  const msg = status.error?.message ?? "";
-
+  const code = error.code;
   if (code === "missing_minimax_subscription_key") {
     return {
       title: "MiniMax subscription key missing",
@@ -57,7 +70,97 @@ function userFacingError(status: SubscriptionUsageStatus): {
         "MiniMax rejected the configured key for the Token Plan endpoint. Use the Token Plan Subscription Key.",
     };
   }
-  return { title: code, message: msg };
+  return { title: code, message: error.message };
+}
+
+function UsageBar({ usedPercent, remainingPercent, label }: { usedPercent: number; remainingPercent: number; label: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-28 shrink-0 text-xs font-medium">{label}</span>
+      <div className="flex-1">
+        <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-emerald-500/70 transition-all duration-500"
+            style={{ width: `${remainingPercent}%` }}
+          />
+        </div>
+      </div>
+      <span className="w-16 text-right text-xs tabular-nums text-muted-foreground">
+        {pct(usedPercent)} used
+      </span>
+    </div>
+  );
+}
+
+function WindowsSection({ windows }: { windows: MiniMaxUsageWindow[] }) {
+  if (windows.length === 0) return null;
+  return (
+    <div className="mt-4 space-y-3">
+      <h3 className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+        <BarChart3 className="size-3.5" />
+        Token Plan Quota
+      </h3>
+      <div className="rounded-md border border-border/60 bg-muted/30 p-3">
+        <div className="space-y-3">
+          {windows.map((w) => (
+            <div key={w.windowType}>
+              <UsageBar
+                label={w.label}
+                usedPercent={w.usedPercent}
+                remainingPercent={w.remainingPercent}
+              />
+              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+                <span>
+                  {formatCount(w.usedCount)} / {formatCount(w.totalCount)} used
+                </span>
+                {w.resetInLabel ? (
+                  <span className="flex items-center gap-1">
+                    <Clock className="size-3" />
+                    resets {w.resetInLabel}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardOnlySection({
+  icon,
+  title,
+  description,
+  href,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  href: string;
+}) {
+  return (
+    <div className="mt-3 rounded-md border border-border/40 bg-muted/10 p-3">
+      <div className="flex items-start gap-2.5">
+        <div className="mt-0.5 shrink-0 text-muted-foreground">{icon}</div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium text-foreground">{title}</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+            {description}
+          </p>
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+          >
+            Open MiniMax dashboard
+            <ExternalLink className="size-3" />
+          </a>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function SummaryGrid({
@@ -174,10 +277,7 @@ function LoadingPill() {
 }
 
 function ErrorBlock({ error }: { error: NonNullable<SubscriptionUsageStatus["error"]> }) {
-  const friendly = userFacingError({
-    ok: false,
-    error,
-  } as SubscriptionUsageStatus);
+  const friendly = userFacingError(error);
   return (
     <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
       <div className="flex items-center gap-2 font-medium text-destructive">
@@ -205,6 +305,49 @@ function CheckedAt({ checkedAt, now }: { checkedAt: string; now: number }) {
         {relativeTime(checkedAt, now)}
       </span>
     </div>
+  );
+}
+
+function StatusBody({ status, now }: { status: SubscriptionUsageStatus; now: number }) {
+  return (
+    <>
+      {!status.ok && status.error ? <ErrorBlock error={status.error} /> : null}
+
+      {status.ok && status.windows && status.windows.length > 0 ? (
+        <WindowsSection windows={status.windows} />
+      ) : null}
+
+      {status.ok && status.summary && status.summary.length > 0 && (
+        <div className="mt-4">
+          <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
+            <Database className="size-3.5" />
+            Per-Model Breakdown
+          </h3>
+          <SummaryGrid summary={status.summary} />
+        </div>
+      )}
+
+      {status.ok && (!status.summary || status.summary.length === 0) && (
+        <div className="mt-4">
+          <EmptySummary />
+        </div>
+      )}
+
+      <div className="mt-4 border-t border-border/40 pt-3">
+        <DashboardOnlySection
+          icon={<Coins className="size-4" />}
+          title="Credit Balance"
+          description="Credit balance and purchase history are only available on the MiniMax dashboard."
+          href="https://platform.minimax.io/billing/token-plan"
+        />
+        <DashboardOnlySection
+          icon={<BarChart3 className="size-4" />}
+          title="Usage History (today, 7d, 30d)"
+          description="Historical usage statistics (daily, 7-day, and 30-day totals) are only available on the MiniMax dashboard."
+          href="https://platform.minimax.io/billing/token-plan"
+        />
+      </div>
+    </>
   );
 }
 
@@ -239,19 +382,7 @@ function MiniMaxSubscriptionCard({
         </div>
       </div>
 
-      {status && !status.ok && status.error ? <ErrorBlock error={status.error} /> : null}
-
-      {status && status.ok && status.summary && status.summary.length > 0 ? (
-        <div className="mt-4">
-          <SummaryGrid summary={status.summary} />
-        </div>
-      ) : null}
-
-      {status && status.ok && (!status.summary || status.summary.length === 0) ? (
-        <div className="mt-4">
-          <EmptySummary />
-        </div>
-      ) : null}
+      {status ? <StatusBody status={status} now={now} /> : null}
 
       <div className="mt-3 flex items-center justify-between">
         {status ? <CheckedAt checkedAt={status.checkedAt} now={now} /> : <div />}
@@ -275,11 +406,7 @@ function MiniMaxSubscriptionCard({
  * live call to the MiniMax Token Plan endpoint and shows only the result
  * of that single call — it never mixes with the auto-loaded state.
  */
-function MiniMaxLiveTest({
-  now,
-}: {
-  now: number;
-}) {
+function MiniMaxLiveTest({ now }: { now: number }) {
   const [result, setResult] = useState<SubscriptionUsageStatus | "idle" | "loading">("idle");
 
   const run = useCallback(async () => {
@@ -348,23 +475,7 @@ function MiniMaxLiveTest({
         </div>
       ) : null}
 
-      {typeof result === "object" && !result.ok && result.error ? (
-        <div className="mt-4">
-          <ErrorBlock error={result.error} />
-        </div>
-      ) : null}
-
-      {typeof result === "object" && result.ok && result.summary && result.summary.length > 0 ? (
-        <div className="mt-4">
-          <SummaryGrid summary={result.summary} />
-        </div>
-      ) : null}
-
-      {typeof result === "object" && result.ok && (!result.summary || result.summary.length === 0) ? (
-        <div className="mt-4">
-          <EmptySummary />
-        </div>
-      ) : null}
+      {typeof result === "object" ? <StatusBody status={result} now={now} /> : null}
 
       <div className="mt-3 flex items-center justify-between">
         {typeof result === "object" ? (
