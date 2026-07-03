@@ -32,6 +32,12 @@ function pct(value: number | undefined | null): string {
   return `${Math.round(value)}%`;
 }
 
+function getUsageColor(usedPercent: number): string {
+  if (usedPercent >= 90) return "#ef4444";
+  if (usedPercent >= 70) return "#f59e0b";
+  return "#22c55e";
+}
+
 function formatCount(n: number): string {
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -73,21 +79,36 @@ function userFacingError(error: NonNullable<SubscriptionUsageStatus["error"]>): 
   return { title: code, message: error.message };
 }
 
-function UsageBar({ usedPercent, remainingPercent, label }: { usedPercent: number; remainingPercent: number; label: string }) {
+function QuotaRow({ w }: { w: MiniMaxUsageWindow }) {
+  const barColor = getUsageColor(w.usedPercent);
   return (
     <div className="flex items-center gap-3">
-      <span className="w-28 shrink-0 text-xs font-medium">{label}</span>
+      <div className="w-28 shrink-0">
+        <div className="text-sm font-medium">{w.label}</div>
+        {w.resetInLabel ? (
+          <div className="text-[10px] leading-tight text-muted-foreground">
+            <Clock className="mr-0.5 inline size-2.5" />
+            resets {w.resetInLabel}
+          </div>
+        ) : null}
+      </div>
       <div className="flex-1">
-        <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+        <div className="h-3 w-full overflow-hidden rounded-full bg-muted">
           <div
-            className="h-full rounded-full bg-emerald-500/70 transition-all duration-500"
-            style={{ width: `${remainingPercent}%` }}
+            className="h-full rounded-full transition-all duration-500"
+            style={{
+              width: `${Math.max(w.usedPercent, 1)}%`,
+              backgroundColor: barColor,
+            }}
           />
         </div>
       </div>
-      <span className="w-16 text-right text-xs tabular-nums text-muted-foreground">
-        {pct(usedPercent)} used
-      </span>
+      <div className="w-24 text-right">
+        <div className="text-xs text-muted-foreground">Total quota 100%</div>
+        <div className="text-sm font-semibold" style={{ color: barColor }}>
+          Used {pct(w.usedPercent)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -103,24 +124,7 @@ function WindowsSection({ windows }: { windows: MiniMaxUsageWindow[] }) {
       <div className="rounded-md border border-border/60 bg-muted/30 p-3">
         <div className="space-y-3">
           {windows.map((w) => (
-            <div key={w.windowType}>
-              <UsageBar
-                label={w.label}
-                usedPercent={w.usedPercent}
-                remainingPercent={w.remainingPercent}
-              />
-              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
-                <span>
-                  {formatCount(w.usedCount)} / {formatCount(w.totalCount)} used
-                </span>
-                {w.resetInLabel ? (
-                  <span className="flex items-center gap-1">
-                    <Clock className="size-3" />
-                    resets {w.resetInLabel}
-                  </span>
-                ) : null}
-              </div>
-            </div>
+            <QuotaRow key={w.windowType} w={w} />
           ))}
         </div>
       </div>
