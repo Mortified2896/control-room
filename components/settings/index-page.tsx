@@ -7,6 +7,7 @@ import { AlertTriangle, ArrowLeft, ChevronDown, ChevronRight, Lock } from "lucid
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { RouterSettingsPage } from "@/components/settings/router-settings-page";
+import { SubscriptionUsagePanel } from "@/components/settings/subscription-usage-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
@@ -236,6 +237,8 @@ export function SettingsIndexPage() {
           </div>
         )}
       </section>
+
+      <SubscriptionUsagePanel />
 
       <RouterSettingsPage embedded />
     </div>
