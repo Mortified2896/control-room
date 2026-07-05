@@ -1,8 +1,8 @@
 # Free Coding Provider Inventory
 
-This folder tracks free, no-auth, free-tier, and trial-credit LLM providers that may be worth adding to OmniRoute for coding-agent work.
+This folder tracks free, no-auth, free-tier, free-model, and trial-credit LLM providers that may be worth adding to OmniRoute for coding-agent work.
 
-The inventory is intentionally focused on providers/models useful for:
+The inventory is focused on models useful for:
 
 - coding agents
 - debugging
@@ -11,11 +11,22 @@ The inventory is intentionally focused on providers/models useful for:
 - terminal work
 - code review
 
-It is **not** a general AI-provider catalog. Search, image, video, audio, embedding, and paid-only providers should stay out unless they materially help coding workflows.
+It is not a general AI-provider catalog. Search, image, video, audio, embedding, and paid-only providers are included only as triage rows when they appear in OmniRoute's Free Tier section, so they can be explicitly skipped for the coding lane.
 
 ## Files
 
 - `free-coding-provider-candidates.csv` — ranked provider inventory and next actions.
+
+## Coverage policy
+
+As of `2026-07-05`, the CSV is intended to cover the Free Tier Providers visible in OmniRoute's Providers page. Each visible provider gets at least one triage row.
+
+Rows are split into two practical groups:
+
+1. high-value coding candidates worth connecting or smoke-testing soon
+2. rejected/deferred rows for search, fetch, image, video, audio, embedding, unstable no-auth, or unclear providers
+
+Rows marked `needs_verification` are not verified usable free model access. They exist so the provider is not forgotten.
 
 ## Ranking formula
 
@@ -27,7 +38,7 @@ setup_value_eur_per_hour = expected_6mo_value_eur / (setup_time_minutes_est / 60
 
 Where:
 
-- `expected_6mo_value_eur` is an avoided-cost / practical-utility estimate for the user's coding workflow over the next six months.
+- `expected_6mo_value_eur` is an avoided-cost / practical-utility estimate for the coding workflow over the next six months.
 - `setup_time_minutes_est` estimates the time to sign up, create a key, add it to OmniRoute, import models, and run smoke tests.
 
 Tie-breakers:
@@ -69,7 +80,7 @@ Update `last_researched` whenever you verify one of these:
 
 Never trust catalog listings alone. A model is usable only after an actual chat completion succeeds.
 
-Suggested smoke test:
+Suggested OpenCode smoke test:
 
 ```bash
 opencode-omniroute run "What is 2+2? Reply with only the number." --model <model_id>
@@ -132,9 +143,11 @@ For OmniRoute provider setup:
 - `built_in_needs_exact_model_smoke` — visible in OmniRoute but needs exact model test.
 - `connected_needs_periodic_smoke` — key is connected, but models should be re-tested periodically.
 - `provider_present_signup_needed` — provider exists in OmniRoute, but needs an account/API key.
+- `free_tier_visible_needs_research` — visible in OmniRoute Free Tier, but not verified yet.
+- `web_route_visible_needs_manual_setup` — web/cookie route exists but should be manual and supervised.
 - `built_in_flaky` — no-auth provider exists but is rate-limited or inconsistent.
 - `built_in_failing` — provider exists but recent test failed.
-- `not_prioritized` — not a current free-first target.
+- `visible_but_not_chat_coding` — provider is search/fetch/media/embedding/etc., not a coding chat model lane.
 
 ## Update workflow
 
