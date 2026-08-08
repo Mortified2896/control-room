@@ -1,8 +1,29 @@
-This is the [assistant-ui](https://github.com/assistant-ui/assistant-ui) minimal starter project.
+# Control Room
 
-## Getting Started
+Control Room is evolving into a coding-agent observability, replay, and evaluation system around Omnigent, OmniRoute, MLflow, reproducible sandbox state, and later benchmark/evaluation tooling.
 
-### 1. Configure Environment Variables
+## Roadmap
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the current implementation and evaluation plan.
+
+Current sequence:
+
+1. Stabilize privacy-safe, low-noise MLflow production tracing.
+2. Add Daytona for reproducible sandbox state, snapshots, and forks.
+3. Prove genuine replay from an identical pre-agent workspace.
+4. Add Harbor for portable benchmark tasks and objective verification.
+5. Add Inspect / Inspect SWE for controlled harness × model experiments.
+6. Accumulate a high-quality replay corpus before using the evidence to improve OmniRoute routing.
+
+---
+
+## Existing UI prototype
+
+This repository currently contains the original [assistant-ui](https://github.com/assistant-ui/assistant-ui) minimal starter project.
+
+### Getting Started
+
+#### 1. Configure Environment Variables
 
 Add your OpenAI API key to a `.env.local` file:
 
@@ -10,7 +31,7 @@ Add your OpenAI API key to a `.env.local` file:
 OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-### 2. Install Dependencies
+#### 2. Install Dependencies
 
 ```bash
 npm install
@@ -20,7 +41,7 @@ yarn install
 pnpm install
 ```
 
-### 3. Run the Development Server
+#### 3. Run the Development Server
 
 ```bash
 npm run dev
@@ -32,7 +53,7 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-## Development
+### Development
 
 You can start customizing the UI by modifying components in the `components/assistant-ui/` directory.
 
