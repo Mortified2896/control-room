@@ -35,7 +35,24 @@ python3 -c 'import sys,tomllib; d=tomllib.load(open(sys.argv[1],"rb")); assert d
 ! grep -q '^+' "$TMP/corrupt.toml"
 python3 "$HERE/control_room_otel.py" rollback --path "$TMP/config.toml" >/dev/null
 grep -q 'model = "keep-me"' "$TMP/config.toml"; ! grep -q '\[otel\]' "$TMP/config.toml"
+for variant in minimal logs traces metrics; do
+  python3 "$HERE/control_room_otel.py" test-stage "$variant" --path "$TMP/config.toml" >/dev/null
+  python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1],"rb"))' "$TMP/config.toml"
+done
+python3 "$HERE/control_room_otel.py" test-restore --path "$TMP/config.toml" >/dev/null
 mkdir -p "$TMP/otel/data/logs"; printf '{bad json}\n' > "$TMP/otel/data/logs/logs.otlp.json"
 CONTROL_ROOM_OTEL_HOME="$TMP/otel" python3 "$HERE/control_room_otel.py" check --since 1h --json > "$TMP/malformed.json" 2>/dev/null || true
 grep -q '"malformed": 1' "$TMP/malformed.json"
+mkdir -p "$TMP/otel/data/traces" "$TMP/otel/data/metrics"
+printf '%s\n' '{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"observedTimeUnixNano":"1000000000"},{"observedTimeUnixNano":"2000000000"}]}]}]}' > "$TMP/otel/data/logs/logs.otlp.json"
+printf '%s\n' '{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"aa","spanId":"bb","startTimeUnixNano":"1000000000"},{"startTimeUnixNano":"2000000000"}]}]}]}' > "$TMP/otel/data/traces/traces.otlp.json"
+printf '%s\n' '{"resourceMetrics":[{"scopeMetrics":[{"metrics":[{"gauge":{"dataPoints":[{"timeUnixNano":"1000000000"},{"timeUnixNano":"2000000000"}]}}]}]}]}' > "$TMP/otel/data/metrics/metrics.otlp.json"
+CONTROL_ROOM_OTEL_HOME="$TMP/otel" python3 "$HERE/control_room_otel.py" status --since 1h --json > "$TMP/nested.json"
+python3 - "$TMP/nested.json" <<'PY'
+import json, sys
+d=json.load(open(sys.argv[1]))['signals']
+assert d['logs']['items'] == 2
+assert d['traces']['items'] == 2 and d['traces']['missing_ids'] == 1
+assert d['metrics']['items'] == 2
+PY
 echo "tests passed"

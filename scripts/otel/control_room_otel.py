@@ -10,6 +10,12 @@ from pathlib import Path
 HOME = Path(os.environ.get("CONTROL_ROOM_OTEL_HOME", Path.home()/"Library/Application Support/ControlRoom/otel"))
 CODEX = Path.home()/".codex/config.toml"
 BLOCK = '''[otel]\nenvironment = "mac-local"\nlog_user_prompt = false\nexporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }\ntrace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }\nmetrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }\n'''
+TEST_BLOCKS = {
+    "minimal": '''[otel]\nenvironment = "mac-local"\nlog_user_prompt = false\n''',
+    "logs": '''[otel]\nenvironment = "mac-local"\nlog_user_prompt = false\nexporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }\n''',
+    "traces": '''[otel]\nenvironment = "mac-local"\nlog_user_prompt = false\nexporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }\ntrace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }\n''',
+    "metrics": BLOCK,
+}
 
 def valid_toml(text):
     if tomllib is not None:
@@ -83,6 +89,32 @@ def configure(path):
     atomic_write(path,merged.encode())
     return True
 
+def stage_test(path, variant):
+    text=path.read_text() if path.exists() else ''
+    lines,start,end=otel_range(text)
+    merged=(''.join(lines[:start])+''.join(lines[end:]) if start is not None else text).rstrip()
+    merged += "\n\n"+TEST_BLOCKS[variant]
+    if not valid_toml(merged):
+        raise SystemExit("staged config.toml failed TOML validation; nothing written (%s)" % path)
+    path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+    checkpoint=path.with_name(path.name+'.control-room-known-good')
+    if not checkpoint.exists() and path.exists():
+        atomic_write(checkpoint,path.read_bytes())
+    stamp=dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    if path.exists():
+        atomic_write(path.with_name(path.name+'.test-backup-'+stamp),path.read_bytes())
+    atomic_write(path,merged.encode())
+    print("staged %s; restore with: %s test-restore" % (variant,Path(__file__).name))
+    return 0
+
+def restore_test(path):
+    checkpoint=path.with_name(path.name+'.control-room-known-good')
+    if not checkpoint.exists(): raise SystemExit("known-good checkpoint not found: %s" % checkpoint)
+    if not valid_toml(checkpoint.read_text()): raise SystemExit("known-good checkpoint is not valid TOML")
+    atomic_write(path,checkpoint.read_bytes())
+    print("restored known-good config from %s" % checkpoint.name)
+    return 0
+
 def prom():
     try: return urllib.request.urlopen('http://127.0.0.1:8888/metrics',timeout=2).read().decode()
     except Exception: return ''
@@ -100,6 +132,7 @@ def archives(since):
     cutoff=dt.datetime.now(dt.timezone.utc).timestamp()-since
     out={s:{'files':0,'records':0,'malformed':0,'items':0,'missing_ids':0,'first':None,'last':None} for s in ('logs','traces','metrics')}
     keys={'logs':'resourceLogs','traces':'resourceSpans','metrics':'resourceMetrics'}
+    scope_keys={'logs':'scopeLogs','traces':'scopeSpans','metrics':'scopeMetrics'}
     for sig in out:
         for p in (HOME/'data'/sig).glob('*.json*') if (HOME/'data'/sig).exists() else []:
             if p.stat().st_mtime < cutoff: continue
@@ -110,7 +143,7 @@ def archives(since):
                 def walk(x):
                     if isinstance(x,dict):
                         for k,v in x.items():
-                            if k in ('timeUnixNano','startTimeUnixNano','endTimeUnixNano'):
+                            if k in ('timeUnixNano','observedTimeUnixNano','startTimeUnixNano','endTimeUnixNano'):
                                 try:
                                     z=dt.datetime.fromtimestamp(int(v)/1e9,dt.timezone.utc).isoformat()
                                     out[sig]['first']=min(filter(None,[out[sig]['first'],z])); out[sig]['last']=max(filter(None,[out[sig]['last'],z]))
@@ -119,9 +152,20 @@ def archives(since):
                     elif isinstance(x,list):
                         for v in x: walk(v)
                 walk(obj)
-                root=obj.get(keys[sig],[]); out[sig]['items'] += len(root)
-                if sig=='traces':
-                    raw=line.lower(); out[sig]['missing_ids'] += int('traceid' not in raw or 'spanid' not in raw)
+                root=obj.get(keys[sig],[])
+                for resource in root:
+                    for scope in resource.get(scope_keys[sig],[]):
+                        if sig=='logs':
+                            items=scope.get('logRecords',[])
+                        elif sig=='traces':
+                            items=scope.get('spans',[])
+                            out[sig]['missing_ids'] += sum(not x.get('traceId') or not x.get('spanId') for x in items)
+                        else:
+                            items=[]
+                            for m in scope.get('metrics',[]):
+                                for kind in ('gauge','sum','histogram','exponentialHistogram','summary'):
+                                    items.extend(m.get(kind,{}).get('dataPoints',[]))
+                        out[sig]['items'] += len(items)
     return out
 
 def configured():
@@ -178,11 +222,15 @@ def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(dest='cmd',required=True)
     c=sub.add_parser('configure'); c.add_argument('--path',type=Path,default=CODEX)
     r=sub.add_parser('rollback'); r.add_argument('--path',type=Path,default=CODEX); r.add_argument('--backup'); r.add_argument('--list',action='store_true')
+    t=sub.add_parser('test-stage'); t.add_argument('variant',choices=TEST_BLOCKS); t.add_argument('--path',type=Path,default=CODEX)
+    x=sub.add_parser('test-restore'); x.add_argument('--path',type=Path,default=CODEX)
     for n in ('status','check'):
         q=sub.add_parser(n); q.add_argument('--json',action='store_true'); q.add_argument('--since',default='1h')
     a=p.parse_args()
     if a.cmd=='configure': print('changed' if configure(a.path) else 'unchanged'); return
     if a.cmd=='rollback': sys.exit(rollback(a.path,a.backup,a.list))
+    if a.cmd=='test-stage': sys.exit(stage_test(a.path,a.variant))
+    if a.cmd=='test-restore': sys.exit(restore_test(a.path))
     m=re.fullmatch(r'(\d+)([smhd])',a.since); secs=int(m.group(1))*{'s':1,'m':60,'h':3600,'d':86400}[m.group(2)] if m else 3600
     d=report(secs); print(json.dumps(d,indent=2) if a.json else '');
     if not a.json: human(d,a.cmd=='status')

@@ -43,6 +43,25 @@ metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics"
 
 These exporter keys are Codex-app-specific and are only exercised against the Collector receiver this repo configures. This repo does not ship an independent validation of Codex's own TOML schema, so the exact key names are pinned to a tested Codex version and can change across Codex releases. Before upgrading Codex, re-run `./scripts/otel/check.sh` and `status.sh`; if the desktop app stops reporting telemetry or flags the config, roll back with `control_room_otel.py rollback` and verify against the new Codex version before re-enabling.
 
+The complete block above was verified on 2026-08-18 with ChatGPT/Codex desktop `26.810.52044` (build `6662`) and its bundled `codex-cli 0.148.0-alpha.9` on macOS 26.5.2 arm64. Each capability was enabled independently and the app was fully restarted between trials:
+
+| Trial | Enabled configuration | Result |
+| --- | --- | --- |
+| A | `environment`, `log_user_prompt = false` | PASS: app, project task, and permission mode remained usable |
+| B | A + logs exporter | PASS: real `codex-app-server` logs archived |
+| C | B + trace exporter | PASS: real spans with native trace/span IDs archived |
+| D | C + metrics exporter | PASS: real metric points archived after the exporter interval |
+
+For a controlled retest, `test-stage` preserves the first known-good config as `config.toml.control-room-known-good`, saves each intermediate config, validates the merged TOML, and enables one stage at a time. `test-restore` restores the known-good checkpoint:
+
+```bash
+python3 scripts/otel/control_room_otel.py test-stage minimal
+python3 scripts/otel/control_room_otel.py test-stage logs
+python3 scripts/otel/control_room_otel.py test-stage traces
+python3 scripts/otel/control_room_otel.py test-stage metrics
+python3 scripts/otel/control_room_otel.py test-restore
+```
+
 ## Known installer regression and recovery
 
 A previous installer version wrote the `[otel]` block with literal `+` diff-marker prefixes (for example `+environment = "mac-local"`). A leading `+` is not valid TOML, so `~/.codex/config.toml` failed to parse at the first OTel key and the Codex desktop app reported `Permission mode is unavailable`.
