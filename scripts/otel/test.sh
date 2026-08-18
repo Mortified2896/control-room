@@ -3,10 +3,22 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 for f in "$HERE"/*.sh; do sh -n "$f"; done
 plutil -lint "$HERE/launchd/com.controlroom.otelcol.plist.template" >/dev/null
+plutil -lint "$HERE/launchd/com.controlroom.otel-retention.plist.template" >/dev/null
 grep -q '127.0.0.1:4317' "$HERE/config/otelcol-macos.yaml"
 ! grep -q '0.0.0.0' "$HERE/config/otelcol-macos.yaml"
 grep -q 'max_megabytes: 16' "$HERE/config/otelcol-macos.yaml"
+grep -q 'max_days: 60' "$HERE/config/otelcol-macos.yaml"
+grep -q 'filter/lean_traces' "$HERE/config/otelcol-macos.yaml"
+grep -q 'attributes/privacy_logs' "$HERE/config/otelcol-macos.yaml"
+PYTHONDONTWRITEBYTECODE=1 python3 "$HERE/test_control_room_otel.py"
+COLLECTOR=${CONTROL_ROOM_OTEL_COLLECTOR:-"$HOME/Library/Application Support/ControlRoom/otel/bin/otelcol-contrib"}
+if [ -x "$COLLECTOR" ]; then
+  CONTROL_ROOM_OTEL_HOME=/tmp/control-room-otel-validate CONTROL_ROOM_CAPTURE_NODE_ID=test-node CONTROL_ROOM_ENVIRONMENT=mac-local CONTROL_ROOM_SOURCE_ROLE=mac-codex CONTROL_ROOM_HOSTNAME=test-host CONTROL_ROOM_COLLECTOR_VERSION=0.159.0 "$COLLECTOR" validate --config "$HERE/config/otelcol-macos.yaml"
+  PYTHONDONTWRITEBYTECODE=1 python3 "$HERE/test_filter_fixture.py" "$COLLECTOR"
+fi
 TMP=$(mktemp -d); trap 'test -n "${TMP:-}" && rm -rf "${TMP:?}"' EXIT HUP INT TERM
+mkdir -p "$TMP/outside"
+! python3 "$HERE/control_room_otel.py" retain --archive-root "$TMP/outside" --dry-run >/dev/null 2>&1
 printf 'model = "keep-me"\n' > "$TMP/config.toml"
 python3 "$HERE/control_room_otel.py" configure --path "$TMP/config.toml" >/dev/null
 python3 - "$TMP/config.toml" <<'PY'

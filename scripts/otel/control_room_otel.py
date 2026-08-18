@@ -9,6 +9,20 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("CONTROL_ROOM_OTEL_HOME", Path.home()/"Library/Application Support/ControlRoom/otel"))
 CODEX = Path.home()/".codex/config.toml"
+ARCHIVE_MAX_AGE_DAYS = 60
+ARCHIVE_MAX_BYTES = 50_000_000_000
+FORENSIC_MAX_AGE_DAYS = 3
+FORENSIC_MAX_BYTES = 4_000_000_000
+ACTIVE_ARCHIVE_FILES = {
+    "lean/logs/logs.otlp.json",
+    "lean/traces/traces.otlp.json",
+    "lean/metrics/metrics.otlp.json",
+    "forensic/traces/traces.otlp.json",
+}
+ARCHIVE_FILE_RE = re.compile(
+    r"^(?:lean/)?(?:logs/logs|traces/traces|metrics/metrics)\.otlp(?:-[^/]+)?\.json(?:\.zst)?$"
+    r"|^forensic/traces/traces\.otlp(?:-[^/]+)?\.json(?:\.zst)?$"
+)
 BLOCK = '''[otel]\nenvironment = "mac-local"\nlog_user_prompt = false\nexporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }\ntrace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }\nmetrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }\n'''
 TEST_BLOCKS = {
     "minimal": '''[otel]\nenvironment = "mac-local"\nlog_user_prompt = false\n''',
@@ -128,13 +142,120 @@ def metric(body,name,signal=None):
             except Exception: pass
     return int(total)
 
+def _is_within(path, root):
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+def archive_inventory(archive_root=None):
+    """Return safe, non-symlink files below the Mac Codex archive root."""
+    root = (archive_root or HOME/'data').resolve()
+    if not root.exists(): return root, []
+    files=[]
+    for path in root.rglob('*'):
+        try:
+            if path.is_symlink() or not path.is_file(): continue
+            resolved=path.resolve(strict=True)
+            if not _is_within(resolved,root): continue
+            st=path.stat()
+            files.append({'path':path,'relative':path.relative_to(root).as_posix(),'size':st.st_size,'mtime':st.st_mtime,'inode':st.st_ino})
+        except (FileNotFoundError,OSError,ValueError):
+            continue
+    return root,files
+
+def retention_candidate(item):
+    return bool(ARCHIVE_FILE_RE.fullmatch(item['relative'])) and item['relative'] not in ACTIVE_ARCHIVE_FILES
+
+def prune_archive(archive_root=None, max_bytes=ARCHIVE_MAX_BYTES, max_age_days=ARCHIVE_MAX_AGE_DAYS,
+                  forensic_max_bytes=FORENSIC_MAX_BYTES, forensic_max_age_days=FORENSIC_MAX_AGE_DAYS,
+                  now=None, dry_run=False):
+    root,files=archive_inventory(archive_root)
+    now=now if now is not None else dt.datetime.now(dt.timezone.utc).timestamp()
+    total=sum(x['size'] for x in files); before=total; removed=[]; errors=[]; removed_paths=set()
+
+    def remove(item,reason):
+        nonlocal total
+        path=item['path']
+        if path in removed_paths: return False
+        try:
+            resolved=path.resolve(strict=True)
+            st=path.lstat()
+            if path.is_symlink() or not _is_within(resolved,root): raise RuntimeError('unsafe path')
+            if st.st_ino != item['inode'] or st.st_size != item['size'] or st.st_mtime != item['mtime']:
+                raise RuntimeError('file changed during retention scan')
+            if not dry_run: path.unlink()
+            total-=item['size']; removed_paths.add(path)
+            removed.append({'path':item['relative'],'bytes':item['size'],'reason':reason})
+            return True
+        except (FileNotFoundError,OSError,RuntimeError) as exc:
+            errors.append({'path':item['relative'],'error':str(exc)})
+            return False
+
+    candidates=sorted((x for x in files if retention_candidate(x)),key=lambda x:(x['mtime'],x['relative']))
+    for item in candidates:
+        age_days=forensic_max_age_days if item['relative'].startswith('forensic/') else max_age_days
+        if item['mtime'] < now-age_days*86400: remove(item,'age')
+
+    forensic_total=sum(x['size'] for x in files if x['relative'].startswith('forensic/') and x['path'] not in removed_paths)
+    if forensic_total > forensic_max_bytes:
+        for item in candidates:
+            if forensic_total <= forensic_max_bytes: break
+            if item['relative'].startswith('forensic/') and item['path'] not in removed_paths:
+                if remove(item,'forensic_size'): forensic_total-=item['size']
+
+    if total > max_bytes:
+        for item in candidates:
+            if total <= max_bytes: break
+            if item['path'] not in removed_paths: remove(item,'global_size')
+
+    return {
+        'archive_root':str(root),'before_bytes':before,'after_bytes':total,
+        'run_at':dt.datetime.fromtimestamp(now,dt.timezone.utc).isoformat(),
+        'max_bytes':max_bytes,'max_age_days':max_age_days,
+        'forensic_max_bytes':forensic_max_bytes,'forensic_max_age_days':forensic_max_age_days,
+        'dry_run':dry_run,'removed':removed,'errors':errors,
+        'converged':total <= max_bytes and forensic_total <= forensic_max_bytes,
+    }
+
+def storage_summary(recent_seconds=86400):
+    root,files=archive_inventory()
+    now=dt.datetime.now(dt.timezone.utc).timestamp()
+    by_signal={s:0 for s in ('logs','traces','metrics')}
+    for item in files:
+        parts=Path(item['relative']).parts
+        for signal in by_signal:
+            if signal in parts: by_signal[signal]+=item['size']; break
+    recognized=[x for x in files if ARCHIVE_FILE_RE.fullmatch(x['relative'])]
+    rotated=[x for x in recognized if x['relative'] not in ACTIVE_ARCHIVE_FILES]
+    oldest=min(recognized,key=lambda x:(x['mtime'],x['relative'])) if recognized else None
+    recent=sum(x['size'] for x in files if x['mtime'] >= now-recent_seconds and x['relative'].startswith(('lean/','forensic/')))
+    total=sum(x['size'] for x in files)
+    return {
+        'total_bytes':total,'logs_bytes':by_signal['logs'],'traces_bytes':by_signal['traces'],'metrics_bytes':by_signal['metrics'],
+        'forensic_bytes':sum(x['size'] for x in files if x['relative'].startswith('forensic/')),
+        'rotated_files':len(rotated),'oldest_retained_file':oldest['relative'] if oldest else None,
+        'oldest_retained_mtime':dt.datetime.fromtimestamp(oldest['mtime'],dt.timezone.utc).isoformat() if oldest else None,
+        'max_age_days':ARCHIVE_MAX_AGE_DAYS,'max_bytes':ARCHIVE_MAX_BYTES,
+        'percent_of_max':round(total*100/ARCHIVE_MAX_BYTES,4),
+        'approx_recent_bytes_per_hour':round(recent*3600/recent_seconds,2) if recent_seconds else None,
+        'recent_window_seconds':recent_seconds,
+    }
+
+def telemetry_files(signal):
+    data=HOME/'data'
+    if not data.exists(): return []
+    return [p for p in data.rglob('*.json*') if p.is_file() and not p.is_symlink()
+            and signal in p.relative_to(data).parts and not p.relative_to(data).as_posix().startswith('forensic/')]
+
 def archives(since):
     cutoff=dt.datetime.now(dt.timezone.utc).timestamp()-since
     out={s:{'files':0,'records':0,'malformed':0,'items':0,'missing_ids':0,'first':None,'last':None} for s in ('logs','traces','metrics')}
     keys={'logs':'resourceLogs','traces':'resourceSpans','metrics':'resourceMetrics'}
     scope_keys={'logs':'scopeLogs','traces':'scopeSpans','metrics':'scopeMetrics'}
     for sig in out:
-        for p in (HOME/'data'/sig).glob('*.json*') if (HOME/'data'/sig).exists() else []:
+        for p in telemetry_files(sig):
             if p.stat().st_mtime < cutoff: continue
             out[sig]['files']+=1
             for line in p.open(errors='replace'):
@@ -173,10 +294,19 @@ def configured():
     t=CODEX.read_text(errors='replace')
     return '[otel]' in t and '127.0.0.1:4318' in t and 'log_user_prompt = false' in t
 
+def launchd_loaded(label):
+    try:
+        return subprocess.run(['launchctl','print','gui/%d/%s'%(os.getuid(),label)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+    except Exception:
+        return False
+
 def report(since=3600):
     body=prom(); arc=archives(since)
-    running=False
-    try: running=subprocess.run(['launchctl','print','gui/%d/com.controlroom.otelcol'%os.getuid()],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+    storage=storage_summary(since)
+    running=launchd_loaded('com.controlroom.otelcol')
+    retention_loaded=launchd_loaded('com.controlroom.otel-retention')
+    retention_last=None
+    try: retention_last=json.loads((HOME/'state/retention-last-run.json').read_text())
     except Exception: pass
     version='unknown'
     b=HOME/'bin/otelcol-contrib'
@@ -185,9 +315,11 @@ def report(since=3600):
         except Exception: pass
     data={
       'state':'FAILED','collector_running':running,'collector_version':version,
+      'retention_agent_loaded':retention_loaded,'retention_last_run':retention_last,
       'endpoints':{'otlp_grpc':'127.0.0.1:4317','otlp_http':'127.0.0.1:4318','metrics':'127.0.0.1:8888','health':'127.0.0.1:13133'},
       'capture_node_id':(HOME/'state/capture_node_id').read_text().strip() if (HOME/'state/capture_node_id').exists() else None,
-      'archive':str(HOME/'data'),'archive_bytes':sum(p.stat().st_size for p in (HOME/'data').rglob('*') if p.is_file()) if (HOME/'data').exists() else 0,
+      'archive':str(HOME/'data'),'archive_bytes':storage['total_bytes'],
+      'storage':storage,
       'codex_configured':configured(),'signals':arc,
       'collector':{
         'accepted_logs':metric(body,'otelcol_receiver_accepted_log_records'),
@@ -208,12 +340,16 @@ def report(since=3600):
     }
     malformed=sum(x['malformed'] for x in arc.values()); activity=sum(x['records'] for x in arc.values())
     failures=sum(data['collector'][k] for k in data['collector'] if 'failed' in k or 'refused' in k)
-    data['state']='FAILED' if not running or not body else ('DEGRADED' if failures or malformed else ('HEALTHY' if activity else 'NO ACTIVITY'))
+    retention_bad=(HOME/'bin/control_room_otel.py').exists() and (not retention_loaded or (retention_last is not None and (retention_last.get('errors') or not retention_last.get('converged',False))))
+    data['state']='FAILED' if not running or not body else ('DEGRADED' if failures or malformed or retention_bad else ('HEALTHY' if activity else 'NO ACTIVITY'))
     return data
 
 def human(d,status=False):
     print('Collector:', 'running' if d['collector_running'] else 'not running'); print('Version:',d['collector_version'])
+    print('Retention agent:', 'loaded' if d['retention_agent_loaded'] else 'not loaded')
     print('Endpoints:',', '.join(d['endpoints'].values())); print('capture_node_id:',d['capture_node_id']); print('Archive:',d['archive'],'(%d bytes)'%d['archive_bytes']); print('Codex OTel configured:',d['codex_configured'])
+    s=d['storage']; print('Storage: logs=%d traces=%d metrics=%d forensic=%d rotated=%d oldest=%s'%(s['logs_bytes'],s['traces_bytes'],s['metrics_bytes'],s['forensic_bytes'],s['rotated_files'],s['oldest_retained_file']))
+    print('Retention: max_age=%dd max_bytes=%d used=%.4f%% approx_recent_bytes_per_hour=%.2f'%(s['max_age_days'],s['max_bytes'],s['percent_of_max'],s['approx_recent_bytes_per_hour']))
     for s,x in d['signals'].items(): print('%s: files=%d records=%d groups=%d malformed=%d first=%s last=%s'%(s,x['files'],x['records'],x['items'],x['malformed'],x['first'],x['last']))
     if not status: print('Collector integrity:', ' '.join('%s=%s'%x for x in d['collector'].items()))
     print(d['state'])
@@ -226,11 +362,20 @@ def main():
     x=sub.add_parser('test-restore'); x.add_argument('--path',type=Path,default=CODEX)
     for n in ('status','check'):
         q=sub.add_parser(n); q.add_argument('--json',action='store_true'); q.add_argument('--since',default='1h')
+    k=sub.add_parser('retain'); k.add_argument('--archive-root',type=Path,default=HOME/'data'); k.add_argument('--max-bytes',type=int,default=ARCHIVE_MAX_BYTES); k.add_argument('--max-age-days',type=int,default=ARCHIVE_MAX_AGE_DAYS); k.add_argument('--forensic-max-bytes',type=int,default=FORENSIC_MAX_BYTES); k.add_argument('--forensic-max-age-days',type=int,default=FORENSIC_MAX_AGE_DAYS); k.add_argument('--now',type=float); k.add_argument('--dry-run',action='store_true')
     a=p.parse_args()
     if a.cmd=='configure': print('changed' if configure(a.path) else 'unchanged'); return
     if a.cmd=='rollback': sys.exit(rollback(a.path,a.backup,a.list))
     if a.cmd=='test-stage': sys.exit(stage_test(a.path,a.variant))
     if a.cmd=='test-restore': sys.exit(restore_test(a.path))
+    if a.cmd=='retain':
+        if a.archive_root.resolve() != (HOME/'data').resolve() and os.environ.get('CONTROL_ROOM_OTEL_TESTING') != '1':
+            raise SystemExit('refusing retention outside the configured Mac Codex archive')
+        result=prune_archive(a.archive_root,a.max_bytes,a.max_age_days,a.forensic_max_bytes,a.forensic_max_age_days,a.now,a.dry_run)
+        print(json.dumps(result,indent=2))
+        if not a.dry_run and a.archive_root.resolve() == (HOME/'data').resolve():
+            atomic_write(HOME/'state/retention-last-run.json',(json.dumps(result,indent=2)+'\n').encode())
+        sys.exit(0 if result['converged'] and not result['errors'] else 1)
     m=re.fullmatch(r'(\d+)([smhd])',a.since); secs=int(m.group(1))*{'s':1,'m':60,'h':3600,'d':86400}[m.group(2)] if m else 3600
     d=report(secs); print(json.dumps(d,indent=2) if a.json else '');
     if not a.json: human(d,a.cmd=='status')

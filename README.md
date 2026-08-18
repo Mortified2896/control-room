@@ -71,7 +71,7 @@ npx assistant-ui add
 
 ## Local Codex telemetry (macOS)
 
-The repository includes a user-level, localhost-only OpenTelemetry Collector setup for the Codex desktop app:
+The repository includes a user-level, localhost-only OpenTelemetry Collector setup for the Codex desktop app. It writes a privacy-reduced lean archive plus a three-day forensic trace tier, with Mac-only 60-day/50 GB aggregate retention:
 
 ```bash
 ./scripts/otel/install-macos.sh

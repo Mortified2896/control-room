@@ -15,7 +15,7 @@ The key requirement is **genuine replay from the same starting state**, not mere
 
 ## Telemetry and reproducibility
 
-- OpenTelemetry is the preferred common vendor-neutral capture/transport foundation; the first pilot captures Mac Codex logs, traces, and metrics into a bounded raw OTLP archive independently of MLflow.
+- OpenTelemetry is the preferred common vendor-neutral capture/transport foundation; the first pilot captures Mac Codex logs, traces, and metrics into a bounded lean OTLP archive plus a short forensic trace tier independently of MLflow. Its 60-day/50 GB retention policy is Mac-pilot-specific, not a server/O1/O2 default.
 - MLflow remains an optional downstream trace and evaluation consumer. Existing MLflow work is not replaced by capture.
 - OpenObserve may later provide a lightweight query/UI layer over reconciled telemetry.
 - A later server OTel deployment should use the same persistent node/source identity convention so Mac Codex and server Omnigent telemetry can coexist and be reconciled without rewriting native trace or span IDs.
