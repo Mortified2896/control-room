@@ -1,6 +1,6 @@
 # Control Room
 
-Control Room is evolving into a coding-agent observability, replay, and evaluation system around Omnigent, OmniRoute, MLflow, reproducible sandbox state, and later benchmark/evaluation tooling.
+Control Room is evolving into a coding-agent observability, replay, and evaluation system around Omnigent, OmniRoute, OpenTelemetry, optional downstream analytics/evaluation consumers such as MLflow, reproducible sandbox state, and later benchmark/evaluation tooling.
 
 ## Roadmap
 
@@ -8,7 +8,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the current implementation and evalua
 
 Current sequence:
 
-1. Stabilize privacy-safe, low-noise MLflow production tracing.
+1. Stabilize privacy-safe, low-noise OpenTelemetry capture with bounded raw storage; keep MLflow optional downstream.
 2. Add Daytona for reproducible sandbox state, snapshots, and forks.
 3. Prove genuine replay from an identical pre-agent workspace.
 4. Add Harbor for portable benchmark tasks and objective verification.
