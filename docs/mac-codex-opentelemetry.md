@@ -39,14 +39,20 @@ metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics"
 
 ## Optional autonomous workspace development
 
-Trusted local repositories can opt in to a custom permission profile that keeps filesystem
-writes scoped to the active workspace, makes the workspace's `.git` directory writable, and
-enables development network access. This avoids routing ordinary commits and pushes through
-Auto-review without using `danger-full-access`:
+Trusted local development on this Mac can opt in to a custom permission profile that keeps
+filesystem writes scoped to each active workspace, makes that workspace's `.git` directory
+writable, and enables development network access. This avoids routing ordinary commits and
+pushes through Auto-review without using `danger-full-access`:
 
 ```bash
 python3 scripts/codex/configure-autonomous-dev.py
 ```
+
+This helper changes the user-level Codex defaults in `~/.codex/config.toml`: it sets
+`approval_policy`, selects `autonomous-dev` as the default permission profile, and enables the
+profile's network policy for future Codex sessions on this Mac until rolled back or changed.
+Filesystem write access is still scoped by the sandbox to each session's active workspace roots;
+it does not grant arbitrary writes elsewhere on the Mac.
 
 The helper is deliberately opt-in. It refuses legacy `sandbox_mode` /
 `sandbox_workspace_write` settings and conflicting permission profiles, validates the complete
