@@ -40,3 +40,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local OpenTelemetry runtime and captured data (never commit)
+.control-room-otel/
+otel-data/
+*.otlp.json
+__pycache__/
+*.pyc
