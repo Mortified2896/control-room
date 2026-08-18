@@ -8,7 +8,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the current implementation and evalua
 
 Current sequence:
 
-1. Stabilize privacy-safe, low-noise OpenTelemetry capture with bounded raw storage; keep MLflow optional downstream.
+1. Keep the deployed privacy-safe, bounded OpenTelemetry capture path healthy and land its repository source-of-truth changes; keep MLflow optional downstream.
 2. Add Daytona for reproducible sandbox state, snapshots, and forks.
 3. Prove genuine replay from an identical pre-agent workspace.
 4. Add Harbor for portable benchmark tasks and objective verification.
