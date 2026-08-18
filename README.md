@@ -47,3 +47,15 @@ npx assistant-ui add
 - `app/assistant.tsx` - Sets up the runtime provider
 - `app/api/chat/route.ts` - Chat API endpoint
 - `components/assistant-ui/thread.tsx` - Chat thread component
+
+## Local Codex telemetry (macOS)
+
+The repository includes a user-level, localhost-only OpenTelemetry Collector setup for the Codex desktop app:
+
+```bash
+./scripts/otel/install-macos.sh
+./scripts/otel/status.sh
+./scripts/otel/check.sh --since 1h
+```
+
+See [docs/mac-codex-opentelemetry.md](docs/mac-codex-opentelemetry.md) for architecture, privacy, retention, identity, and uninstall details.

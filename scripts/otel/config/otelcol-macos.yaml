@@ -1,0 +1,73 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 128
+    spike_limit_mib: 32
+  resource/control_room:
+    attributes:
+      - {key: deployment.environment.name, value: "${env:CONTROL_ROOM_ENVIRONMENT}", action: upsert}
+      - {key: controlroom.source.role, value: "${env:CONTROL_ROOM_SOURCE_ROLE}", action: upsert}
+      - {key: controlroom.capture_node_id, value: "${env:CONTROL_ROOM_CAPTURE_NODE_ID}", action: upsert}
+      - {key: host.name, value: "${env:CONTROL_ROOM_HOSTNAME}", action: upsert}
+      - {key: os.type, value: darwin, action: upsert}
+      - {key: controlroom.collector.version, value: "${env:CONTROL_ROOM_COLLECTOR_VERSION}", action: upsert}
+  batch:
+    timeout: 2s
+    send_batch_size: 256
+
+exporters:
+  file/logs:
+    path: "${env:CONTROL_ROOM_OTEL_HOME}/data/logs/logs.otlp.json"
+    format: json
+    create_directory: true
+    rotation: {max_megabytes: 16, max_backups: 20, max_days: 14, localtime: false}
+  file/traces:
+    path: "${env:CONTROL_ROOM_OTEL_HOME}/data/traces/traces.otlp.json"
+    format: json
+    create_directory: true
+    rotation: {max_megabytes: 16, max_backups: 20, max_days: 14, localtime: false}
+  file/metrics:
+    path: "${env:CONTROL_ROOM_OTEL_HOME}/data/metrics/metrics.otlp.json"
+    format: json
+    create_directory: true
+    rotation: {max_megabytes: 16, max_backups: 20, max_days: 14, localtime: false}
+
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+
+service:
+  telemetry:
+    resource:
+      controlroom.capture_node_id: "${env:CONTROL_ROOM_CAPTURE_NODE_ID}"
+      controlroom.source.role: otel-collector-mac
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/control_room, batch]
+      exporters: [file/logs]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/control_room, batch]
+      exporters: [file/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/control_room, batch]
+      exporters: [file/metrics]
