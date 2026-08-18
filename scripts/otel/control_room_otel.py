@@ -1,11 +1,59 @@
 #!/usr/bin/env python3
 """Dependency-free Control Room OTel config merge and archive inspection."""
-import argparse, datetime as dt, json, os, re, socket, subprocess, sys, urllib.request
+import argparse, datetime as dt, json, os, re, socket, subprocess, sys, tempfile, urllib.request
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
 from pathlib import Path
 
 HOME = Path(os.environ.get("CONTROL_ROOM_OTEL_HOME", Path.home()/"Library/Application Support/ControlRoom/otel"))
 CODEX = Path.home()/".codex/config.toml"
-BLOCK = '''[otel]\n+environment = "mac-local"\n+log_user_prompt = false\n+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }\n+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }\n+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }\n'''
+BLOCK = '''[otel]\nenvironment = "mac-local"\nlog_user_prompt = false\nexporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }\ntrace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }\nmetrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }\n'''
+
+def valid_toml(text):
+    if tomllib is not None:
+        try: tomllib.loads(text); return True
+        except Exception: return False
+    for l in text.splitlines():
+        if re.match(r'^[+@>]',l): return False
+    return text.count('[')==text.count(']')
+
+def atomic_write(path,data):
+    fd,tmp=tempfile.mkstemp(dir=str(path.parent),prefix=path.name+'.',suffix='.tmp')
+    try:
+        with os.fdopen(fd,'wb') as f:
+            f.write(data); f.flush(); os.fsync(f.fileno())
+        mode=path.stat().st_mode if path.exists() else 0o600
+        os.chmod(tmp,mode)
+        os.replace(tmp,str(path))
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+
+def corrupt_otel(text):
+    lines,start,end=otel_range(text)
+    if start is None: return False
+    return any(re.match(r'^[+@>]',l) for l in lines[start:end])
+
+def list_backups(path):
+    return sorted(path.parent.glob(path.name+'.backup-*'),reverse=True)
+
+def rollback(path,backup=None,list_only=False):
+    backups=list_backups(path)
+    if list_only:
+        for b in backups: print(b.name)
+        return 0
+    if not backups: raise SystemExit("no timestamped backups found for %s" % path)
+    chosen=path.parent/backup if backup else backups[0]
+    if backup and chosen not in backups: raise SystemExit("backup not found: %s" % backup)
+    stamp=dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    if path.exists():
+        snap=path.with_name(path.name+'.pre-rollback-'+stamp); snap.write_bytes(path.read_bytes())
+    atomic_write(path,chosen.read_bytes())
+    print("restored %s from %s" % (path,chosen.name))
+    return 0
 
 def otel_range(text):
     lines=text.splitlines(True); start=None
@@ -21,11 +69,18 @@ def configure(path):
     if start is not None:
         existing=''.join(lines[start:end]).strip()
         if existing == BLOCK.strip(): return False
-        raise SystemExit("conflicting existing [otel] configuration; refusing to overwrite")
+        if corrupt_otel(text):
+            merged=''.join(lines[:start])+BLOCK+''.join(lines[end:])
+        else:
+            raise SystemExit("conflicting existing [otel] configuration; refusing to overwrite")
+    else:
+        merged=text.rstrip()+"\n\n"+BLOCK
+    if not valid_toml(merged):
+        raise SystemExit("generated config.toml failed TOML validation; nothing written (%s)" % path)
     path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
     stamp=dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     if path.exists(): path.with_name(path.name+'.backup-'+stamp).write_bytes(path.read_bytes())
-    path.write_text(text.rstrip()+"\n\n"+BLOCK)
+    atomic_write(path,merged.encode())
     return True
 
 def prom():
@@ -122,10 +177,12 @@ def human(d,status=False):
 def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(dest='cmd',required=True)
     c=sub.add_parser('configure'); c.add_argument('--path',type=Path,default=CODEX)
+    r=sub.add_parser('rollback'); r.add_argument('--path',type=Path,default=CODEX); r.add_argument('--backup'); r.add_argument('--list',action='store_true')
     for n in ('status','check'):
         q=sub.add_parser(n); q.add_argument('--json',action='store_true'); q.add_argument('--since',default='1h')
     a=p.parse_args()
     if a.cmd=='configure': print('changed' if configure(a.path) else 'unchanged'); return
+    if a.cmd=='rollback': sys.exit(rollback(a.path,a.backup,a.list))
     m=re.fullmatch(r'(\d+)([smhd])',a.since); secs=int(m.group(1))*{'s':1,'m':60,'h':3600,'d':86400}[m.group(2)] if m else 3600
     d=report(secs); print(json.dumps(d,indent=2) if a.json else '');
     if not a.json: human(d,a.cmd=='status')

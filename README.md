@@ -58,4 +58,4 @@ The repository includes a user-level, localhost-only OpenTelemetry Collector set
 ./scripts/otel/check.sh --since 1h
 ```
 
-See [docs/mac-codex-opentelemetry.md](docs/mac-codex-opentelemetry.md) for architecture, privacy, retention, identity, and uninstall details.
+See [docs/mac-codex-opentelemetry.md](docs/mac-codex-opentelemetry.md) for architecture, privacy, retention, identity, and uninstall details. The installer validates the merged `~/.codex/config.toml` before writing it atomically and keeps a UTC timestamped backup; `python3 scripts/otel/control_room_otel.py rollback` restores it.
