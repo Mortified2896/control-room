@@ -105,6 +105,10 @@ service or tool:
 - Review the complete diff and use `git diff --check` before publishing.
 - Commit and push completed work. Open a draft PR for substantive changes unless explicitly
   instructed otherwise.
+- Do not finish a task with a dirty worktree. Every task-owned change must be committed and
+  pushed or deliberately deleted; preserve unrelated useful work on an appropriate branch
+  instead of stranding it locally. Delete generated or runtime artifacts and add only narrowly
+  scoped ignore rules when they can recur. Confirm `git status --short` is empty at completion.
 
 ## Safety invariants
 
