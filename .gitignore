@@ -47,3 +47,6 @@ otel-data/
 *.otlp.json
 __pycache__/
 *.pyc
+
+# Large local Control Room archives (never commit)
+.control-room-data/
