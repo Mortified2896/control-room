@@ -37,6 +37,34 @@ trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", p
 metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
 ```
 
+## Optional autonomous workspace development
+
+Trusted local development on this Mac can opt in to a custom permission profile that keeps
+filesystem writes scoped to each active workspace, makes that workspace's `.git` directory
+writable, and enables development network access. This avoids routing ordinary commits and
+pushes through Auto-review without using `danger-full-access`:
+
+```bash
+python3 scripts/codex/configure-autonomous-dev.py
+```
+
+This helper changes the user-level Codex defaults in `~/.codex/config.toml`: it sets
+`approval_policy`, selects `autonomous-dev` as the default permission profile, and enables the
+profile's network policy for future Codex sessions on this Mac until rolled back or changed.
+Filesystem write access is still scoped by the sandbox to each session's active workspace roots;
+it does not grant arbitrary writes elsewhere on the Mac.
+
+The helper is deliberately opt-in. It refuses legacy `sandbox_mode` /
+`sandbox_workspace_write` settings and conflicting permission profiles, validates the complete
+TOML, creates `config.toml.backup-autonomous-dev-<UTC timestamp>` when a config already exists,
+and replaces the config atomically. Existing model, authentication, plugin, and OTel settings are
+retained. The command prints an exact one-command rollback (`cp` for an existing config or `rm`
+when it created the config). Fully quit and reopen Codex after changing the profile.
+
+The installed Codex version must support named permission profiles. The resulting profile extends
+the built-in `:workspace` policy, overrides only `:workspace_roots/.git` to `write`, and allows all
+network domains. Paths outside the active workspace remain restricted by the sandbox.
+
 `environment`, `exporter`, `trace_exporter`, and `metrics_exporter` map to the Collector's OTLP HTTP receiver on `127.0.0.1:4318` (`/v1/logs`, `/v1/traces`, `/v1/metrics`) using the `binary` protocol. `log_user_prompt = false` is enforced by default; changing it to `true` is deliberately not supported by the merge (see the privacy section).
 
 ### Compatibility-testing caveat
