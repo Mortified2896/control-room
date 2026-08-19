@@ -69,7 +69,7 @@ test("probeCodexStatus returns a structured installed status on current server",
   const status = await probeCodexStatus();
   assert.ok(["not_logged_in", "logged_in", "error"].includes(status.status));
   assert.equal(status.binary.path, "/home/hermes/.hermes/node/bin/codex");
-  assert.match(status.binary.version ?? "", /^\d+\.\d+\.\d+(?:[-+].*)?$/);
+  assert.equal(status.binary.version, "0.142.2");
   assert.equal(status.binary.resolvedFrom, "PATH");
   assert.equal(status.auth.accountHint, null);
   assert.doesNotMatch(JSON.stringify(status), /sk-[A-Za-z0-9]{20,}/);
