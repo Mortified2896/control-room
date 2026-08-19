@@ -50,7 +50,10 @@ The lean trace pipeline drops:
 
 That exact-count guard deliberately retains `handle_responses` carrying any additional metadata. In the measured archive it protected token usage, `from`, and `tool_name` variants and all parents of meaningful retained children. The test fixture also proves that event-bearing and error-status variants remain.
 
-The lean trace pipeline deletes integer runtime-thread IDs and these implementation attributes:
+The lean trace pipeline deletes free-text `error.message` from both span attributes and
+span-event attributes, while retaining error-status spans and structured failure metadata such
+as error type/category, status, outcome, and HTTP status where emitted. It also deletes integer
+runtime-thread IDs and these implementation attributes:
 
 - `code.file.path`
 - `code.module.name`
@@ -62,7 +65,11 @@ The lean trace pipeline deletes integer runtime-thread IDs and these implementat
 
 Codex also uses string-valued `thread.id` on session/turn spans. Those values are preserved; only integer runtime-thread values are removed. `codex.request.reasoning_effort` is preserved because it is the only reasoning field on retained `handle_responses` spans.
 
-The lean log pipeline removes `arguments`, `output`, `user.email`, `user.account_id`, and `error.message`. It retains event type, conversation ID, model, tool name, duration, success/outcome, token counts, TTFT, reasoning configuration, sandbox policy/outcome, and HTTP status where emitted. There is intentionally no raw log tier because current Codex logs can contain complete tool arguments and outputs.
+The lean log pipeline removes `arguments`, `output`, `user.email`, `user.account_id`, and
+free-text `error.message`. It retains event type, conversation ID, model, tool name, duration,
+success/outcome, token counts, TTFT, reasoning configuration, sandbox policy/outcome, and HTTP
+status where emitted. There is intentionally no raw log tier because current Codex logs can
+contain complete tool arguments and outputs.
 
 The forensic tier contains unfiltered traces only. It exists for instrumentation debugging and filter validation, not long-term analytics. It has a three-day maximum age and an independent 4,000,000,000-byte ceiling inside the global ceiling.
 
@@ -185,7 +192,14 @@ After recovering, restart Codex fully and confirm with `./scripts/otel/check.sh 
 
 The Collector adds `deployment.environment.name=mac-local`, `controlroom.source.role=mac-codex`, `host.name`, `os.type=darwin`, `controlroom.capture_node_id`, and Collector version without rewriting native trace/span IDs or timestamps. Codex supplies its service/version, conversation ID, model, reasoning, and other event metadata when available.
 
-`log_user_prompt = false` is enforced by default. In the measured archive all 128 `prompt` attributes were the ten-character redaction marker, not prompt content. Prompt events can still identify that a prompt happened and its length. Enabling prompt content is deliberately unsupported by the installer. Tool arguments/outputs and personal account identifiers are also removed from the lean archive as described above.
+`log_user_prompt = false` is enforced by default. In the measured archive all 128 `prompt`
+attributes were the ten-character redaction marker, not prompt content. Prompt events can still
+identify that a prompt happened and its length. Enabling prompt content is deliberately
+unsupported by the installer. Tool arguments/outputs, personal account identifiers, and
+free-text error messages in logs, spans, and span events are also removed from the lean archive
+as described above. Structured failure metadata remains available for analysis. This statement
+applies to telemetry processed by the current lean pipeline; legacy and forensic files have the
+separate handling described in this document.
 
 Files in the legacy `data/logs`, `data/traces`, and `data/metrics` directories predate the lean pipeline. They are retained unchanged to honor the no-data-deletion migration rule and remain subject to the 60-day/global-size policy. Treat legacy logs as sensitive because older Codex records can contain tool arguments, outputs, and account identifiers. The Collector no longer writes those paths; do not use them as the durable analytical source.
 

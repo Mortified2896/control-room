@@ -43,6 +43,10 @@ processors:
       - context: span
         statements:
           - 'delete_key(span.attributes, "thread.id") where IsInt(span.attributes["thread.id"])'
+          - 'delete_key(span.attributes, "error.message")'
+      - context: spanevent
+        statements:
+          - 'delete_key(spanevent.attributes, "error.message")'
   attributes/privacy_logs:
     actions:
       - {key: arguments, action: delete}

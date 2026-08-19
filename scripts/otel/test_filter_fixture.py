@@ -45,8 +45,21 @@ def main():
             span(4, "handle_responses"),
             span(5, "handle_responses", boilerplate() + [kv("gen_ai.usage.input_tokens", 10)]),
             span(6, "handle_responses", boilerplate() + [kv("from", "model")]),
-            span(7, "handle_responses", events=[{"name": "valuable", "timeUnixNano": "1500000000"}]),
-            span(8, "handle_responses", status={"code": 2}),
+            span(7, "handle_responses", events=[{
+                "name": "valuable", "timeUnixNano": "1500000000",
+                "attributes": [
+                    kv("error.message", "sensitive event error"),
+                    kv("error.type", "event_failure"),
+                    kv("error.category", "tool"),
+                ],
+            }]),
+            span(8, "handle_responses", boilerplate() + [
+                kv("error.message", "sensitive span error"),
+                kv("error.type", "request_failure"),
+                kv("error.category", "transport"),
+                kv("http.response.status_code", 503),
+                kv("outcome", "failure"),
+            ], status={"code": 2}),
             span(9, "session_task.turn", boilerplate() + [kv("thread.id", "session-id"), kv("turn.id", "turn-id"), kv("model", "test-model")]),
         ]
         trace_request = {"resourceSpans": [{"resource": {"attributes": [kv("service.name", "filter-test")]}, "scopeSpans": [{"scope": {"name": "test"}, "spans": spans}]}]}
@@ -80,7 +93,12 @@ processors:
     error_mode: propagate
     trace_statements:
       - context: span
-        statements: ['delete_key(span.attributes, "thread.id") where IsInt(span.attributes["thread.id"])']
+        statements:
+          - 'delete_key(span.attributes, "thread.id") where IsInt(span.attributes["thread.id"])'
+          - 'delete_key(span.attributes, "error.message")'
+      - context: spanevent
+        statements:
+          - 'delete_key(spanevent.attributes, "error.message")'
   attributes/lean_traces:
     actions:
       - {{key: code.file.path, action: delete}}
@@ -130,6 +148,22 @@ service:
         assert attrs["turn.id"] == {"stringValue": "turn-id"}
         for key in ("code.file.path", "code.module.name", "code.line.number", "thread.name", "target", "busy_ns", "idle_ns"):
             assert key not in attrs
+
+        error_span = next(s for s in kept if s.get("status", {}).get("code") == 2)
+        error_attrs = {a["key"]: a["value"] for a in error_span.get("attributes", [])}
+        assert "error.message" not in error_attrs
+        assert error_span["status"] == {"code": 2}
+        assert error_attrs["error.type"] == {"stringValue": "request_failure"}
+        assert error_attrs["error.category"] == {"stringValue": "transport"}
+        assert error_attrs["http.response.status_code"] == {"intValue": "503"}
+        assert error_attrs["outcome"] == {"stringValue": "failure"}
+
+        event_span = next(s for s in kept if s.get("events"))
+        event = next(e for e in event_span["events"] if e["name"] == "valuable")
+        event_attrs = {a["key"]: a["value"] for a in event.get("attributes", [])}
+        assert "error.message" not in event_attrs
+        assert event_attrs["error.type"] == {"stringValue": "event_failure"}
+        assert event_attrs["error.category"] == {"stringValue": "tool"}
 
         log_rows = [json.loads(line) for line in (output / "logs.json").open()]
         record = next(r for row in log_rows for rl in row["resourceLogs"] for sl in rl["scopeLogs"] for r in sl["logRecords"])
