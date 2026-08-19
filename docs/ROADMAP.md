@@ -1,6 +1,6 @@
 # Control Room Roadmap
 
-_Last updated: 2026-08-08_
+_Last updated: 2026-08-19_
 
 ## Goal
 
@@ -15,11 +15,32 @@ The key requirement is **genuine replay from the same starting state**, not mere
 
 ## Telemetry and reproducibility
 
-- OpenTelemetry is the preferred common vendor-neutral capture/transport foundation; the first pilot captures Mac Codex logs, traces, and metrics into a bounded lean OTLP archive plus a short forensic trace tier independently of MLflow. Its 60-day/50 GB retention policy is Mac-pilot-specific, not a server/O1/O2 default.
-- MLflow remains an optional downstream trace and evaluation consumer. Existing MLflow work is not replaced by capture.
+- OpenTelemetry is the preferred common vendor-neutral capture/transport foundation and the primary telemetry path.
+- Preserve a bounded raw OTLP archive independently of MLflow or any other analytics vendor so downstream outages do not cause telemetry loss.
+- The Mac Codex pilot captures logs, traces, and metrics into a bounded lean OTLP archive plus a short forensic trace tier. Its 60-day/50 GB retention policy is Mac-pilot-specific, not a server/O1/O2 default.
+- MLflow remains an optional downstream trace, experiment, and evaluation consumer rather than the owner of canonical telemetry.
 - OpenObserve may later provide a lightweight query/UI layer over reconciled telemetry.
-- A later server OTel deployment should use the same persistent node/source identity convention so Mac Codex and server Omnigent telemetry can coexist and be reconciled without rewriting native trace or span IDs.
+- Server OTel should use the same persistent node/source identity convention so Mac Codex and server Omnigent telemetry can coexist and be reconciled without rewriting native trace or span IDs.
 - Daytona remains the reproducible workspace/snapshot layer. Harbor and Inspect remain later evaluation and replay layers.
+
+### Server revalidation gate — 2026-08-19
+
+The Control Room server is currently unavailable. Live acceptance evidence recorded on
+2026-08-18 is historical evidence only, not proof of current O1/O2, Collector, or MLflow health.
+Do not merge or describe server observability as deployed from that evidence alone.
+
+HomeLab PR #18 remains the draft source for bounded server OTel capture. When connectivity
+returns, rebase or otherwise verify it against current HomeLab `main`, rerun its repository
+fixtures and config/systemd validation, and then perform a fresh controlled rollout with distinct
+target and supervisor instances. Acceptance must re-establish localhost-only endpoints, pinned
+Collector/config provenance, tracked/live file equality, bounded rotation/retention and storage
+headroom, O1/O2 source identity, native trace/span ID preservation, sensitive-content defaults,
+zero receiver refusal, and bounded optional-MLflow interruption/recovery behavior.
+
+Omnigent PR #110's volatile peer-deployer runtime-directory fix is not present on current
+Omnigent `main` and still targets `harden/permanent-peer-deployer`. Reconcile the minimal fix and
+focused regression coverage onto current `main`, pass current CI plus Linux systemd validation,
+and only then revalidate the installed unit. Do not merge the stale stack directly.
 
 ---
 
@@ -32,8 +53,10 @@ Omnigent
    │
    ├── OmniRoute ──► models
    │
-   └── OpenTelemetry ──► MLflow
-                           production observability
+   └── OpenTelemetry ──► bounded raw OTLP archive
+                         │
+                         ├──► optional MLflow
+                         └──► optional later query/eval consumers
 
 Replay / evaluation
 
@@ -47,7 +70,8 @@ Daytona sandbox
         ▼
 original execution
         │
-        └── snapshot/task IDs linked to MLflow
+        └── snapshot/task IDs linked by correlation metadata
+            to the corresponding OTel trace and optional downstream records
 
 later
 
@@ -76,22 +100,36 @@ Daytona snapshot
 
 ## Responsibility split
 
-### MLflow
+### OpenTelemetry
 
-Production observability and correlation layer.
+Primary production telemetry capture and transport layer.
 
 Use it for:
 
-- Omnigent traces
-- session/task IDs
+- traces, logs, and metrics where supported and useful
+- native trace/span identifiers
+- session/task correlation metadata
 - harness and model metadata
-- requested vs. actual model/provider provenance
+- requested vs. actual provider/model provenance where available
 - routing/fallback metadata
-- latency and token/cost information
-- success/error status
-- links to replay artifacts (`sandbox_id`, `snapshot_id`, later Harbor/Inspect IDs)
+- reasoning/configuration metadata
+- latency, token, and cost metadata where available
+- durable linkage to later replay/evaluation artifacts
 
-Do **not** turn MLflow into a repository or payload store. Preserve the current low-noise, privacy-first design and keep prompt/tool/error content disabled by default.
+Preserve bounded raw telemetry independently of downstream products. Keep prompt, tool-result, error-body, and repository-content capture disabled by default unless an explicitly reviewed research workflow requires it.
+
+### MLflow
+
+Optional downstream trace, experiment, and evaluation consumer.
+
+Use it when its UI or experiment/evaluation features are useful for:
+
+- viewing selected Omnigent traces
+- comparing experiments/evaluations
+- querying normalized task/model/provider metadata
+- linking replay artifacts (`sandbox_id`, `snapshot_id`, later Harbor/Inspect IDs)
+
+MLflow is not the canonical transport or raw telemetry store. An MLflow outage must not stop raw OTel capture and should not, by itself, block unrelated Omnigent operation once deployment safety gates have been decoupled appropriately.
 
 ### Daytona
 
@@ -154,17 +192,18 @@ Only use replay results for routing optimization after a meaningful corpus of tr
 
 # Phased plan
 
-## Phase 0 — Stabilize MLflow
+## Phase 0 — Stabilize OpenTelemetry capture
 
 **Status: IN PROGRESS / current priority**
 
-Goal: make production telemetry trustworthy before adding replay infrastructure.
+Goal: make production telemetry trustworthy and independent of downstream analytics availability before adding replay infrastructure.
 
 ### Requirements
 
-- [ ] Traces remain reliably visible during normal Omnigent use.
-- [ ] Low-noise span filtering remains intact.
-- [ ] Prompt, tool-result, and error content remain disabled by default.
+- [ ] Raw OTel capture remains reliable during normal Omnigent use.
+- [ ] Server Omnigent has a bounded raw archive analogous to the validated Mac Codex pilot.
+- [ ] Low-noise span filtering remains intact where filtering is applied.
+- [ ] Prompt, tool-result, error-body, and repository-content capture remain disabled by default.
 - [ ] Harness identity is captured.
 - [ ] Requested model is captured.
 - [ ] Actual provider/model is captured where available.
@@ -172,11 +211,12 @@ Goal: make production telemetry trustworthy before adding replay infrastructure.
 - [ ] Reasoning level/configuration is captured where available.
 - [ ] Token/cost/runtime metadata is retained where available.
 - [ ] Session/task identifiers are stable enough to correlate later replay artifacts.
-- [ ] Storage growth is monitored so tracing cannot again create severe disk pressure.
+- [ ] Storage growth is bounded by explicit size/retention policy so tracing cannot again create severe disk pressure.
+- [ ] MLflow can be enabled or disabled as an optional downstream consumer without losing the canonical raw telemetry stream.
 
 ### Exit criterion
 
-A representative Omnigent coding session produces a clean, complete, low-noise trace with enough metadata to identify what ran without storing sensitive task payloads.
+A representative Omnigent coding session produces a clean, complete, low-noise raw OTel trace/archive with enough metadata to identify what ran without storing sensitive task payloads, and downstream MLflow availability is not required for capture continuity.
 
 ---
 
@@ -193,7 +233,7 @@ Goal: make future real Omnigent tasks reproducible from their exact starting sta
 - [ ] Run one normal Omnigent coding session inside a Daytona sandbox.
 - [ ] Identify the exact pre-agent boundary where the task workspace is fully prepared but no coding agent mutation has occurred.
 - [ ] Add or expose a snapshot hook at that boundary if Omnigent does not already expose it.
-- [ ] Store/link `sandbox_id` and `snapshot_id` with the corresponding Omnigent/MLflow task/trace.
+- [ ] Store/link `sandbox_id` and `snapshot_id` with the corresponding Omnigent/OTel task/trace and optional MLflow record.
 - [ ] Verify that dirty files, staged changes, unstaged changes, and untracked files survive restoration exactly.
 - [ ] Validate resource limits so replay infrastructure cannot destabilize production Omnigent.
 
@@ -236,7 +276,7 @@ Goal: turn successful replay captures into durable executable coding benchmarks.
 - [ ] Reference the reproducible starting state rather than copying sensitive content into telemetry.
 - [ ] Encode deterministic acceptance tests and task-specific invariants.
 - [ ] Record structured metrics rather than relying primarily on an LLM judge.
-- [ ] Preserve task provenance back to the original Omnigent session/MLflow trace and Daytona snapshot.
+- [ ] Preserve task provenance back to the original Omnigent session/OTel trace and optional downstream records.
 - [ ] Test export/import portability of the resulting benchmark tasks.
 
 ### Initial result vector
@@ -346,12 +386,12 @@ Requirements before enabling this:
 
 The current order is intentionally conservative:
 
-1. **Get MLflow production tracing fully reliable and low-noise.**
-2. **Add Daytona and prove pre-agent snapshot/restore.**
-3. **Prove one genuine two-agent replay from the same starting state.**
-4. **Only then add Harbor for benchmark-grade task/verifier definitions.**
-5. **Only then add Inspect for systematic harness × model experiments.**
-6. **Accumulate evidence before touching OmniRoute routing policy.**
+1. **Keep the validated local Mac lean/forensic capture and audit healthy.**
+2. **When server connectivity returns, reconcile and revalidate HomeLab PR #18 from reviewed source.**
+3. **Restack the Omnigent #110 runtime-directory fix onto current `main` and validate it independently.**
+4. **Complete Phase 0 metadata/provenance requirements; keep MLflow optional downstream.**
+5. **Add Daytona and prove pre-agent snapshot/restore, then one genuine two-agent replay.**
+6. **Only then add Harbor and Inspect, and accumulate evidence before touching OmniRoute routing policy.**
 
 ---
 
@@ -359,12 +399,13 @@ The current order is intentionally conservative:
 
 Do not currently:
 
-- replace MLflow with Langfuse;
+- make MLflow the canonical telemetry transport or raw archive;
+- replace the vendor-neutral OTel foundation with Langfuse;
 - deploy Langfuse's heavier ClickHouse/Postgres/Redis/object-storage stack on the constrained HomeLab;
 - build a custom sandbox/snapshot engine when Daytona already provides the relevant primitives and is directly supported by Omnigent;
 - build a custom evaluation framework before testing Harbor;
 - deploy Inspect before genuine replay itself is proven;
-- capture full repository contents, prompts, or tool outputs into MLflow by default;
+- capture full repository contents, prompts, tool outputs, or error bodies into telemetry by default;
 - automatically retain every Omnigent task forever;
 - run large 4-harness × N-model × repeated matrices on every task;
 - train/modify OmniRoute routing based on a tiny early benchmark corpus.
@@ -373,6 +414,6 @@ Do not currently:
 
 # Immediate milestone
 
-> **MLflow stable → one Omnigent task runs in Daytona → snapshot taken at the pristine pre-agent boundary → snapshot/task identifiers linked to the MLflow trace → the task can later be restored exactly.**
+> **Server OTel source of truth revalidated → Phase 0 metadata complete → one Omnigent task runs in Daytona → snapshot taken at the pristine pre-agent boundary → snapshot/task identifiers linked to the OTel trace → the task can later be restored exactly.**
 
-That milestone creates the foundation for Harbor, Inspect, and eventual evidence-driven OmniRoute routing without requiring those systems to be deployed yet.
+That milestone creates the foundation for optional MLflow analysis, Harbor, Inspect, and eventual evidence-driven OmniRoute routing without requiring those systems to own or gate canonical telemetry.
