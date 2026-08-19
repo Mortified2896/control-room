@@ -86,7 +86,7 @@ export const ReasoningLevelSelect: FC<{
   const triggerLabel = selected?.label ?? value;
 
   return (
-    <div ref={ref} className="relative flex items-center">
+    <div ref={ref} className="relative flex min-w-0 items-center">
       <button
         type="button"
         data-testid="model-reasoning-select"
@@ -98,7 +98,7 @@ export const ReasoningLevelSelect: FC<{
         aria-expanded={open}
         disabled={disabled}
         className={cn(
-          "inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-7 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:pr-9",
+          "inline-flex min-h-10 w-full max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-7 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:w-auto sm:pr-9",
           disabled && "cursor-not-allowed opacity-60",
         )}
       >
@@ -128,7 +128,7 @@ export const ReasoningLevelSelect: FC<{
                   Choose how much reasoning effort the model should use.
                 </DialogPrimitive.Description>
               </div>
-              <div className="overflow-y-auto py-1">{optionButtons}</div>
+              <div className="min-h-0 overflow-y-auto py-1">{optionButtons}</div>
             </div>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
@@ -303,7 +303,7 @@ export const ThinkingModeSelect: FC<{
   });
 
   return (
-    <div ref={ref} className="relative flex items-center">
+    <div ref={ref} className="relative flex min-w-0 items-center">
       <button
         type="button"
         data-testid="model-thinking-mode-select"
@@ -311,7 +311,7 @@ export const ThinkingModeSelect: FC<{
         onClick={() => setOpen((prev) => !prev)}
         aria-label={`Select thinking mode (currently ${selected?.label ?? value})`}
         aria-expanded={open}
-        className="inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-7 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:pr-9"
+        className="inline-flex min-h-10 w-full max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-7 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:w-auto sm:pr-9"
       >
         <span className="truncate">Thinking: {selected?.label ?? value}</span>
         <ChevronDown className="size-3 shrink-0 opacity-70" />
@@ -340,7 +340,7 @@ export const ThinkingModeSelect: FC<{
                   lets the model pick its own reasoning behavior.
                 </DialogPrimitive.Description>
               </div>
-              <div className="overflow-y-auto py-1">{optionButtons}</div>
+              <div className="min-h-0 overflow-y-auto py-1">{optionButtons}</div>
             </div>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
@@ -447,7 +447,7 @@ export const RouterAbToggle: FC<{
       aria-pressed={on}
       aria-label={`Router A/B mode (currently ${on ? "on" : "off"})`}
       className={cn(
-        "h-7 gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition-colors",
+        "min-h-10 w-full gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors sm:h-7 sm:min-h-0 sm:w-auto sm:rounded-full",
         on
           ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300"
           : "border-border/60 bg-muted/20 text-muted-foreground hover:bg-muted/40 hover:text-foreground",

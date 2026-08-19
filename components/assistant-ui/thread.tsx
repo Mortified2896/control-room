@@ -1465,6 +1465,144 @@ const ComposerAction: FC<{
 
   return (
     <div className="aui-composer-action-wrapper relative flex flex-col gap-2">
+      {/* Conditional routing and harness cards can exceed a phone viewport. Keep the
+          primary composer controls first (and sticky while that card stack scrolls)
+          so attachment, recommendation, and send/stop actions never disappear. */}
+      <div
+        data-testid="composer-primary-actions"
+        className="sticky top-0 z-20 flex items-center justify-between rounded-xl bg-background/95 px-1 py-1 backdrop-blur sm:static sm:rounded-none sm:bg-transparent sm:p-0 sm:backdrop-blur-none"
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <ComposerAddAttachment />
+          <span aria-hidden="true" className="bg-border/60 h-4 w-px" />
+          <KbdHint combo="c" className="aui-composer-focus-shortcut" />
+          {!isCodingTask && onToggleRecommender ? (
+            <RecommenderToggle on={recommenderEnabled} onToggle={onToggleRecommender} />
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <AuiIf condition={(s) => s.thread.capabilities.dictation}>
+            <AuiIf condition={(s) => s.composer.dictation == null}>
+              <ComposerPrimitive.Dictate asChild>
+                <TooltipIconButton
+                  tooltip="Voice input"
+                  side="bottom"
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="aui-composer-dictate size-7 rounded-full"
+                  aria-label="Start voice input"
+                >
+                  <MicIcon className="aui-composer-dictate-icon size-4" />
+                </TooltipIconButton>
+              </ComposerPrimitive.Dictate>
+            </AuiIf>
+            <AuiIf condition={(s) => s.composer.dictation != null}>
+              <ComposerPrimitive.StopDictation asChild>
+                <TooltipIconButton
+                  tooltip="Stop dictation"
+                  side="bottom"
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
+                  aria-label="Stop voice input"
+                >
+                  <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
+                </TooltipIconButton>
+              </ComposerPrimitive.StopDictation>
+            </AuiIf>
+          </AuiIf>
+          {isCodingTask ? (
+            // In the intermediate state (`decisionApproved ===
+            // "coding_task"` but no harness selected yet) we
+            // intentionally hide BOTH the "Send to Codex" button
+            // and the legacy handoff-draft button. The harness
+            // approval card below is the only action surface; any
+            // send-button here would either fire the legacy
+            // createDraft() path with `worker === null` (raising
+            // "This coding task thread is missing a harness.") or
+            // race with the harness recommendation fetch. Once
+            // the user picks a harness via the card, the parent
+            // sets `harnessOverride` and `worker` becomes non-null,
+            // so the "Send to Codex" / MiniMax button renders
+            // normally.
+            decisionApproved === "coding_task" && !worker ? null : worker === "codex" ? (
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 rounded-full px-3 text-xs font-medium"
+                aria-label="Send to Codex"
+                disabled={creatingDraft}
+                onClick={createDraft}
+              >
+                {creatingDraft ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
+                Send to Codex
+              </Button>
+            ) : (
+              <TooltipIconButton
+                tooltip="Create handoff draft"
+                side="bottom"
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-send size-7 rounded-full"
+                aria-label="Create handoff draft"
+                disabled={creatingDraft}
+                onClick={createDraft}
+              >
+                <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+              </TooltipIconButton>
+            )
+          ) : (
+            <AuiIf condition={(s) => !s.thread.isRunning}>
+              {recommenderEnabled && onRecommend ? (
+                <TooltipIconButton
+                  tooltip="Get model recommendation"
+                  side="bottom"
+                  type="button"
+                  variant="default"
+                  size="icon"
+                  className="aui-composer-send size-7 rounded-full"
+                  aria-label="Get model recommendation"
+                  disabled={recommendationLoading || routerDecisionLoading || !!routerDecision}
+                  onClick={handleRecommendBeforeSend}
+                >
+                  <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+                </TooltipIconButton>
+              ) : (
+                <ComposerPrimitive.Send asChild>
+                  <TooltipIconButton
+                    tooltip="Send message"
+                    side="bottom"
+                    type="button"
+                    variant="default"
+                    size="icon"
+                    className="aui-composer-send size-7 rounded-full"
+                    aria-label="Send message"
+                    onClickCapture={() => queueManualRoutingDecision(composerText)}
+                  >
+                    <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
+                  </TooltipIconButton>
+                </ComposerPrimitive.Send>
+              )}
+            </AuiIf>
+          )}
+          <AuiIf condition={(s) => s.thread.isRunning}>
+            <ComposerPrimitive.Cancel asChild>
+              <Button
+                type="button"
+                variant="default"
+                size="icon"
+                className="aui-composer-cancel size-7 rounded-full"
+                aria-label="Stop generating"
+              >
+                <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
+              </Button>
+            </ComposerPrimitive.Cancel>
+          </AuiIf>
+        </div>
+      </div>
       {showCodingHarnessCard ? (
         <div
           className="rounded-2xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs"
@@ -1874,25 +2012,31 @@ const ComposerAction: FC<{
               {recommendation.loudFailure ? (
                 <div>
                   <div className="font-medium text-foreground">Recommendation blocked</div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    The recommender engine could not run: {recommenderEngineSummary ?? "unknown"}
+                  <div className="mt-0.5 text-muted-foreground sm:hidden">
+                    Pick a suggested subscription model or keep your current selection.
                   </div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    Recommended route:{" "}
-                    {recommendation.recommendedRoute === "coding_task"
-                      ? "Coding task"
-                      : "Normal chat"}
-                    {recommendation.routeReason ? ` — ${recommendation.routeReason}` : ""}
-                  </div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    Current manual model remains:{" "}
-                    {manualModelSummary ?? recommendation.recommendedModelId}
-                  </div>
-                  <div className="mt-0.5 text-muted-foreground">
-                    Configured fallback engine: {fallbackEngineSummary ?? "No fallback configured"}
-                  </div>
-                  <div className="mt-1 text-muted-foreground">
-                    Why model: {recommendation.reasoning}
+                  <div className="hidden sm:block">
+                    <div className="mt-0.5 text-muted-foreground">
+                      The recommender engine could not run: {recommenderEngineSummary ?? "unknown"}
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      Recommended route:{" "}
+                      {recommendation.recommendedRoute === "coding_task"
+                        ? "Coding task"
+                        : "Normal chat"}
+                      {recommendation.routeReason ? ` — ${recommendation.routeReason}` : ""}
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      Current manual model remains:{" "}
+                      {manualModelSummary ?? recommendation.recommendedModelId}
+                    </div>
+                    <div className="mt-0.5 text-muted-foreground">
+                      Configured fallback engine:{" "}
+                      {fallbackEngineSummary ?? "No fallback configured"}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      Why model: {recommendation.reasoning}
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -1926,7 +2070,7 @@ const ComposerAction: FC<{
               )}
               {recommendation.loudFailure &&
               recommendation.proposedSubscriptionFallbacks?.length ? (
-                <div className="mt-1 text-muted-foreground">
+                <div className="mt-1 hidden text-muted-foreground sm:block">
                   Suggested subscription alternatives:{" "}
                   {recommendation.proposedSubscriptionFallbacks
                     .map((p) => p.displayLabel)
@@ -1943,11 +2087,20 @@ const ComposerAction: FC<{
                     data-testid="recommender-accept"
                     onClick={handleAcceptRecommendation}
                   >
-                    {recommendation.loudFailure
-                      ? `Switch to ${recommendation.proposedSubscriptionFallbacks?.[0]?.displayLabel ?? "suggested subscription"}`
-                      : recommenderEnabled
-                        ? "Accept & send"
-                        : "Use recommendation"}
+                    {recommendation.loudFailure ? (
+                      <>
+                        <span className="sm:hidden">Use suggested model</span>
+                        <span className="hidden sm:inline">
+                          Switch to{" "}
+                          {recommendation.proposedSubscriptionFallbacks?.[0]?.displayLabel ??
+                            "suggested subscription"}
+                        </span>
+                      </>
+                    ) : recommenderEnabled ? (
+                      "Accept & send"
+                    ) : (
+                      "Use recommendation"
+                    )}
                   </Button>
                 ) : null}
                 <Button
@@ -1983,138 +2136,6 @@ const ComposerAction: FC<{
           )}
         </div>
       ) : null}
-      <div className="flex items-center justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          <ComposerAddAttachment />
-          <span aria-hidden="true" className="bg-border/60 h-4 w-px" />
-          <KbdHint combo="c" className="aui-composer-focus-shortcut" />
-          {!isCodingTask && onToggleRecommender ? (
-            <RecommenderToggle on={recommenderEnabled} onToggle={onToggleRecommender} />
-          ) : null}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <AuiIf condition={(s) => s.thread.capabilities.dictation}>
-            <AuiIf condition={(s) => s.composer.dictation == null}>
-              <ComposerPrimitive.Dictate asChild>
-                <TooltipIconButton
-                  tooltip="Voice input"
-                  side="bottom"
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="aui-composer-dictate size-7 rounded-full"
-                  aria-label="Start voice input"
-                >
-                  <MicIcon className="aui-composer-dictate-icon size-4" />
-                </TooltipIconButton>
-              </ComposerPrimitive.Dictate>
-            </AuiIf>
-            <AuiIf condition={(s) => s.composer.dictation != null}>
-              <ComposerPrimitive.StopDictation asChild>
-                <TooltipIconButton
-                  tooltip="Stop dictation"
-                  side="bottom"
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
-                  aria-label="Stop voice input"
-                >
-                  <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
-                </TooltipIconButton>
-              </ComposerPrimitive.StopDictation>
-            </AuiIf>
-          </AuiIf>
-          {isCodingTask ? (
-            // In the intermediate state (`decisionApproved ===
-            // "coding_task"` but no harness selected yet) we
-            // intentionally hide BOTH the "Send to Codex" button
-            // and the legacy handoff-draft button. The harness
-            // approval card above is the only action surface; any
-            // send-button here would either fire the legacy
-            // createDraft() path with `worker === null` (raising
-            // "This coding task thread is missing a harness.") or
-            // race with the harness recommendation fetch. Once
-            // the user picks a harness via the card, the parent
-            // sets `harnessOverride` and `worker` becomes non-null,
-            // so the "Send to Codex" / MiniMax button renders
-            // normally.
-            decisionApproved === "coding_task" && !worker ? null : worker === "codex" ? (
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 rounded-full px-3 text-xs font-medium"
-                aria-label="Send to Codex"
-                disabled={creatingDraft}
-                onClick={createDraft}
-              >
-                {creatingDraft ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
-                Send to Codex
-              </Button>
-            ) : (
-              <TooltipIconButton
-                tooltip="Create handoff draft"
-                side="bottom"
-                type="button"
-                variant="default"
-                size="icon"
-                className="aui-composer-send size-7 rounded-full"
-                aria-label="Create handoff draft"
-                disabled={creatingDraft}
-                onClick={createDraft}
-              >
-                <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-              </TooltipIconButton>
-            )
-          ) : (
-            <AuiIf condition={(s) => !s.thread.isRunning}>
-              {recommenderEnabled && onRecommend ? (
-                <TooltipIconButton
-                  tooltip="Get model recommendation"
-                  side="bottom"
-                  type="button"
-                  variant="default"
-                  size="icon"
-                  className="aui-composer-send size-7 rounded-full"
-                  aria-label="Get model recommendation"
-                  disabled={recommendationLoading || routerDecisionLoading || !!routerDecision}
-                  onClick={handleRecommendBeforeSend}
-                >
-                  <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-                </TooltipIconButton>
-              ) : (
-                <ComposerPrimitive.Send asChild>
-                  <TooltipIconButton
-                    tooltip="Send message"
-                    side="bottom"
-                    type="button"
-                    variant="default"
-                    size="icon"
-                    className="aui-composer-send size-7 rounded-full"
-                    aria-label="Send message"
-                    onClickCapture={() => queueManualRoutingDecision(composerText)}
-                  >
-                    <ArrowUpIcon className="aui-composer-send-icon size-4.5" />
-                  </TooltipIconButton>
-                </ComposerPrimitive.Send>
-              )}
-            </AuiIf>
-          )}
-          <AuiIf condition={(s) => s.thread.isRunning}>
-            <ComposerPrimitive.Cancel asChild>
-              <Button
-                type="button"
-                variant="default"
-                size="icon"
-                className="aui-composer-cancel size-7 rounded-full"
-                aria-label="Stop generating"
-              >
-                <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
-              </Button>
-            </ComposerPrimitive.Cancel>
-          </AuiIf>
-        </div>
-      </div>
     </div>
   );
 };

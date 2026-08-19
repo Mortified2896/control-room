@@ -224,10 +224,10 @@ export function RoutingDecisionPanel({
   return (
     <div
       data-testid="routing-decision-panel"
-      className="my-1 rounded-2xl border border-primary/20 bg-primary/5 p-3 text-xs"
+      className="my-1 rounded-2xl border border-primary/20 bg-primary/5 p-2.5 text-xs sm:p-3"
     >
       {/* Header row */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
         <div className="font-semibold text-foreground">Routing decision</div>
         <span
           data-testid="routing-decision-confidence-badge"
@@ -255,17 +255,17 @@ export function RoutingDecisionPanel({
       {loudFailure ? (
         <div
           data-testid="routing-decision-loud-failure-notice"
-          className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-destructive"
+          className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-[11px] leading-snug text-destructive sm:text-xs"
         >
-          Recommender could not run. Your manual selection is preserved; switch the
-          model dropdown or click Send default to proceed without routing.
+          Recommender could not run. Your manual selection is preserved; switch the model dropdown
+          or click Send default to proceed without routing.
         </div>
       ) : null}
 
       {/* Section 1 — Context */}
       <section
         data-testid="routing-decision-context-section"
-        className="mt-3 grid gap-2"
+        className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-x-2 gap-y-1 sm:mt-3 sm:grid-cols-1 sm:gap-2"
       >
         <div className="flex items-center justify-between">
           <Label htmlFor="routing-decision-context-select" className="font-medium text-foreground">
@@ -288,7 +288,7 @@ export function RoutingDecisionPanel({
         </select>
         <p
           data-testid="routing-decision-context-explanation"
-          className="text-[11px] text-muted-foreground"
+          className="col-span-2 text-[11px] leading-snug text-muted-foreground sm:col-span-1 sm:leading-normal"
         >
           {panel.contextDecision.explanation}
         </p>
@@ -297,15 +297,18 @@ export function RoutingDecisionPanel({
       {/* Section 2 — Execution package */}
       <section
         data-testid="routing-decision-package-section"
-        className="mt-3 grid gap-2"
+        className="mt-2 grid gap-1.5 sm:mt-3 sm:gap-2"
       >
         <div className="flex items-center justify-between">
           <Label className="font-medium text-foreground">Execution package</Label>
         </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(140px,1fr)_minmax(160px,1fr)]">
+        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-[minmax(0,2fr)_minmax(140px,1fr)_minmax(160px,1fr)] sm:gap-2">
           {/* Model dropdown */}
           <div className="min-w-0 grid gap-1 overflow-hidden">
-            <Label htmlFor="routing-decision-model-select" className="text-[11px] text-muted-foreground">
+            <Label
+              htmlFor="routing-decision-model-select"
+              className="text-[11px] text-muted-foreground"
+            >
               Model
             </Label>
             <select
@@ -330,7 +333,10 @@ export function RoutingDecisionPanel({
           </div>
           {/* Reasoning dropdown */}
           <div className="min-w-0 grid gap-1 overflow-hidden">
-            <Label htmlFor="routing-decision-reasoning-select" className="text-[11px] text-muted-foreground">
+            <Label
+              htmlFor="routing-decision-reasoning-select"
+              className="text-[11px] text-muted-foreground"
+            >
               Reasoning
             </Label>
             <select
@@ -351,7 +357,10 @@ export function RoutingDecisionPanel({
           </div>
           {/* Harness dropdown */}
           <div className="min-w-0 grid gap-1 overflow-hidden">
-            <Label htmlFor="routing-decision-harness-select" className="text-[11px] text-muted-foreground">
+            <Label
+              htmlFor="routing-decision-harness-select"
+              className="text-[11px] text-muted-foreground"
+            >
               Harness
             </Label>
             <select
@@ -372,14 +381,14 @@ export function RoutingDecisionPanel({
         </div>
         <p
           data-testid="routing-decision-package-explanation"
-          className="text-[11px] text-muted-foreground"
+          className="text-[11px] leading-snug text-muted-foreground sm:leading-normal"
         >
           {panel.executionPackage.explanation}
         </p>
       </section>
 
       {/* Optional compact comment */}
-      <section className="mt-3 grid gap-1">
+      <section className="mt-2 grid gap-1 sm:mt-3">
         {!commentOpen ? (
           <Button
             type="button"
@@ -393,7 +402,10 @@ export function RoutingDecisionPanel({
           </Button>
         ) : (
           <div className="grid gap-1">
-            <Label htmlFor="routing-decision-comment-input" className="text-[11px] text-muted-foreground">
+            <Label
+              htmlFor="routing-decision-comment-input"
+              className="text-[11px] text-muted-foreground"
+            >
               Comment on recommendation
             </Label>
             <Input
@@ -410,7 +422,7 @@ export function RoutingDecisionPanel({
       </section>
 
       {/* Bottom buttons */}
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-2 sm:mt-3">
         <Button
           type="button"
           size="sm"

@@ -246,3 +246,16 @@ test("the panel does NOT render per-field verbose explanations by default", () =
   assert.doesNotMatch(html, /Why this harness/);
   assert.doesNotMatch(html, /Why this reasoning/);
 });
+
+test("the execution controls use a compact mobile grid and keep the wider desktop layout", () => {
+  const html = renderPanel();
+  const packageSection = html.match(
+    /data-testid="routing-decision-package-section"[\s\S]*?data-testid="routing-decision-package-explanation"/,
+  );
+  assert.ok(packageSection);
+  assert.match(packageSection[0], /grid-cols-3/);
+  assert.match(
+    packageSection[0],
+    /sm:grid-cols-\[minmax\(0,2fr\)_minmax\(140px,1fr\)_minmax\(160px,1fr\)\]/,
+  );
+});

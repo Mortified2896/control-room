@@ -1058,14 +1058,14 @@ const ModelSelector: FC<{
   })();
 
   return (
-    <div ref={ref} className="relative flex items-center">
+    <div ref={ref} className="relative flex min-w-0 items-center">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         data-shortcut-target={SHORTCUT_TARGETS.selectModel}
         data-testid="aui-model-selector-trigger"
         aria-label={`Select model (currently ${triggerLabel}; press M)`}
-        className="aui-model-selector-trigger relative inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-8 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:pr-10"
+        className="aui-model-selector-trigger relative inline-flex min-h-10 w-full max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-8 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:w-auto sm:pr-10"
         disabled={loading}
       >
         <span className="size-1.5 rounded-full bg-emerald-500/80" aria-hidden />
@@ -1114,7 +1114,7 @@ const ModelSelector: FC<{
                   option.
                 </DialogPrimitive.Description>
               </div>
-              <div className="overflow-y-auto py-1">
+              <div className="min-h-0 overflow-y-auto py-1">
                 {models.length === 0 && !loading && (
                   <div className="px-4 py-3 text-xs text-muted-foreground">No models available</div>
                 )}
@@ -1200,7 +1200,7 @@ const ChatTopBar: FC<{
   }, [supportsRouterAb, routerAbOn, onRouterAbChange]);
   return (
     <div
-      className="flex flex-wrap items-center gap-2 border-b border-border/60 bg-background px-3 py-2.5 sm:px-4"
+      className="grid grid-cols-2 items-center gap-2 border-b border-border/60 bg-background px-3 py-2 sm:flex sm:flex-wrap sm:px-4 sm:py-2.5"
       data-testid="manual-chat-model-controls"
       title="Manual chat model — used when Recommend is off or when you choose Keep current."
       aria-label="Manual chat model controls"
@@ -1222,14 +1222,14 @@ const ChatTopBar: FC<{
         <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
       ) : (
         <div
-          className="rounded-full border border-border/60 bg-muted/20 px-3 py-1 text-[11px] font-medium text-muted-foreground"
+          className="flex min-h-10 items-center justify-center rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-center text-[11px] font-medium text-muted-foreground sm:min-h-0 sm:rounded-full sm:px-3"
           data-testid="router-ab-openai-only-pill"
         >
           Router A/B is OpenAI-only.
         </div>
       )}
       <UsageQuotasButton openAiApiEnabled={openAiApiEnabled} />
-      <div className="ml-auto shrink-0">
+      <div className="ml-auto hidden shrink-0 sm:block">
         <ThemeToggle />
       </div>
     </div>
@@ -1256,6 +1256,7 @@ const MobileHeader: FC<{
         <div className="truncate text-sm font-semibold text-foreground">Control Room</div>
         <div className="truncate text-[11px] text-muted-foreground/70">{activeThreadTitle}</div>
       </div>
+      <ThemeToggle className="sm:hidden" />
     </header>
   );
 };

@@ -258,11 +258,11 @@ export const UsageQuotasButton: FC<{ openAiApiEnabled?: boolean }> = ({
   }, [compactProviders]);
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative w-full sm:w-auto">
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
-        className="inline-flex min-h-10 items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0"
+        className="flex min-h-10 w-full items-center justify-between gap-1.5 rounded-md border border-border/60 bg-muted/20 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:inline-flex sm:min-h-0 sm:w-auto"
         data-testid="usage-quotas-trigger"
         aria-label="Open usage and quotas overview"
       >
@@ -273,7 +273,7 @@ export const UsageQuotasButton: FC<{ openAiApiEnabled?: boolean }> = ({
       </button>
 
       {open ? (
-        <div className="absolute left-0 top-full z-50 mt-1 w-[min(20rem,calc(100vw-2rem))] rounded-md border border-border bg-popover p-3 text-xs shadow-md">
+        <div className="absolute right-0 top-full z-50 mt-1 w-[min(20rem,calc(100vw-2rem))] rounded-md border border-border bg-popover p-3 text-xs shadow-md sm:right-auto sm:left-0">
           <div className="font-semibold text-popover-foreground">Usage / quotas</div>
           <div className="mt-1 text-[11px] text-muted-foreground">
             Estimated from local runs. Provider-side quotas may differ.
