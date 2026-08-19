@@ -11,6 +11,7 @@ grep -q 'max_days: 60' "$HERE/config/otelcol-macos.yaml"
 grep -q 'filter/lean_traces' "$HERE/config/otelcol-macos.yaml"
 grep -q 'attributes/privacy_logs' "$HERE/config/otelcol-macos.yaml"
 PYTHONDONTWRITEBYTECODE=1 python3 "$HERE/test_control_room_otel.py"
+PYTHONDONTWRITEBYTECODE=1 python3 "$HERE/test_telemetry_audit.py"
 COLLECTOR=${CONTROL_ROOM_OTEL_COLLECTOR:-"$HOME/Library/Application Support/ControlRoom/otel/bin/otelcol-contrib"}
 if [ -x "$COLLECTOR" ]; then
   CONTROL_ROOM_OTEL_HOME=/tmp/control-room-otel-validate CONTROL_ROOM_CAPTURE_NODE_ID=test-node CONTROL_ROOM_ENVIRONMENT=mac-local CONTROL_ROOM_SOURCE_ROLE=mac-codex CONTROL_ROOM_HOSTNAME=test-host CONTROL_ROOM_COLLECTOR_VERSION=0.159.0 "$COLLECTOR" validate --config "$HERE/config/otelcol-macos.yaml"
