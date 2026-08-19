@@ -169,6 +169,22 @@ class TelemetryAuditTests(unittest.TestCase):
         self.assertEqual(attribution["evidence"], "absent")
         self.assertEqual(attribution["coverage_percent"], 0.0)
 
+    def test_start_time_filter_is_read_only_and_reports_skipped_items(self):
+        self.populate()
+        report = AUDIT.Audit(self.root, start_time_ns=2_000_000_000).run()
+        self.assertEqual(report["signals"]["logs"]["items"], 1)
+        self.assertEqual(report["signals"]["traces"]["items"], 1)
+        self.assertEqual(report["signals"]["metrics"]["items"], 1)
+        self.assertEqual(
+            report["time_filter"]["skipped_before_start"],
+            {"logs": 1, "traces": 2, "metrics": 0},
+        )
+        self.assertEqual(
+            report["time_filter"]["skipped_missing_timestamp"],
+            {"logs": 0, "traces": 0, "metrics": 0},
+        )
+        self.assertEqual(report["privacy"]["prompt_redaction_marker_occurrences"], 0)
+
     def test_cli_json_and_human_outputs(self):
         self.populate()
         json_run = subprocess.run(
@@ -176,13 +192,21 @@ class TelemetryAuditTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         )
         self.assertEqual(json.loads(json_run.stdout)["mode"], "read_only_lean_archive")
+        filtered_run = subprocess.run(
+            [
+                sys.executable, str(MODULE_PATH), "--root", str(self.root), "--json",
+                "--start-time", "1970-01-01T00:00:02Z",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(json.loads(filtered_run.stdout)["signals"]["traces"]["items"], 1)
         human_run = subprocess.run(
             [sys.executable, str(MODULE_PATH), "--root", str(self.root)],
             check=True, capture_output=True, text=True,
         )
         self.assertIn("Privacy: no raw payload values emitted", human_run.stdout)
         self.assertNotIn("/Users/private", human_run.stdout)
-        otel_home = self.root.parent.parent
+        otel_home = Path(self.temp.name) / "otel-home"
         moved = otel_home / "data/lean"
         moved.parent.mkdir(parents=True)
         self.root.rename(moved)

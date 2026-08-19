@@ -1,15 +1,21 @@
 # Mac Codex lean telemetry audit findings
 
-_Snapshot audited: 2026-08-19. The active archive continued to receive records while the
-audit was being developed; counts below are from one completed read-only pass._
+_Pre-fix baseline audited: 2026-08-19. Post-fix verification completed: 2026-08-19, using
+the Collector reload boundary `2026-08-19T11:11:11.441276Z`. The active archive continued to
+receive records, so each set of counts below identifies one completed read-only pass._
 
 ## Executive answer
 
-The current lean archive is already useful for meaningful task, actual-model, tool, token,
+New lean telemetry produced after the privacy fix contains no structural `error.message` in
+logs, spans, or span events. Historical pre-fix files remain untouched and still account for
+169 trace occurrences in a later full-archive pass; the post-fix window accounts for zero.
+
+The lean archive is already useful for meaningful task, actual-model, tool, token,
 runtime, and failure analysis without MLflow or another analytics service. It is not yet a
 complete provenance dataset. Requested model is absent, metrics have no usable trace or
-conversation correlation, parent resolution is 95.28%, and repository/project identity is not
-recorded directly.
+conversation correlation, and repository/project identity is not recorded directly. Parent
+resolution varies with the audit window: 94.05% in the later full-archive pass and 93.23% when
+deliberately cutting at the post-fix boundary, where parents may fall before the boundary.
 
 We can distinguish four privacy-safe working-directory contexts in this snapshot. Direct `cwd`
 evidence occurs on 373 of 376 identified turns, and trace linkage associates one and only one of
@@ -17,7 +23,47 @@ those contexts with 203 of 260 conversations. That supports workspace-level comp
 turns. It does **not** prove which Git repository, Git remote, ChatGPT project, or Codex project a
 task came from.
 
-## Data inspected
+## Post-fix privacy verification — 2026-08-19
+
+PR #5 reloaded the pinned Collector 0.159.0 at
+`2026-08-19T11:11:11.441276Z`. The installed configuration SHA-256 matched the reviewed
+repository configuration, health was available, and receiver/export failure counters were zero.
+The audit then ran with the exact boundary:
+
+```bash
+./scripts/otel/audit.sh --start-time 2026-08-19T11:11:11.441276Z --json
+```
+
+The completed post-fix pass opened the live lean files read-only and included only timestamped
+items at or after that boundary:
+
+| Signal    | Included items | Privacy result                                      |
+| --------- | -------------: | --------------------------------------------------- |
+| Logs      |            165 | 0 `error.message`; 8 redacted prompt markers        |
+| Traces    |          2,495 | 0 span or span-event `error.message`                 |
+| Metrics   |            567 | no sensitive keys observed                          |
+| **Total** |      **3,227** | **0 free-text error-message attributes observed**   |
+
+No included item lacked a timestamp, and no malformed record or unreadable file was observed.
+Tool arguments/output, email, and account identifiers were absent. All eight prompt values were
+the expected `[REDACTED]` marker; no non-redacted prompt value was observed.
+
+The window retained 75 trace IDs, 2,495 unique spans, 2,421 parent references, and 2,257 parents
+resolving inside the post-fix window (93.23%). The 164 unresolved references are not evidence of
+redaction damage: the item-level boundary intentionally excludes possible parents that started
+before reload. Logs matched 31 of 32 trace-bearing log trace IDs to retained post-fix spans.
+
+The window also retained 174 tool-identified items with 100 co-located outcomes (57.47%), nine
+turn IDs, actual-model/reasoning/token/runtime fields where emitted, and one privacy-safe hashed
+working-directory context linked to all nine turns. Requested model, direct repository/project
+identity, and task-correlated metrics remain absent.
+
+A separate later full-archive pass inspected 303,722 items across 13 files. It found 169
+structural `error.message` occurrences, all on traces, while the post-fix window found zero.
+Those occurrences are therefore reported as historical/pre-fix evidence, not removed or hidden.
+Historical and forensic telemetry was not modified.
+
+## Pre-fix baseline data inspected
 
 The audit streamed all ten newline-delimited OTLP JSON files then present under
 `data/lean/{logs,traces,metrics}`. It did not read the forensic or legacy tiers.
@@ -99,9 +145,9 @@ The audit does not print tool names because dynamic MCP or connector names may b
 - All 376 observed `prompt` values are the expected `[REDACTED]` marker. No non-redaction prompt
   value was observed.
 - Tool arguments, tool output, email, and account ID keys were not observed by the audit.
-- The structural key `error.message` occurs on 168 trace items/events. The audit counts the key
-  but never renders its values. This is a privacy gap worth reviewing in the trace filtering
-  pipeline; it does not justify enabling or retaining more payload content.
+- The structural key `error.message` occurred on 168 trace items/events in this pre-fix baseline.
+  The audit counted the key but never rendered its values. The later full-archive pass observed
+  169 historical occurrences; the post-fix-only pass observed zero.
 - The audit emits only schema keys, aggregates, approved categorical metadata, and hashed context
   cardinalities. It never emits raw paths, identifiers, prompt text, tool names/arguments/output,
   account identifiers, error messages, or arbitrary attribute values.
@@ -146,5 +192,6 @@ existing conversation and turn identifiers to metric points would then close the
 cross-signal gap. These are instrumentation recommendations only; this task does not change Codex
 or assert unsupported configuration fields.
 
-Separately, inspect why `error.message` remains in lean trace events and decide whether the
-existing trace privacy processor should remove it. Keep `log_user_prompt=false` unchanged.
+The lean trace privacy processor now removes only free-text `error.message` from span and
+span-event attributes. Keep `log_user_prompt=false` unchanged and continue verifying the
+post-fix window after Collector or Codex upgrades.

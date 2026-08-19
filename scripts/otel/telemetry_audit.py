@@ -2,6 +2,7 @@
 """Privacy-safe, read-only audit of the local Mac Codex lean OTLP archive."""
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -141,6 +142,30 @@ def _status_code(span):
     return status.get("code") if isinstance(status, dict) else None
 
 
+def _timestamp_ns(signal, item):
+    keys = (
+        ("startTimeUnixNano", "endTimeUnixNano")
+        if signal == "traces"
+        else ("timeUnixNano", "observedTimeUnixNano")
+    )
+    for key in keys:
+        try:
+            return int(item[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _parse_start_time(value):
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise argparse.ArgumentTypeError("timestamp must include a UTC offset or Z")
+    return int(parsed.timestamp() * 1_000_000_000)
+
+
 def _signal_files(root, signal):
     directory = root / signal
     if not directory.is_dir():
@@ -152,8 +177,11 @@ def _signal_files(root, signal):
 
 
 class Audit:
-    def __init__(self, root):
+    def __init__(self, root, start_time_ns=None):
         self.root = root
+        self.start_time_ns = start_time_ns
+        self.time_filter_skipped_before = Counter()
+        self.time_filter_skipped_missing = Counter()
         self.signal = {
             name: {"files": 0, "bytes": 0, "export_records": 0, "items": 0,
                    "malformed_records": 0, "unreadable_files": 0}
@@ -264,6 +292,8 @@ class Audit:
                 continue
             for point in payload.get("dataPoints", []):
                 found_points = True
+                if not self._include("metrics", point):
+                    continue
                 attrs = dict(resource)
                 attrs.update(metric_attributes)
                 attrs.update(_attributes(point.get("attributes", [])))
@@ -277,6 +307,8 @@ class Audit:
             return
 
     def _item(self, signal, resource, item):
+        if not self._include(signal, item):
+            return
         attrs = dict(resource)
         attrs.update(_attributes(item.get("attributes", [])))
         if signal == "traces":
@@ -313,6 +345,18 @@ class Audit:
                 self.span_duration_max_ms = duration if self.span_duration_max_ms is None else max(self.span_duration_max_ms, duration)
         except (KeyError, TypeError, ValueError):
             pass
+
+    def _include(self, signal, item):
+        if self.start_time_ns is None:
+            return True
+        timestamp = _timestamp_ns(signal, item)
+        if timestamp is None:
+            self.time_filter_skipped_missing[signal] += 1
+            return False
+        if timestamp < self.start_time_ns:
+            self.time_filter_skipped_before[signal] += 1
+            return False
+        return True
 
     def _observe(self, signal, attrs, item, trace_ids=None, span_ids=None, metric_name=None):
         stats = self.signal[signal]
@@ -457,6 +501,20 @@ class Audit:
             "audit_version": 1,
             "mode": "read_only_lean_archive",
             "archive_root": _safe_root(self.root),
+            "time_filter": {
+                "start_time": (
+                    dt.datetime.fromtimestamp(
+                        self.start_time_ns / 1_000_000_000, dt.timezone.utc
+                    ).isoformat()
+                    if self.start_time_ns is not None else None
+                ),
+                "skipped_before_start": {
+                    signal: self.time_filter_skipped_before[signal] for signal in SIGNALS
+                },
+                "skipped_missing_timestamp": {
+                    signal: self.time_filter_skipped_missing[signal] for signal in SIGNALS
+                },
+            },
             "signals": self.signal,
             "files": {
                 "inspected": self.file_details,
@@ -558,6 +616,8 @@ def render_human(report):
     signals = report["signals"]
     print("Mac Codex lean telemetry audit (read-only)")
     print(f"Archive: {report['archive_root']}")
+    if report["time_filter"]["start_time"]:
+        print(f"Start time filter: {report['time_filter']['start_time']}")
     for name in SIGNALS:
         item = signals[name]
         print(f"{name}: files={item['files']} exports={item['export_records']} items={item['items']} malformed={item['malformed_records']} unreadable={item['unreadable_files']}")
@@ -583,9 +643,13 @@ def main(argv=None):
     parser.add_argument("--root", type=Path, default=DEFAULT_OTEL_HOME,
                         help="OTel home, data directory, or lean archive root (default: local Mac Control Room OTel home)")
     parser.add_argument("--json", action="store_true", help="emit structured JSON")
+    parser.add_argument(
+        "--start-time", type=_parse_start_time,
+        help="include only items at or after this ISO-8601 timestamp (must include offset or Z)",
+    )
     args = parser.parse_args(argv)
     root = _lean_root(args.root)
-    report = Audit(root).run()
+    report = Audit(root, start_time_ns=args.start_time).run()
     if args.json:
         json.dump(report, sys.stdout, indent=2, sort_keys=True)
         print()

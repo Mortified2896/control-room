@@ -83,11 +83,14 @@ printing payload values:
 ./scripts/otel/audit.sh
 ./scripts/otel/audit.sh --json
 ./scripts/otel/audit.sh --root "/path/to/otel-home" --json
+./scripts/otel/audit.sh --start-time 2026-08-19T11:11:11.441276Z --json
 ```
 
 The default OTel home is `$CONTROL_ROOM_OTEL_HOME` or
 `~/Library/Application Support/ControlRoom/otel`. `--root` accepts that home, its `data`
-directory, or the `data/lean` directory directly. The audit opens telemetry read-only,
+directory, or the `data/lean` directory directly. `--start-time` provides a read-only item-level
+window for separating newly produced telemetry from historical records; it reports items skipped
+before the boundary or because they lacked a timestamp. The audit opens telemetry read-only,
 streams newline-delimited export requests, includes rotated `*.json*` files, and reports malformed
 or unreadable input. It never reads the forensic or legacy directories unless a different root is
 passed explicitly. See
