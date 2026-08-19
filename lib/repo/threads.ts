@@ -2,14 +2,7 @@ import "server-only";
 
 import { tryDb, withClient, withTransaction } from "@/lib/db";
 import { titleFromUserMessage } from "@/lib/assistant-ui/thread-messages";
-import type {
-  MessageRating,
-  MessageRow,
-  MessageRole,
-  ThreadHarness,
-  ThreadMode,
-  ThreadRow,
-} from "./types";
+import type { MessageRating, MessageRow, MessageRole, ThreadRow } from "./types";
 
 /**
  * Repo functions for persisted chat threads/messages.
@@ -18,16 +11,11 @@ import type {
  * Write paths throw: callers should report/handle persistence failure explicitly.
  */
 
-const THREAD_COLUMNS =
-  "id, title, project_id, COALESCE(thread_mode, 'chat') AS thread_mode, harness, model_id, created_at, updated_at";
+const THREAD_COLUMNS = "id, title, created_at, updated_at";
 
 type RawThread = {
   id: string;
   title: string;
-  project_id: string | null;
-  thread_mode: ThreadMode | null;
-  harness: ThreadHarness | null;
-  model_id: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -47,10 +35,6 @@ function toThreadRow(r: RawThread): ThreadRow {
   return {
     id: r.id,
     title: r.title,
-    projectId: r.project_id,
-    threadMode: r.thread_mode ?? "chat",
-    harness: r.harness,
-    modelId: r.model_id,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
   };
@@ -73,15 +57,10 @@ function toMessageRow(r: RawMessage): MessageRow {
  * List threads, newest activity first. Returns [] if the DB is missing, the
  * table is missing, or any error occurs.
  */
-export async function listThreads(projectId?: string | null): Promise<ThreadRow[]> {
+export async function listThreads(): Promise<ThreadRow[]> {
   return tryDb(async (c) => {
     const { rows } = await c.query<RawThread>(
-      projectId === null
-        ? `SELECT ${THREAD_COLUMNS} FROM threads WHERE project_id IS NULL ORDER BY updated_at DESC LIMIT 200`
-        : projectId
-          ? `SELECT ${THREAD_COLUMNS} FROM threads WHERE project_id = $1 ORDER BY updated_at DESC LIMIT 200`
-          : `SELECT ${THREAD_COLUMNS} FROM threads ORDER BY updated_at DESC LIMIT 200`,
-      projectId ? [projectId] : [],
+      `SELECT ${THREAD_COLUMNS} FROM threads ORDER BY updated_at DESC LIMIT 200`,
     );
     return rows.map(toThreadRow);
   }, []);
@@ -145,22 +124,13 @@ export async function pingDb(): Promise<boolean> {
 export async function createThread(input: {
   title: string;
   modelId?: string | null;
-  projectId?: string | null;
-  threadMode?: ThreadMode | null;
-  harness?: ThreadHarness | null;
 }): Promise<ThreadRow> {
   return withClient(async (c) => {
     const { rows } = await c.query<RawThread>(
-      `INSERT INTO threads (title, model_id, project_id, thread_mode, harness)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING ${THREAD_COLUMNS}`,
-      [
-        input.title,
-        input.modelId ?? null,
-        input.projectId ?? null,
-        input.threadMode ?? "chat",
-        input.harness ?? null,
-      ],
+      `INSERT INTO threads (title, model_id)
+       VALUES ($1, $2)
+       RETURNING id, title, created_at, updated_at`,
+      [input.title, input.modelId ?? null],
     );
     return toThreadRow(rows[0]);
   });
@@ -179,20 +149,6 @@ export async function threadExists(threadId: string): Promise<boolean> {
   });
 }
 
-export async function deleteThreads(projectId?: string | null): Promise<number> {
-  return withClient(async (c) => {
-    const { rowCount } = await c.query(
-      projectId === null
-        ? "DELETE FROM threads WHERE project_id IS NULL"
-        : projectId
-          ? "DELETE FROM threads WHERE project_id = $1"
-          : "DELETE FROM threads",
-      projectId ? [projectId] : [],
-    );
-    return rowCount ?? 0;
-  });
-}
-
 export async function renameThread(input: {
   threadId: string;
   title: string;
@@ -202,7 +158,7 @@ export async function renameThread(input: {
       `UPDATE threads
        SET title = $2
        WHERE id = $1
-       RETURNING ${THREAD_COLUMNS}`,
+       RETURNING id, title, created_at, updated_at`,
       [input.threadId, input.title.trim()],
     );
     return rows[0] ? toThreadRow(rows[0]) : null;

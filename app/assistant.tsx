@@ -1,21 +1,10 @@
 "use client";
 
-import {
-  AssistantRuntimeProvider,
-  useLocalRuntime,
-  type ThreadMessageLike,
-} from "@assistant-ui/react";
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
-import { routerAbDataSchemas } from "@/lib/assistant-ui/router-ab-data-schemas";
 import { lastAssistantMessageIsCompleteWithToolCalls, type UIMessage } from "ai";
 import { Sidebar } from "@/components/assistant-ui/sidebar";
 import { Thread } from "@/components/assistant-ui/thread";
-import { RouterAbToggle, ReasoningControls } from "@/components/assistant-ui/router-ab-controls";
-import type { RecommenderModelOption } from "@/components/assistant-ui/recommender-model-selector";
-import { UsageQuotasButton } from "@/components/assistant-ui/usage-quotas";
-import { type ReasoningCapability } from "@/lib/providers/capability";
-import type { ThinkingMode } from "@/lib/providers/runtime";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { KbdHint } from "@/components/kbd-hint";
 import { Button } from "@/components/ui/button";
 import { useMediaQuery } from "@/components/layout/use-media-query";
@@ -30,24 +19,6 @@ import {
   isTypingTarget,
 } from "@/lib/shortcuts";
 import { messageRowsToUIMessages } from "@/lib/assistant-ui/thread-messages";
-import {
-  filterModelContextMessages,
-  routingDecisionAuditId,
-  type RoutingDecisionPayload,
-} from "@/lib/assistant-ui/routing-decision";
-import type {
-  RoutingDecisionPanel as RoutingDecisionPanelPayload,
-  RoutingDecisionPanelSelection,
-} from "@/lib/router/routing-decision-panel-types";
-import {
-  executionPayloadModelId,
-  mapHarnessValueToInternal,
-} from "@/lib/router/routing-decision-panel-types";
-import { clientPromptHash as getClientPromptHash } from "@/lib/assistant-ui/prompt-hash";
-import {
-  RoutingDecisionPanel,
-  type RoutingDecisionPanelModelOption,
-} from "@/components/assistant-ui/routing-decision-panel";
 
 /**
  * Click or focus the element that owns a given shortcut target.
@@ -71,24 +42,6 @@ function triggerTarget(target: ShortcutTarget) {
   }
 }
 
-/**
- * Provider-native reasoning-effort value (OpenAI / Codex
- * `reasoning_effort`, MiniMax mapped mode, or any future
- * provider-native value). The chat composer stores the user's
- * pick as this string and sends it verbatim to `/api/chat`.
- * The runtime adapter validates the value against the selected
- * model's `reasoningCapability.options` before forwarding it
- * to the provider.
- */
-type ReasoningLevel = string;
-type ModelTier = "cheap" | "expensive";
-type SelectionSource =
-  | "user_explicit"
-  | "user_accepted"
-  | "project_default"
-  | "registry_default"
-  | "system_fallback";
-
 type ModelOption = {
   providerId: string;
   providerLabel: string;
@@ -96,180 +49,18 @@ type ModelOption = {
   modelLabel: string;
   enabled: boolean;
   reason?: string;
-  accessPath?: "openai_api" | "minimax_api" | "codex_chatgpt";
-  billingLabel?: "OpenAI API billing" | "MiniMax subscription" | "Codex subscription";
-  capabilityKind?: "model_provider" | "agent_backend";
-  description?: string;
-  /**
-   * Canonical reasoning / thinking capability for this model. When
-   * the registry has no metadata for the id (e.g. opted-in
-   * unconfigured model), this is `{ kind: "unknown", control: "unknown" }`
-   * — the UI shows the "unknown" notice rather than a fake dropdown.
-   */
-  reasoningCapability: ReasoningCapability;
-  /**
-   * Derived legacy field — concrete effort-level list, derived from
-   * `reasoningCapability`. Empty for thinking-budget, none, and
-   * unknown capabilities.
-   */
-  reasoningLevels: ReadonlyArray<ReasoningLevel>;
-  tier: ModelTier;
 };
-
-function selectedAccessExplanation(model: ModelOption | undefined): string {
-  if (!model) return "";
-  if (model.accessPath === "minimax_api") {
-    return "Access: MiniMax subscription";
-  }
-  if (model.accessPath === "codex_chatgpt") {
-    return "Access: Codex subscription";
-  }
-  return "Access: OpenAI API billing";
-}
 
 type ModelsResponse = {
   models: ModelOption[];
   defaultModelId: string | null;
-  defaultReasoningLevel: ReasoningLevel;
 };
-
-type PendingRecommendedSend = { id: number; text: string };
-
-type DecisionErrorType =
-  | "usage_limit"
-  | "auth"
-  | "provider_disabled"
-  | "network"
-  | "schema_parse"
-  | "schema_validation"
-  | "empty_output"
-  | "provider_configuration_error"
-  | "not_attempted"
-  | "unknown";
-
-type RouterDecisionErrorDetails = {
-  primary_recommender_model_id: string | null;
-  primary_provider_path: "openai" | "codex" | "minimax" | "unknown";
-  primary_error_type: DecisionErrorType | null;
-  primary_error_message_safe: string | null;
-  fallback_recommender_model_id: string | null;
-  fallback_provider_path: "openai" | "codex" | "minimax" | "unknown" | null;
-  fallback_attempted: boolean;
-  fallback_error_type: DecisionErrorType | null;
-  fallback_error_message_safe: string | null;
-  final_decision_source: "model" | "manual_after_model_error";
-};
-
-type RouterDecision = {
-  runId: string | null;
-  prompt: string;
-  decision: "normal_chat" | "coding_task" | null;
-  reason: string;
-  ambiguity?: "low" | "medium" | "high" | null;
-  signals?: string[];
-  decision_source?: "model" | "manual_after_model_error";
-  recommender_model_id?: string | null;
-  /**
-   * Structured per-rung failure trace from `/api/router/decision`.
-   * Always present on the wire (even on success) so the failure
-   * card can distinguish "no fallback configured" from "fallback
-   * attempted and failed" from "fallback skipped because primary
-   * succeeded".
-   */
-  error_details?: RouterDecisionErrorDetails;
-  estimate_quality: "likely" | "uncertain" | "rough";
-  expected_latency_ms: number;
-  upper_latency_ms: number;
-  started_at: string;
-};
-
-type ModelRecommendation = {
-  /** Route classification from the recommender. */
-  recommendedRoute?: "normal_chat" | "coding_task";
-  /** Why this route was chosen. */
-  routeReason?: string;
-  recommendedModelId: string;
-  recommendedProvider: string;
-  /**
-   * Provider-native reasoning-effort value the recommender picked
-   * for the answer model (`null` when the model does not support
-   * reasoning controls).
-   */
-  recommendedReasoningLevel: string | null;
-  reasoning: string;
-  alternatives?: Array<{
-    modelId: string;
-    provider: string;
-    recommendedReasoningLevel: string | null;
-    reason: string;
-  }>;
-  proposedSubscriptionFallbacks?: Array<{
-    toModelId: string;
-    toProviderId: string;
-    displayLabel: string;
-    reason: string;
-  }>;
-  loudFailure?: boolean;
-  recommendationTelemetry?: {
-    runId: string | null;
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-    completed_at: string | null;
-    actual_latency_ms: number | null;
-    latency_deviation_ms: number | null;
-    latency_deviation_pct: number | null;
-    latency_result: string | null;
-  };
-  diagnostics: {
-    recommenderProvider?: string;
-    recommenderModelId: string;
-    fallback: boolean;
-    fallbackReason: string | null;
-    attemptedCandidateModel?: string | null;
-  };
-};
-
-type RouterSettingsLiteResponse = {
-  normalChatRouterProvider: string;
-  normalChatRouterModelId: string | null;
-  normalChatRecommenderModelId: string | null;
-  normalChatRecommenderReasoningLevel: string;
-  normalChatRecommenderFallbackModelId: string | null;
-  normalChatRecommenderFallbackReasoningLevel: string | null;
-  recommenderModelOptions: ReadonlyArray<RecommenderModelOption>;
-  defaults: {
-    normalChatRouterProvider: string;
-    normalChatRouterModelId: string | null;
-    normalChatRecommenderModelId: string | null;
-    normalChatRecommenderReasoningLevel: string;
-    normalChatRecommenderFallbackModelId: string | null;
-    normalChatRecommenderFallbackReasoningLevel: string | null;
-  };
-};
-
-type ThreadHarness = "pi" | "codex" | "opencode" | "minimax";
-type ThreadMode = "chat" | "coding_task";
 
 type ThreadListItem = {
   id: string;
   title: string;
-  projectId?: string | null;
-  threadMode?: ThreadMode;
-  harness?: ThreadHarness | null;
-  modelId?: string | null;
   createdAt?: string;
   updatedAt?: string;
-};
-
-type ProjectListItem = {
-  id: string;
-  name: string;
-  localPath: string;
-  repoPath?: string;
-  gitRemoteUrl: string | null;
-  gitBranch: string | null;
 };
 
 type MessageRow = {
@@ -294,11 +85,6 @@ type MessagesResponse = {
   configured: boolean;
 };
 
-type ProjectsResponse = {
-  projects: ProjectListItem[];
-  configured: boolean;
-};
-
 // Stub sidebar entries shown before the persisted thread list loads. The
 // "local-" prefix keeps them on the offline-only code path (see isLocalThreadId
 // below and the same-prefix guards in components/assistant-ui/thread.tsx) so
@@ -318,574 +104,20 @@ function isLocalThreadId(id: string | null | undefined): boolean {
   return !id || id.startsWith("local-");
 }
 
-function uiMessagesToThreadMessageLikes(messages: readonly UIMessage[]): ThreadMessageLike[] {
-  return messages
-    .filter(
-      (message) =>
-        message.role === "user" || message.role === "assistant" || message.role === "system",
-    )
-    .map((message) => {
-      const routingParts = message.parts.filter(
-        (part) =>
-          part &&
-          typeof part === "object" &&
-          (part as { type?: unknown }).type === "data-routing-decision",
-      );
-      return {
-        id: message.id,
-        role: message.role,
-        content: routingParts.length
-          ? (message.parts.filter(
-              (part) =>
-                (part &&
-                  typeof part === "object" &&
-                  (part as { type?: unknown }).type === "data-routing-decision") ||
-                (part && typeof part === "object" && (part as { type?: unknown }).type === "text"),
-            ) as never)
-          : message.parts
-              .filter(
-                (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
-                  part.type === "text",
-              )
-              .map((part) => ({ type: "text" as const, text: part.text })),
-      };
-    });
-}
-
-function extractTextFromLocalMessages(messages: readonly unknown[]): string {
-  const last = [...messages].reverse().find((m) => (m as { role?: unknown }).role === "user");
-  const content = (last as { content?: unknown } | undefined)?.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => {
-      if (!part || typeof part !== "object") return "";
-      const p = part as { type?: unknown; text?: unknown };
-      return p.type === "text" && typeof p.text === "string" ? p.text : "";
-    })
-    .join("\n")
-    .trim();
-}
-
-const CodexChatPane: FC<{
-  modelId: string | null;
-  threadId: string | null;
-  initialMessages: UIMessage[];
-  notesDisabled: boolean;
-  routerAbOn: boolean;
-  activeProjectId: string | null;
-  activeProject: ProjectListItem | null;
-  threadMode?: ThreadMode;
-  harness?: ThreadHarness | null;
-  onFinish: () => void;
-  onEnsureCodingThread?: () => Promise<string | null>;
-  /**
-   * Recommender props are forwarded to the inner `Thread` so the
-   * Codex pane honors the chat-level "Recommend on" toggle. Without
-   * these the composer would send every message straight to the
-   * Codex backend — bypassing the recommender's fallback chain
-   * (primary → configured_fallback) and silently surfacing raw
-   * Codex CLI stderr as a normal assistant message whenever Codex
-   * itself failed (e.g. usage-limit). The brief is explicit:
-   * "Recommend ON means run recommender engine first. manual model
-   * is only used when Recommend is OFF or user chooses Keep current."
-   */
-  recommenderEnabled?: boolean;
-  onToggleRecommender?: (next: boolean) => void;
-  routerDecision?: RouterDecision | null;
-  routerDecisionLoading?: boolean;
-  routerDecisionEta?: {
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null;
-  recommendation?: ModelRecommendation | null;
-  recommendationLoading?: boolean;
-  recommendationEta?: {
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null;
-  routingPanel?: RoutingDecisionPanelPayload | null;
-  routingPanelLoudFailure?: boolean;
-  routingPanelDraftText?: string;
-  routingPanelExecutionEligibleModels?: ReadonlyArray<RoutingDecisionPanelModelOption>;
-  onSendWithRouting?: (selection: RoutingDecisionPanelSelection) => void;
-  onSendDefault?: () => void;
-  onDismissRoutingPanel?: () => void;
-  onOpenRoutingPanel?: (prompt: string) => void;
-  manualModelSummary?: string;
-  recommenderEngineSummary?: string;
-  fallbackEngineSummary?: string;
-  onDecisionAction?: (
-    action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
-    comment: string,
-  ) => void;
-  onRecommend?: (message: string) => void;
-  onManualRoutingDecision?: (message: string) => RoutingDecisionPayload | null;
-  onUseRecommendation?: (draftText?: string) => void;
-  onKeepCurrent?: (draftText?: string) => void;
-  pendingRecommendedSend?: PendingRecommendedSend | null;
-  onPendingRecommendedSendConsumed?: (id: number) => void;
-  onCodingRunComplete?: (threadId: string | null) => void;
-  harnessRegistry?: ReadonlyArray<{
-    id: "codex_cli" | "minimax_cli";
-    displayName: string;
-    providerPath: string;
-    billingPath: string;
-    requiresProjectFolder: boolean;
-    canModifyFiles: boolean;
-    supportsTokenUsage: boolean;
-    supportsReasoningLevels: boolean;
-    defaultModelId: string;
-    allowedModelIds: ReadonlyArray<string>;
-    defaultReasoningLevel: string;
-    status: "available" | "unavailable" | "unknown";
-    unavailableReason: string | null;
-  }> | null;
-  codingHarnessRecommendation?: CodingHarnessRecommendation | null;
-  codingHarnessRecommendationLoading?: boolean;
-  codingHarnessRecommendationEta?: {
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null;
-  codingHarnessRecommendationError?: string | null;
-  decisionApproved?: "coding_task" | null;
-  onSendToCodingHarness?: (input: {
-    harnessId: "codex_cli" | "minimax_cli";
-    modelId: string;
-    reasoningLevel: string;
-  }) => void;
-  onAnswerInChatInstead?: () => void;
-}> = ({
-  modelId,
-  threadId,
-  initialMessages,
-  notesDisabled,
-  routerAbOn,
-  activeProjectId,
-  activeProject,
-  threadMode,
-  harness,
-  onFinish,
-  recommenderEnabled = false,
-  onToggleRecommender,
-  routerDecision = null,
-  routerDecisionLoading = false,
-  routerDecisionEta = null,
-  recommendation = null,
-  recommendationLoading = false,
-  recommendationEta = null,
-  routingPanel = null,
-  routingPanelLoudFailure = false,
-  routingPanelDraftText = "",
-  routingPanelExecutionEligibleModels,
-  onSendWithRouting,
-  onSendDefault,
-  onDismissRoutingPanel,
-  onOpenRoutingPanel,
-  manualModelSummary,
-  recommenderEngineSummary,
-  fallbackEngineSummary,
-  onDecisionAction,
-  onRecommend,
-  onManualRoutingDecision,
-  onUseRecommendation,
-  onKeepCurrent,
-  pendingRecommendedSend = null,
-  onPendingRecommendedSendConsumed,
-  onEnsureCodingThread,
-  harnessRegistry = null,
-  codingHarnessRecommendation = null,
-  codingHarnessRecommendationLoading = false,
-  codingHarnessRecommendationEta = null,
-  codingHarnessRecommendationError = null,
-  decisionApproved = null,
-  onSendToCodingHarness,
-  onAnswerInChatInstead,
-  onCodingRunComplete,
-}) => {
-  const codexModel = modelId?.startsWith("codex:")
-    ? modelId.slice("codex:".length)
-    : "gpt-5.4-mini";
-  const runtime = useLocalRuntime(
-    {
-      async run({ messages, abortSignal }) {
-        const message = extractTextFromLocalMessages(messages);
-        const response = await fetch("/api/agent-backends/codex/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, model: codexModel }),
-          signal: abortSignal,
-        });
-        const data = (await response.json()) as {
-          ok: boolean;
-          responseText: string | null;
-          error: string | null;
-          errorKind?: string | null;
-        };
-        onFinish();
-        if (!data.ok) {
-          // THROW instead of returning the error as text. The old
-          // behavior of returning `Codex backend error: <stderr>` as
-          // a normal assistant text part is what made the user's
-          // chat history look like the Codex CLI was answering them.
-          // assistant-ui attaches thrown errors to the message part
-          // so the existing message-error UI can render a clean
-          // final-send failure card (kind + user-facing copy) instead
-          // of normal assistant prose. The route never forwards raw
-          // stderr — `data.error` is already sanitized by
-          // `classifyCodexFailure` in `lib/codex/runner.ts`.
-          const kind = data.errorKind ?? "internal";
-          const err = new Error(data.error ?? "Codex request failed");
-          (err as Error & { codexErrorKind?: string; codexErrorCategory?: string }).codexErrorKind =
-            kind;
-          (
-            err as Error & { codexErrorKind?: string; codexErrorCategory?: string }
-          ).codexErrorCategory = "codex_final_send_failed";
-          throw err;
-        }
-        return {
-          content: [
-            {
-              type: "text",
-              text: data.responseText ?? "",
-            },
-          ],
-        };
-      },
-    },
-    { initialMessages: uiMessagesToThreadMessageLikes(initialMessages) },
-  );
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread
-        threadId={threadId}
-        activeProjectId={activeProjectId}
-        activeProject={activeProject}
-        threadMode={threadMode}
-        harness={harness}
-        notesDisabled={notesDisabled}
-        routerAbOn={routerAbOn}
-        recommenderEnabled={recommenderEnabled}
-        onToggleRecommender={onToggleRecommender}
-        routerDecision={routerDecision}
-        routerDecisionLoading={routerDecisionLoading}
-        routerDecisionEta={routerDecisionEta}
-        recommendation={recommendation}
-        recommendationLoading={recommendationLoading}
-        recommendationEta={recommendationEta}
-        routingPanel={routingPanel}
-        routingPanelLoudFailure={routingPanelLoudFailure}
-        routingPanelDraftText={routingPanelDraftText}
-        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-        onSendWithRouting={onSendWithRouting}
-        onSendDefault={onSendDefault}
-        onDismissRoutingPanel={onDismissRoutingPanel}
-        onOpenRoutingPanel={onOpenRoutingPanel}
-        manualModelSummary={manualModelSummary}
-        recommenderEngineSummary={recommenderEngineSummary}
-        fallbackEngineSummary={fallbackEngineSummary}
-        onDecisionAction={onDecisionAction}
-        onRecommend={onRecommend}
-        onManualRoutingDecision={onManualRoutingDecision}
-        onUseRecommendation={onUseRecommendation}
-        onKeepCurrent={onKeepCurrent}
-        pendingRecommendedSend={pendingRecommendedSend}
-        onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
-        onEnsureCodingThread={onEnsureCodingThread}
-        onCodingRunComplete={onCodingRunComplete}
-        harnessRegistry={harnessRegistry}
-        codingHarnessRecommendation={codingHarnessRecommendation}
-        codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
-        codingHarnessRecommendationEta={codingHarnessRecommendationEta}
-        codingHarnessRecommendationError={codingHarnessRecommendationError}
-        decisionApproved={decisionApproved}
-        onSendToCodingHarness={onSendToCodingHarness}
-        onAnswerInChatInstead={onAnswerInChatInstead}
-      />
-    </AssistantRuntimeProvider>
-  );
-};
-
 const ChatPane: FC<{
   modelId: string | null;
   threadId: string | null;
   initialMessages: UIMessage[];
   notesDisabled: boolean;
-  routerAbOn: boolean;
-  reasoningLevel: string;
-  thinkingMode: ThinkingMode;
-  selectionSource: SelectionSource;
-  models: ModelOption[];
-  activeProjectId: string | null;
-  activeProject: ProjectListItem | null;
-  threadMode?: ThreadMode;
-  harness?: ThreadHarness | null;
   onFinish: () => void;
-  recommenderEnabled?: boolean;
-  onToggleRecommender?: (next: boolean) => void;
-  routerDecision?: RouterDecision | null;
-  routerDecisionLoading?: boolean;
-  routerDecisionEta?: {
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null;
-  recommendation?: ModelRecommendation | null;
-  recommendationLoading?: boolean;
-  recommendationEta?: {
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null;
-  routingPanel?: RoutingDecisionPanelPayload | null;
-  routingPanelLoudFailure?: boolean;
-  routingPanelDraftText?: string;
-  routingPanelExecutionEligibleModels?: ReadonlyArray<RoutingDecisionPanelModelOption>;
-  onSendWithRouting?: (selection: RoutingDecisionPanelSelection) => void;
-  onSendDefault?: () => void;
-  onDismissRoutingPanel?: () => void;
-  onOpenRoutingPanel?: (prompt: string) => void;
-  manualModelSummary?: string;
-  recommenderEngineSummary?: string;
-  fallbackEngineSummary?: string;
-  onDecisionAction?: (
-    action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
-    comment: string,
-  ) => void;
-  onRecommend?: (message: string) => void;
-  onManualRoutingDecision?: (message: string) => RoutingDecisionPayload | null;
-  onUseRecommendation?: (draftText?: string) => void;
-  onKeepCurrent?: (draftText?: string) => void;
-  pendingRecommendedSend?: PendingRecommendedSend | null;
-  pendingRoutingDecision?: RoutingDecisionPayload | null;
-  onPendingRecommendedSendConsumed?: (id: number) => void;
-  /**
-   * Called after `prepareSendMessagesRequest` has copied the routing
-   * decision into the request body. Used to clear React state that
-   * powered the one-shot ref lifecycle.
-   */
-  onRoutingDecisionRequestBodyPrepared?: (auditId: string | null) => void;
-  /**
-   * Ref-backed one-shot for the next send. Passed from the parent
-   * `Assistant` component so `prepareSendMessagesRequest` can access
-   * the routing decision even after React state is cleared.
-   */
-  routingDecisionForNextSendRef?: React.MutableRefObject<RoutingDecisionPayload | null>;
-  onEnsureCodingThread?: () => Promise<string | null>;
-  onCodingRunComplete?: (threadId: string | null) => void;
-  /**
-   * Live harness registry snapshot. Passed through to the inner
-   * `Thread` / `CodexChatPane` so the generic coding-harness
-   * approval card can render Codex CLI / MiniMax CLI with current
-   * install + auth status.
-   */
-  harnessRegistry?: ReadonlyArray<{
-    id: "codex_cli" | "minimax_cli";
-    displayName: string;
-    providerPath: string;
-    billingPath: string;
-    requiresProjectFolder: boolean;
-    canModifyFiles: boolean;
-    supportsTokenUsage: boolean;
-    supportsReasoningLevels: boolean;
-    defaultModelId: string;
-    allowedModelIds: ReadonlyArray<string>;
-    defaultReasoningLevel: string;
-    status: "available" | "unavailable" | "unknown";
-    unavailableReason: string | null;
-  }> | null;
-  codingHarnessRecommendation?: CodingHarnessRecommendation | null;
-  codingHarnessRecommendationLoading?: boolean;
-  codingHarnessRecommendationEta?: {
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null;
-  codingHarnessRecommendationError?: string | null;
-  decisionApproved?: "coding_task" | null;
-  onSendToCodingHarness?: (input: {
-    harnessId: "codex_cli" | "minimax_cli";
-    modelId: string;
-    reasoningLevel: string;
-  }) => void;
-  onAnswerInChatInstead?: () => void;
-}> = ({
-  modelId,
-  threadId,
-  initialMessages,
-  notesDisabled,
-  routerAbOn,
-  reasoningLevel,
-  thinkingMode,
-  selectionSource,
-  models,
-  activeProjectId,
-  activeProject,
-  threadMode,
-  harness,
-  onFinish,
-  recommenderEnabled = false,
-  onToggleRecommender,
-  routerDecision = null,
-  routerDecisionLoading = false,
-  routerDecisionEta = null,
-  recommendation = null,
-  recommendationLoading = false,
-  recommendationEta = null,
-  routingPanel = null,
-  routingPanelLoudFailure = false,
-  routingPanelDraftText = "",
-  routingPanelExecutionEligibleModels,
-  onSendWithRouting,
-  onSendDefault,
-  onDismissRoutingPanel,
-  onOpenRoutingPanel,
-  manualModelSummary,
-  recommenderEngineSummary,
-  fallbackEngineSummary,
-  onDecisionAction,
-  onRecommend,
-  onManualRoutingDecision,
-  onUseRecommendation,
-  onKeepCurrent,
-  pendingRecommendedSend = null,
-  pendingRoutingDecision = null,
-  onPendingRecommendedSendConsumed,
-  onRoutingDecisionRequestBodyPrepared,
-  routingDecisionForNextSendRef,
-  onEnsureCodingThread,
-  onCodingRunComplete,
-  harnessRegistry = null,
-  codingHarnessRecommendation = null,
-  codingHarnessRecommendationLoading = false,
-  codingHarnessRecommendationEta = null,
-  codingHarnessRecommendationError = null,
-  decisionApproved = null,
-  onSendToCodingHarness,
-  onAnswerInChatInstead,
-}) => {
-  const selectedModel = models.find((m) => m.modelId === modelId) ?? null;
-  if (selectedModel?.providerId === "codex") {
-    return (
-      <CodexChatPane
-        modelId={modelId}
-        threadId={threadId}
-        initialMessages={initialMessages}
-        notesDisabled={notesDisabled}
-        routerAbOn={false}
-        activeProjectId={activeProjectId}
-        activeProject={activeProject}
-        threadMode={threadMode}
-        harness={harness}
-        onFinish={onFinish}
-        // Forward the recommender props so the Codex pane honors
-        // the chat-level "Recommend on" toggle. See CodexChatPane's
-        // docstring for the full rationale.
-        recommenderEnabled={recommenderEnabled}
-        onToggleRecommender={onToggleRecommender}
-        routerDecision={routerDecision}
-        routerDecisionLoading={routerDecisionLoading}
-        routerDecisionEta={routerDecisionEta}
-        recommendation={recommendation}
-        recommendationLoading={recommendationLoading}
-        recommendationEta={recommendationEta}
-        routingPanel={routingPanel}
-        routingPanelLoudFailure={routingPanelLoudFailure}
-        routingPanelDraftText={routingPanelDraftText}
-        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-        onSendWithRouting={onSendWithRouting}
-        onSendDefault={onSendDefault}
-        onDismissRoutingPanel={onDismissRoutingPanel}
-        onOpenRoutingPanel={onOpenRoutingPanel}
-        manualModelSummary={manualModelSummary}
-        recommenderEngineSummary={recommenderEngineSummary}
-        fallbackEngineSummary={fallbackEngineSummary}
-        onDecisionAction={onDecisionAction}
-        onRecommend={onRecommend}
-        onManualRoutingDecision={onManualRoutingDecision}
-        onUseRecommendation={onUseRecommendation}
-        onKeepCurrent={onKeepCurrent}
-        pendingRecommendedSend={pendingRecommendedSend}
-        onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
-        onEnsureCodingThread={onEnsureCodingThread}
-        onCodingRunComplete={onCodingRunComplete}
-        harnessRegistry={harnessRegistry}
-        codingHarnessRecommendation={codingHarnessRecommendation}
-        codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
-        codingHarnessRecommendationEta={codingHarnessRecommendationEta}
-        codingHarnessRecommendationError={codingHarnessRecommendationError}
-        decisionApproved={decisionApproved}
-        onSendToCodingHarness={onSendToCodingHarness}
-        onAnswerInChatInstead={onAnswerInChatInstead}
-      />
-    );
-  }
-  const effectiveRouterAbOn = routerAbOn && selectedModel?.providerId === "openai";
+}> = ({ modelId, threadId, initialMessages, notesDisabled, onFinish }) => {
   const transport = useMemo(
     () =>
       new AssistantChatTransport({
         api: "/api/chat",
-        // Static body bits only. We use `prepareSendMessagesRequest` to inject
-        // the *current* reasoning level + thinkingMode + routerAb toggle at
-        // send time so changes between sends are reflected in the next
-        // request. The chat route picks the right wire payload based on the
-        // model's `reasoningCapability` (effort_levels → reasoningEffort,
-        // thinking_budget → minimax.reasoning.enabled, etc.).
         body: { modelId, threadId },
-        prepareSendMessagesRequest: ({ body, messages }) => {
-          // Prefer the one-shot ref (set by handleUseRecommendation) over
-          // React state. This prevents a race where state was cleared
-          // before the transport built the request body.
-          const routingDecision =
-            routingDecisionForNextSendRef?.current ?? pendingRoutingDecision;
-
-          const result = {
-            body: {
-              ...body,
-              // Routing-decision bubbles are UI-only audit messages. Keep
-              // them out of the execution model context before the request
-              // leaves the browser; /api/chat also filters defensively.
-              messages: filterModelContextMessages([...messages]),
-              modelId,
-              threadId,
-              // Send the provider-native value verbatim — the chat
-              // route's capability validator rejects stale values
-              // before forwarding to the runtime adapter.
-              reasoningOption: reasoningLevel,
-              thinkingMode,
-              selectionSource,
-              routerAb: effectiveRouterAbOn,
-              routingDecision,
-            },
-          };
-
-          // Consume the one-shot ref so the next send (manual or otherwise)
-          // starts with a clean slate and cannot accidentally reuse the
-          // previous routing decision.
-          const consumed = routingDecisionForNextSendRef?.current;
-          if (routingDecisionForNextSendRef) {
-            routingDecisionForNextSendRef.current = null;
-          }
-
-          // Notify the parent so it can clear React state after the body
-          // has been built. The auditId is the canonical identity for
-          // matching which routing decision was consumed.
-          onRoutingDecisionRequestBodyPrepared?.(consumed?.auditId ?? null);
-
-          return result;
-        },
       }),
-    [modelId, threadId, reasoningLevel, thinkingMode, selectionSource, effectiveRouterAbOn, pendingRoutingDecision, onRoutingDecisionRequestBodyPrepared],
+    [modelId, threadId],
   );
 
   const runtime = useChatRuntime({
@@ -894,79 +126,11 @@ const ChatPane: FC<{
     onFinish,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     transport,
-    // Type-validate the Router A/B data parts emitted by /api/chat and
-    // keep them attached to the assistant message state so the panel can
-    // pick them up via `useAuiState((s) => s.message.parts)`.
-    dataPartSchemas: routerAbDataSchemas,
-    // Consecutive assistant messages must render as SEPARATE bubbles.
-    // The client appends the routing decision R as its own assistant
-    // message via `aui.thread().append({ role: "assistant", startRun: false })`
-    // inside the `thread.runStart` handler (see
-    // `appendQueuedRoutingDecision` in `components/assistant-ui/thread.tsx`).
-    // The streamed model response A is then appended by the AI SDK
-    // transport as a second assistant message in the same branch.
-    //
-    // The default `joinStrategy: "concat-content"` in
-    // `useExternalMessageConverter` collapses consecutive assistant
-    // messages into a single thread message, which renders R and A
-    // inside one bubble and hides the model's text inside the routing
-    // decision card. Setting `joinStrategy: "none"` keeps each
-    // assistant message as its own thread message, so R and A render
-    // as two distinct bubbles in the order they were inserted
-    // (user → R → A). The same rule applies to the hydration path
-    // (DB rows re-loaded as `initialMessages`), so the visible order
-    // is identical between the live view and a hard refresh.
-    joinStrategy: "none",
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread
-        threadId={threadId}
-        activeProjectId={activeProjectId}
-        activeProject={activeProject}
-        threadMode={threadMode}
-        harness={harness}
-        notesDisabled={notesDisabled}
-        routerAbOn={effectiveRouterAbOn}
-        recommenderEnabled={recommenderEnabled}
-        onToggleRecommender={onToggleRecommender}
-        routerDecision={routerDecision}
-        routerDecisionLoading={routerDecisionLoading}
-        routerDecisionEta={routerDecisionEta}
-        recommendation={recommendation}
-        recommendationLoading={recommendationLoading}
-        recommendationEta={recommendationEta}
-        routingPanel={routingPanel}
-        routingPanelLoudFailure={routingPanelLoudFailure}
-        routingPanelDraftText={routingPanelDraftText}
-        routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-        onSendWithRouting={onSendWithRouting}
-        onSendDefault={onSendDefault}
-        onDismissRoutingPanel={onDismissRoutingPanel}
-        onOpenRoutingPanel={onOpenRoutingPanel}
-        manualModelSummary={manualModelSummary}
-        recommenderEngineSummary={recommenderEngineSummary}
-        fallbackEngineSummary={fallbackEngineSummary}
-        onDecisionAction={onDecisionAction}
-        onRecommend={onRecommend}
-        onManualRoutingDecision={onManualRoutingDecision}
-        onUseRecommendation={onUseRecommendation}
-        onKeepCurrent={onKeepCurrent}
-        pendingRecommendedSend={pendingRecommendedSend}
-        onPendingRecommendedSendConsumed={onPendingRecommendedSendConsumed}
-        onRoutingDecisionRequestBodyPrepared={onRoutingDecisionRequestBodyPrepared}
-        onEnsureCodingThread={onEnsureCodingThread}
-        onCodingRunComplete={onCodingRunComplete}
-        harnessRegistry={harnessRegistry}
-        codingHarnessRecommendation={codingHarnessRecommendation}
-        codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
-        codingHarnessRecommendationEta={codingHarnessRecommendationEta}
-        codingHarnessRecommendationError={codingHarnessRecommendationError}
-        decisionApproved={decisionApproved}
-        onSendToCodingHarness={onSendToCodingHarness}
-        onAnswerInChatInstead={onAnswerInChatInstead}
-      />
+      <Thread threadId={threadId} notesDisabled={notesDisabled} />
     </AssistantRuntimeProvider>
   );
 };
@@ -998,7 +162,6 @@ const ModelSelector: FC<{
     : loading
       ? "Loading models…"
       : "Select model";
-  const selectedExplanation = selectedAccessExplanation(selected);
 
   const modelOptions = (() => {
     // Assign ⌘1..⌘9 to the first 9 *enabled* models in display order.
@@ -1039,11 +202,9 @@ const ModelSelector: FC<{
         >
           <div className="min-w-0 flex-1">
             <div className="truncate font-medium">{m.modelLabel}</div>
-            <div className="flex flex-wrap items-center gap-1 truncate text-[10px] text-muted-foreground">
-              <span>{m.billingLabel ?? m.providerLabel}</span>
-              {m.accessPath === "minimax_api" ? <span>· MiniMax key</span> : null}
-              {m.accessPath === "openai_api" ? <span>· OpenAI key</span> : null}
-              {disabled && m.reason ? <span>— {m.reason}</span> : null}
+            <div className="truncate text-[10px] text-muted-foreground">
+              {m.providerLabel}
+              {disabled && m.reason ? ` — ${m.reason}` : ""}
             </div>
           </div>
           {shortcutIndex !== undefined && (
@@ -1058,23 +219,20 @@ const ModelSelector: FC<{
   })();
 
   return (
-    <div ref={ref} className="relative flex min-w-0 items-center">
+    <div
+      ref={ref}
+      className="relative flex items-center border-b border-border/60 bg-background px-3 py-2 sm:px-4"
+    >
       <button
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         data-shortcut-target={SHORTCUT_TARGETS.selectModel}
-        data-testid="aui-model-selector-trigger"
         aria-label={`Select model (currently ${triggerLabel}; press M)`}
-        className="aui-model-selector-trigger relative inline-flex min-h-10 w-full max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-8 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:w-auto sm:pr-10"
+        className="aui-model-selector-trigger relative inline-flex min-h-10 max-w-full items-center gap-1.5 rounded-md border border-border/50 bg-muted/20 py-1 pl-2.5 pr-8 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground sm:min-h-0 sm:pr-10"
         disabled={loading}
       >
         <span className="size-1.5 rounded-full bg-emerald-500/80" aria-hidden />
         <span className="truncate">{triggerLabel}</span>
-        {selected?.billingLabel ? (
-          <span className="hidden shrink-0 rounded bg-background/70 px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline">
-            {selected.billingLabel}
-          </span>
-        ) : null}
         <ChevronDown className="size-3 shrink-0 opacity-70" />
         <KbdHint
           combo="m"
@@ -1082,17 +240,8 @@ const ModelSelector: FC<{
         />
       </button>
 
-      {selectedExplanation ? (
-        <div
-          className="ml-2 hidden min-w-0 truncate text-[11px] text-muted-foreground md:block"
-          data-testid="chat-model-access-label"
-        >
-          {selectedExplanation}
-        </div>
-      ) : null}
-
       {open && !isPhone && (
-        <div className="absolute left-0 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
+        <div className="absolute left-4 top-full z-50 mt-1 max-h-80 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
           {models.length === 0 && !loading && (
             <div className="px-3 py-2 text-xs text-muted-foreground">No models available</div>
           )}
@@ -1110,11 +259,10 @@ const ModelSelector: FC<{
                   Select model
                 </DialogPrimitive.Title>
                 <DialogPrimitive.Description className="mt-1 text-xs text-muted-foreground">
-                  Choose the model/backend for this chat. Access path and billing are shown for each
-                  option.
+                  Choose the model for this chat.
                 </DialogPrimitive.Description>
               </div>
-              <div className="min-h-0 overflow-y-auto py-1">
+              <div className="overflow-y-auto py-1">
                 {models.length === 0 && !loading && (
                   <div className="px-4 py-3 text-xs text-muted-foreground">No models available</div>
                 )}
@@ -1124,114 +272,6 @@ const ModelSelector: FC<{
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
-    </div>
-  );
-};
-
-/**
- * Chat top controls bar (manual/default chat model).
- *
- * A single horizontal rounded bar at the top of the chat surface that
- * combines the manual chat model controls. From left to right:
- *
- *   [ status dot ] [ Model selector ] [ Access: … ] [ Thinking: … ] [ Router A/B … ] [ theme button ]
- *
- * The bar is the *only* place the manual chat model controls live —
- * the recommender controls render as a separate card below, so the
- * two control surfaces never co-mingle. We deliberately do NOT show
- * a large "Manual chat model" label here; the title is available on
- * the wrapper's `title` attribute for users who hover, but the bar
- * itself stays compact per the brief.
- *
- * The reasoning / thinking dropdown is always visible (Side A always
- * uses the user's pick) and only lists options supported by the
- * currently-selected model — see `ReasoningControls` in
- * `router-ab-controls.tsx`. The Router A/B toggle / "OpenAI-only"
- * notice reflects whether the selected model can run the router
- * (only OpenAI API rows support it).
- */
-const ChatTopBar: FC<{
-  models: ModelOption[];
-  selectedModelId: string | null;
-  onModelChange: (modelId: string) => void;
-  modelsLoading: boolean;
-  reasoningLevel: string;
-  onReasoningChange: (next: string) => void;
-  thinkingMode: ThinkingMode;
-  onThinkingModeChange: (next: ThinkingMode) => void;
-  routerAbOn: boolean;
-  onRouterAbChange: (next: boolean) => void;
-}> = ({
-  models,
-  selectedModelId,
-  onModelChange,
-  modelsLoading,
-  reasoningLevel,
-  onReasoningChange,
-  thinkingMode,
-  onThinkingModeChange,
-  routerAbOn,
-  onRouterAbChange,
-}) => {
-  const selectedModel = useMemo(
-    () => models.find((m) => m.modelId === selectedModelId) ?? null,
-    [models, selectedModelId],
-  );
-  const capability: ReasoningCapability | null = selectedModel
-    ? selectedModel.reasoningCapability
-    : null;
-  const supportedLevels: ReadonlyArray<string> = selectedModel
-    ? selectedModel.reasoningLevels
-    : ["low"];
-  const supportsRouterAb = selectedModel?.providerId === "openai";
-  const openAiApiEnabled = models.some(
-    (m) => m.enabled && (m.accessPath === "openai_api" || m.providerId === "openai"),
-  );
-  // If the persisted reasoning level is no longer supported by the new
-  // model, snap to the cheapest supported level so the dropdown stays sane.
-  useEffect(() => {
-    if (supportedLevels.includes(reasoningLevel)) return;
-    if (supportedLevels.length === 0) return;
-    onReasoningChange(supportedLevels[0]);
-  }, [supportedLevels, reasoningLevel, onReasoningChange]);
-  useEffect(() => {
-    if (supportsRouterAb || !routerAbOn) return;
-    onRouterAbChange(false);
-  }, [supportsRouterAb, routerAbOn, onRouterAbChange]);
-  return (
-    <div
-      className="grid grid-cols-2 items-center gap-2 border-b border-border/60 bg-background px-3 py-2 sm:flex sm:flex-wrap sm:px-4 sm:py-2.5"
-      data-testid="manual-chat-model-controls"
-      title="Manual chat model — used when Recommend is off or when you choose Keep current."
-      aria-label="Manual chat model controls"
-    >
-      <ModelSelector
-        models={models}
-        selectedModelId={selectedModelId}
-        onModelChange={onModelChange}
-        loading={modelsLoading}
-      />
-      <ReasoningControls
-        capability={capability}
-        reasoningLevel={reasoningLevel}
-        onReasoningChange={onReasoningChange}
-        thinkingMode={thinkingMode}
-        onThinkingModeChange={onThinkingModeChange}
-      />
-      {supportsRouterAb ? (
-        <RouterAbToggle on={routerAbOn} onToggle={onRouterAbChange} />
-      ) : (
-        <div
-          className="flex min-h-10 items-center justify-center rounded-md border border-border/60 bg-muted/20 px-2 py-1 text-center text-[11px] font-medium text-muted-foreground sm:min-h-0 sm:rounded-full sm:px-3"
-          data-testid="router-ab-openai-only-pill"
-        >
-          Router A/B is OpenAI-only.
-        </div>
-      )}
-      <UsageQuotasButton openAiApiEnabled={openAiApiEnabled} />
-      <div className="ml-auto hidden shrink-0 sm:block">
-        <ThemeToggle />
-      </div>
     </div>
   );
 };
@@ -1256,52 +296,26 @@ const MobileHeader: FC<{
         <div className="truncate text-sm font-semibold text-foreground">Control Room</div>
         <div className="truncate text-[11px] text-muted-foreground/70">{activeThreadTitle}</div>
       </div>
-      <ThemeToggle className="sm:hidden" />
     </header>
   );
 };
 
 const SidebarPanel: FC<{
   threads: { id: string; title: string }[];
-  projects: ProjectListItem[];
-  activeProjectId: string | null;
-  onSelectProject: (id: string | null) => void;
-  onOpenProject: (localPath: string) => Promise<boolean>;
   activeThreadId: string;
   onSelectThread: (id: string) => void;
   onNewThread: () => void;
-  onDeleteAllThreads: () => void;
-  deleteAllDisabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}> = ({
-  threads,
-  projects,
-  activeProjectId,
-  onSelectProject,
-  onOpenProject,
-  activeThreadId,
-  onSelectThread,
-  onNewThread,
-  onDeleteAllThreads,
-  deleteAllDisabled,
-  open,
-  onOpenChange,
-}) => {
+}> = ({ threads, activeThreadId, onSelectThread, onNewThread, open, onOpenChange }) => {
   return (
     <>
       <div className="hidden h-full shrink-0 md:block">
         <Sidebar
           threads={threads}
-          projects={projects}
-          activeProjectId={activeProjectId}
-          onSelectProject={onSelectProject}
-          onOpenProject={onOpenProject}
           activeThreadId={activeThreadId}
           onSelectThread={onSelectThread}
           onNewThread={onNewThread}
-          onDeleteAllThreads={onDeleteAllThreads}
-          deleteAllDisabled={deleteAllDisabled}
         />
       </div>
 
@@ -1315,15 +329,9 @@ const SidebarPanel: FC<{
             </DialogPrimitive.Description>
             <Sidebar
               threads={threads}
-              projects={projects}
-              activeProjectId={activeProjectId}
-              onSelectProject={onSelectProject}
-              onOpenProject={onOpenProject}
               activeThreadId={activeThreadId}
               onSelectThread={onSelectThread}
               onNewThread={onNewThread}
-              onDeleteAllThreads={onDeleteAllThreads}
-              deleteAllDisabled={deleteAllDisabled}
               onClose={() => onOpenChange(false)}
             />
           </DialogPrimitive.Content>
@@ -1333,52 +341,6 @@ const SidebarPanel: FC<{
   );
 };
 
-/**
- * Generic coding-harness recommendation returned by
- * `/api/coding-harness/recommend`. The recommendation carries the
- * model id + reasoning level the harness should run with, the task
- * type, and a `fallback` flag.
- */
-type CodingHarnessRecommendation = {
-  taskType: "coding" | "debugging" | "repo_edit" | "code_review" | "other";
-  executionTarget: "coding_harness";
-  recommendedHarness: "codex_cli" | "minimax_cli";
-  recommendedModelId: string;
-  recommendedReasoningLevel: string;
-  reason: string;
-  requiresProjectFolder: true;
-  requiresUserApproval: true;
-  alternatives: Array<{
-    harness: "codex_cli" | "minimax_cli";
-    modelId: string;
-    reasoningLevel: string;
-    reason: string;
-  }>;
-  fallback?: boolean;
-  fallbackReason?: "model_not_listed" | "provider_call_failed" | "no_harness_available" | null;
-};
-
-/**
- * Snapshot of one registered coding harness returned by the
- * `/api/coding-runs` GET endpoint. Mirrors the
- * `HarnessRegistryEntry` shape from `lib/harness/registry.ts`.
- */
-type HarnessRegistryView = {
-  id: "codex_cli" | "minimax_cli";
-  displayName: string;
-  providerPath: string;
-  billingPath: string;
-  requiresProjectFolder: boolean;
-  canModifyFiles: boolean;
-  supportsTokenUsage: boolean;
-  supportsReasoningLevels: boolean;
-  defaultModelId: string;
-  allowedModelIds: ReadonlyArray<string>;
-  defaultReasoningLevel: string;
-  status: "available" | "unavailable" | "unknown";
-  unavailableReason: string | null;
-};
-
 export const Assistant = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -1386,258 +348,24 @@ export const Assistant = () => {
   }, []);
 
   const [threads, setThreads] = useState<ThreadListItem[]>(INITIAL_THREADS);
-  const [projects, setProjects] = useState<ProjectListItem[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(
     INITIAL_THREADS[0]?.id ?? null,
   );
   const [threadMessages, setThreadMessages] = useState<UIMessage[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
-  const [messagesReloadNonce, setMessagesReloadNonce] = useState(0);
-
-  const [deletingThreads, setDeletingThreads] = useState(false);
   const [dbConfigured, setDbConfigured] = useState(true);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
-  const [selectedModelSelectionSource, setSelectedModelSelectionSource] =
-    useState<SelectionSource>("registry_default");
-  const [selectedReasoningLevel, setSelectedReasoningLevel] = useState<string>("low");
-  const [selectedThinkingMode, setSelectedThinkingMode] =
-    useState<ThinkingMode>("provider_default");
-  const [routerAbOn, setRouterAbOn] = useState(true);
-  // Lightweight read-only snapshot of the configured recommender engine
-  // (engine model + reasoning + optional user-configured fallback).
-  // The chat surface no longer edits these values inline — they live
-  // exclusively in Settings → Router → Tab B. The chat only reads them
-  // to render the recommendation banner's failure-card copy
-  // (recommenderEngineSummary / fallbackEngineSummary) and the routing
-  // decision audit bubble. Writes happen exclusively in the Settings
-  // page, so we keep only the fetch + derived summaries here and
-  // intentionally drop the save handlers + saving flag.
-  const [recommenderModelId, setRecommenderModelId] = useState<string | null>(null);
-  const [recommenderModelOptions, setRecommenderModelOptions] = useState<
-    ReadonlyArray<RecommenderModelOption>
-  >([]);
-  const [recommenderReasoningLevel, setRecommenderReasoningLevel] = useState<string>("low");
-  const [recommenderFallbackModelId, setRecommenderFallbackModelId] = useState<string | null>(null);
-  const [recommenderFallbackReasoningLevel, setRecommenderFallbackReasoningLevel] = useState<
-    string | null
-  >(null);
-  // Recommend-model toggle. When ON, every Send goes through a
-  // recommendation round-trip first. When OFF, the chat composer
-  // sends with the manually selected model immediately. Persisted
-  // per-tab via sessionStorage so a refresh keeps the user's choice.
-  const [recommenderEnabled, setRecommenderEnabled] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    try {
-      return window.sessionStorage.getItem("control_room.recommender_enabled") === "true";
-    } catch {
-      return false;
-    }
-  });
-  const toggleRecommender = useCallback((next: boolean) => {
-    setRecommenderEnabled(next);
-    try {
-      window.sessionStorage.setItem("control_room.recommender_enabled", String(next));
-    } catch {
-      // sessionStorage may be unavailable (private mode, etc.) — that's fine.
-    }
-    // Toggling off clears any in-flight recommendation banner so the
-    // composer returns to a clean state.
-    if (!next) {
-      setRecommendation(null);
-      setRouterDecision(null);
-      setThreadModeOverride(null);
-      setHarnessOverride(null);
-      setDecisionApproved(null);
-      setCodingHarnessRecommendation(null);
-      setCodingHarnessRecommendationError(null);
-    }
-  }, []);
-  const [routerDecision, setRouterDecision] = useState<RouterDecision | null>(null);
-  const [routerDecisionLoading, setRouterDecisionLoading] = useState(false);
-  const [routerDecisionEta, setRouterDecisionEta] = useState<{
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null>(null);
-  const [threadModeOverride, setThreadModeOverride] = useState<ThreadMode | null>(null);
-  const [harnessOverride, setHarnessOverride] = useState<ThreadHarness | null>(null);
-  /**
-   * Intermediate state set when the user approves / corrects the
-   * router decision to `coding_task`. We keep this separate from
-   * `threadModeOverride` so the composer can distinguish three
-   * coding-task shapes:
-   *
-   *   1. Legacy path: `isCodingTask === true` because the thread
-   *      was opened directly as coding_task (removed: NewChatDialog).
-   *      The composer shows the legacy "Send to Codex" / handoff-draft
-   *      pills.
-   *   2. Intermediate state: the user approved a router decision
-   *      as coding_task and we are awaiting the harness
-   *      recommendation. The composer MUST hide the legacy
-   *      handoff-draft button (which would otherwise fire
-   *      "This coding task thread is missing a harness.") and
-   *      instead surface the harness approval card / loader /
-   *      failure UI.
-   *   3. Active state: a harness was selected and the run is in
-   *      flight — the composer is back to its normal shape and
-   *      `harnessOverride` carries the user's pick.
-   *
-   * `decisionApproved` is cleared when:
-   *   - The user sends to a coding harness (transitions to active).
-   *   - The user clicks "Answer in chat instead" (transitions out).
-   *   - A new router decision arrives (resets the state machine).
-   *   - The user toggles Recommend off (clears all in-flight state).
-   */
-  const [decisionApproved, setDecisionApproved] = useState<"coding_task" | null>(null);
-  const [recommendation, setRecommendation] = useState<ModelRecommendation | null>(null);
-  const [recommendationLoading, setRecommendationLoading] = useState(false);
-  const [recommendationEta, setRecommendationEta] = useState<{
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null>(null);
-
-  // -------------------------------------------------------------------------
-  // Routing Decision Panel state — replaces the two-card flow.
-  // -------------------------------------------------------------------------
-  const [routingPanel, setRoutingPanel] = useState<RoutingDecisionPanelPayload | null>(null);
-  const [routingPanelLoudFailure, setRoutingPanelLoudFailure] = useState<boolean>(false);
-  const [routingPanelDraftText, setRoutingPanelDraftText] = useState<string>("");
-  const [pendingRecommendedSend, setPendingRecommendedSend] =
-    useState<PendingRecommendedSend | null>(null);
-  const [pendingRoutingDecision, setPendingRoutingDecision] =
-    useState<RoutingDecisionPayload | null>(null);
-  /**
-   * Ref-backed one-shot for the next send. Written by `handleUseRecommendation`
-   * via `onSetRoutingDecisionForNextSend` and read by ChatPane's transport's
-   * `prepareSendMessagesRequest`. This prevents a race where React state is
-   * cleared before the transport builds the request body.
-   */
-  const routingDecisionForNextSendRef = useRef<RoutingDecisionPayload | null>(null);
-  const pendingRecommendedSendCounter = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const isCoarsePointer = useMediaQuery("(pointer: coarse)");
-
-  // -------------------------------------------------------------------------
-  // Generic coding-harness registry + per-thread harness recommendation.
-  //
-  // After the first decision gate is approved / corrected to
-  // `coding_task`, we fetch the harness recommendation from
-  // `/api/coding-harness/recommend` so the chat composer can render a
-  // generic coding-harness approval card with both Codex CLI and
-  // MiniMax CLI as candidates. The user picks one explicitly — there is
-  // NO silent fallback between harnesses.
-  // -------------------------------------------------------------------------
-  const [harnessRegistry, setHarnessRegistry] = useState<ReadonlyArray<HarnessRegistryView> | null>(
-    null,
-  );
-  const [codingHarnessRecommendation, setCodingHarnessRecommendation] =
-    useState<CodingHarnessRecommendation | null>(null);
-  const [codingHarnessRecommendationLoading, setCodingHarnessRecommendationLoading] =
-    useState(false);
-  const [codingHarnessRecommendationEta, setCodingHarnessRecommendationEta] = useState<{
-    expected_latency_ms: number;
-    upper_latency_ms: number;
-    estimate_quality: "likely" | "uncertain" | "rough";
-    started_at: string;
-  } | null>(null);
-  /**
-   * Sanitized error from `/api/coding-harness/recommend`. Surfaced
-   * to the composer so the harness approval card can render a
-   * loud failure ("Coding harness recommendation failed: <reason>")
-   * instead of silently leaving the user in the intermediate
-   * state with no Send button. Never contains API keys.
-   */
-  const [codingHarnessRecommendationError, setCodingHarnessRecommendationError] = useState<
-    string | null
-  >(null);
-
-  // Refresh the harness registry whenever the composer mounts so the
-  // approval card surfaces current install / auth state.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/coding-runs", { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { harnesses?: HarnessRegistryView[] };
-        if (!cancelled && Array.isArray(data.harnesses)) {
-          setHarnessRegistry(data.harnesses);
-        }
-      } catch {
-        // Best-effort: leave the registry as `null` and let the
-        // composer render the loader placeholder.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const fetchCodingHarnessRecommendation = useCallback(async (prompt: string) => {
-    setCodingHarnessRecommendation(null);
-    setCodingHarnessRecommendationError(null);
-    setCodingHarnessRecommendationLoading(true);
-    setCodingHarnessRecommendationEta({
-      expected_latency_ms: 1500,
-      upper_latency_ms: 4000,
-      estimate_quality: "rough",
-      started_at: new Date().toISOString(),
-    });
-    try {
-      const res = await fetch("/api/coding-harness/recommend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instruction: prompt }),
-      });
-      if (!res.ok) {
-        // Surface the HTTP status so the user can tell whether the
-        // endpoint was missing, the harness registry was down, or
-        // the request was rejected. We never echo the response body
-        // here — the API error paths already sanitise.
-        throw new Error(`status ${res.status}`);
-      }
-      const data = (await res.json()) as CodingHarnessRecommendation;
-      setCodingHarnessRecommendation(data);
-    } catch (err) {
-      // Loud failure: surface the sanitized reason so the harness
-      // approval card can render "Coding harness recommendation
-      // failed: <safe reason>" instead of silently leaving the
-      // user in the intermediate state with no Send button.
-      setCodingHarnessRecommendationError(err instanceof Error ? err.message : "unknown error");
-    } finally {
-      setCodingHarnessRecommendationLoading(false);
-      setCodingHarnessRecommendationEta(null);
-    }
-  }, []);
-
-  // Drop the harness recommendation whenever the user cancels or
-  // switches to normal chat, so a stale recommendation cannot
-  // bleed into the next decision. We also reset the intermediate
-  // `decisionApproved` state so a fresh router decision starts a
-  // clean state machine.
-  useEffect(() => {
-    if (!routerDecision) {
-      setCodingHarnessRecommendation(null);
-      setCodingHarnessRecommendationError(null);
-      setCodingHarnessRecommendationLoading(false);
-      setCodingHarnessRecommendationEta(null);
-      setDecisionApproved(null);
-    }
-  }, [routerDecision]);
   const newChatCounter = useRef(0);
 
   const refreshThreads = useCallback(async () => {
     try {
-      const url = `/api/threads?projectId=${activeProjectId ?? "null"}`;
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch("/api/threads", { cache: "no-store" });
       if (!res.ok) throw new Error(`status ${res.status}`);
       const data: ThreadsResponse = await res.json();
       setDbConfigured(data.configured);
@@ -1654,28 +382,12 @@ export const Assistant = () => {
     } finally {
       setThreadsLoading(false);
     }
-  }, [activeProjectId]);
+  }, []);
 
   useEffect(() => {
     if (!mounted) return;
     void refreshThreads();
   }, [mounted, refreshThreads]);
-
-  const refreshProjects = useCallback(async () => {
-    try {
-      const res = await fetch("/api/projects", { cache: "no-store" });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data: ProjectsResponse = await res.json();
-      if (data.configured) setProjects(data.projects);
-    } catch {
-      setProjects([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
-    void refreshProjects();
-  }, [mounted, refreshProjects]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -1687,13 +399,10 @@ export const Assistant = () => {
         const data: ModelsResponse = await res.json();
         if (cancelled) return;
         setModels(data.models);
-        setSelectedModelId((prev) => {
-          if (prev && data.models.some((m) => m.modelId === prev && m.enabled)) return prev;
-          setSelectedModelSelectionSource("registry_default");
-          return data.defaultModelId;
-        });
-        setSelectedReasoningLevel((prev) =>
-          prev && data.defaultReasoningLevel ? prev : data.defaultReasoningLevel,
+        setSelectedModelId((prev) =>
+          prev && data.models.some((m) => m.modelId === prev && m.enabled)
+            ? prev
+            : data.defaultModelId,
         );
         setModelsError(null);
       } catch (err) {
@@ -1701,49 +410,6 @@ export const Assistant = () => {
         setModelsError(err instanceof Error ? err.message : "Failed to load models");
       } finally {
         if (!cancelled) setModelsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [mounted]);
-
-  // Fetch the lightweight router settings (current recommender model +
-  // available options). The chat composer no longer edits these values
-  // inline — that surface now lives in Settings → Router → Tab B — so
-  // this fetch is read-only and is only used to render the
-  // recommendation banner's failure-card copy and the routing decision
-  // audit bubble. The Settings page is the single source of truth for
-  // writes; the chat just mirrors the configured values into the
-  // composer-aware summary fields.
-  //
-  // Failures are non-fatal: the recommendation banner still works when
-  // the read fails, the failure card just falls back to a generic
-  // "engine unreachable" notice. The user can re-read the values by
-  // opening Settings.
-  useEffect(() => {
-    if (!mounted) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/router/settings", { cache: "no-store" });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data: RouterSettingsLiteResponse = await res.json();
-        if (cancelled) return;
-        setRecommenderModelId(data.normalChatRecommenderModelId ?? null);
-        setRecommenderModelOptions(data.recommenderModelOptions ?? []);
-        if (data.normalChatRecommenderReasoningLevel) {
-          setRecommenderReasoningLevel(data.normalChatRecommenderReasoningLevel);
-        }
-        setRecommenderFallbackModelId(data.normalChatRecommenderFallbackModelId ?? null);
-        setRecommenderFallbackReasoningLevel(
-          data.normalChatRecommenderFallbackReasoningLevel ?? null,
-        );
-      } catch {
-        // Read-only failure is non-fatal: the recommendation banner
-        // still works (it surfaces a generic "engine unreachable"
-        // message via its own `loudFailure` path). The user can
-        // re-trigger the read by opening Settings → Router.
       }
     })();
     return () => {
@@ -1770,29 +436,6 @@ export const Assistant = () => {
           setThreads((prev) =>
             prev.map((t) => (t.id === data.thread?.id ? { ...t, ...data.thread } : t)),
           );
-          // When the user switches to a chat, restore its stored
-          // model so the picker + reasoning controls reflect the
-          // model the chat was created with. The chat composer uses
-          // this id to send new messages; without restoring it, the
-          // picker would keep showing the previously-active model's
-          // settings, which makes chat switching feel broken (the
-          // user changes chats and the dropdown silently stays on
-          // the old model). We only update if the stored modelId
-          // is still in the available models list so the picker
-          // never shows a model that the user has since disabled.
-          const thread = data.thread;
-          if (thread && thread.modelId) {
-            setSelectedModelId((prev) => {
-              if (prev === thread.modelId) return prev;
-              // models is read via closure; the effect deps include
-              // `models` so this re-runs whenever they change.
-              if (models.some((m) => m.modelId === thread.modelId && m.enabled)) {
-                setSelectedModelSelectionSource("project_default");
-                return thread.modelId ?? null;
-              }
-              return prev;
-            });
-          }
         }
       } catch {
         if (!cancelled) setThreadMessages([]);
@@ -1803,715 +446,41 @@ export const Assistant = () => {
     return () => {
       cancelled = true;
     };
-  }, [mounted, activeThreadId, models, messagesReloadNonce]);
+  }, [mounted, activeThreadId]);
 
-  const handleCreateThread = useCallback(
-    async (input?: {
-      threadMode?: ThreadMode;
-      harness?: ThreadHarness | null;
-      firstMessage?: string;
-    }) => {
-      const threadMode = input?.threadMode ?? "chat";
-      const harness = input?.harness ?? null;
-      const firstMessage = input?.firstMessage?.trim() ?? "";
-      if (dbConfigured) {
-        try {
-          const res = await fetch("/api/threads", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              title: "New chat",
-              modelId: selectedModelId,
-              projectId: activeProjectId,
-              threadMode,
-              harness,
-              firstMessage,
-            }),
-          });
-          if (!res.ok) throw new Error(`status ${res.status}`);
-          const data: { thread: ThreadListItem } = await res.json();
-          setThreads((prev) => [data.thread, ...prev.filter((t) => t.id !== data.thread.id)]);
-          setActiveThreadId(data.thread.id);
-          setThreadMessages([]);
-          return data.thread.id;
-        } catch {
-          setDbConfigured(false);
-        }
+  const handleNewThread = useCallback(async () => {
+    if (dbConfigured) {
+      try {
+        const res = await fetch("/api/threads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "New chat", modelId: selectedModelId }),
+        });
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        const data: { thread: ThreadListItem } = await res.json();
+        setThreads((prev) => [data.thread, ...prev.filter((t) => t.id !== data.thread.id)]);
+        setActiveThreadId(data.thread.id);
+        setThreadMessages([]);
+        return;
+      } catch {
+        setDbConfigured(false);
       }
-
-      newChatCounter.current += 1;
-      const newThread: ThreadListItem = {
-        id: `local-${Date.now()}-${newChatCounter.current}`,
-        title: `New chat ${newChatCounter.current}`,
-        projectId: activeProjectId,
-        threadMode,
-        harness,
-      };
-      setThreads((prev) => [newThread, ...prev]);
-      setActiveThreadId(newThread.id);
-      setThreadMessages([]);
-      return newThread.id;
-    },
-    [dbConfigured, selectedModelId, activeProjectId],
-  );
-
-  const handleNewThread = useCallback(() => {
-    void handleCreateThread({ threadMode: "chat" });
-  }, [handleCreateThread]);
-
-  const handleDeleteAllThreads = useCallback(async () => {
-    if (threads.length === 0 || deletingThreads) return;
-    const scope = activeProjectId ? "this project" : "General chat";
-    const confirmed = window.confirm(
-      `Delete all ${threads.length} chat${threads.length === 1 ? "" : "s"} in ${scope}? This cannot be undone.`,
-    );
-    if (!confirmed) return;
-
-    if (!dbConfigured) {
-      setThreads([]);
-      setActiveThreadId(null);
-      setThreadMessages([]);
-      return;
     }
 
-    setDeletingThreads(true);
-    try {
-      const res = await fetch(`/api/threads?projectId=${activeProjectId ?? "null"}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      setThreads([]);
-      setActiveThreadId(null);
-      setThreadMessages([]);
-      void refreshThreads();
-    } catch {
-      await refreshThreads();
-    } finally {
-      setDeletingThreads(false);
-    }
-  }, [activeProjectId, dbConfigured, deletingThreads, refreshThreads, threads.length]);
+    newChatCounter.current += 1;
+    const newThread = {
+      id: `local-${Date.now()}-${newChatCounter.current}`,
+      title: `New chat ${newChatCounter.current}`,
+    };
+    setThreads((prev) => [newThread, ...prev]);
+    setActiveThreadId(newThread.id);
+    setThreadMessages([]);
+  }, [dbConfigured, selectedModelId]);
 
   const handleSelectThread = useCallback((id: string) => {
     setActiveThreadId(id);
     setSidebarOpen(false);
   }, []);
-
-  const handleSelectProject = useCallback((id: string | null) => {
-    setActiveProjectId(id);
-    setActiveThreadId(null);
-    setThreadMessages([]);
-    if (id) {
-      void fetch("/api/projects/select", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: id }),
-      });
-    }
-  }, []);
-
-  const handleOpenProject = useCallback(
-    async (localPath: string) => {
-      const res = await fetch("/api/projects/open", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ localPath }),
-      });
-      if (!res.ok) return false;
-      const data: { project: ProjectListItem } = await res.json();
-      setProjects((prev) => [data.project, ...prev.filter((p) => p.id !== data.project.id)]);
-      setActiveProjectId(data.project.id);
-      setActiveThreadId(null);
-      setThreadMessages([]);
-      void refreshProjects();
-      return true;
-    },
-    [refreshProjects],
-  );
-
-  const handleRecommendNormalChat = useCallback(
-    async (message: string) => {
-      const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
-      const trimmed = message.trim();
-      if (!trimmed) return;
-      setRecommendationLoading(true);
-      const promptTokens = Math.max(1, Math.ceil(trimmed.length / 4));
-      const expectedMs = Math.min(15_000, Math.max(3_000, 2_000 + promptTokens * 3));
-      setRecommendationEta({
-        expected_latency_ms: expectedMs,
-        upper_latency_ms: Math.round(expectedMs * 2.5),
-        estimate_quality: promptTokens > 2_000 ? "uncertain" : "likely",
-        started_at: new Date().toISOString(),
-      });
-      try {
-        const res = await fetch("/api/model/recommend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
-            projectId: activeProjectId,
-            message: trimmed,
-            currentModelId: selectedModelId,
-            currentProvider: selected?.providerId ?? null,
-            currentReasoningLevel: selectedReasoningLevel,
-            mode: "normal_chat",
-          }),
-        });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data: ModelRecommendation = await res.json();
-        setRecommendation(data);
-      } catch {
-        setRecommendation({
-          recommendedRoute: "normal_chat",
-          routeReason: "The recommender could not run; defaulting to normal chat route.",
-          recommendedModelId: selectedModelId ?? "gpt-5.4-mini",
-          recommendedProvider: selected?.providerId ?? "openai",
-          recommendedReasoningLevel: selectedReasoningLevel,
-          reasoning:
-            "The recommender request failed. Control Room will not auto-substitute a different model.",
-          loudFailure: true,
-          proposedSubscriptionFallbacks: [],
-          diagnostics: {
-            recommenderProvider: "unknown",
-            recommenderModelId: "unknown",
-            fallback: true,
-            fallbackReason: "model_recommendation_failed",
-            attemptedCandidateModel: null,
-          },
-        });
-      } finally {
-        setRecommendationLoading(false);
-        setRecommendationEta(null);
-      }
-    },
-    [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
-  );
-
-  /**
-   * Execution-eligible model options for the Routing Decision
-   * Panel's model dropdown. Pre-filtered by
-   * `getExecutionEligibleModelIds` to NEVER include a configured
-   * recommender-chain id (ROUTER models are decision engines,
-   * not execution models). The registry is null when the
-   * `/api/models` endpoint hasn't returned yet; in that case we
-   * fall back to an empty list and the panel renders an empty
-   * disabled dropdown.
-   */
-  const routingPanelExecutionEligibleModels = useMemo<
-    ReadonlyArray<RoutingDecisionPanelModelOption>
-  >(() => {
-    if (!models || models.length === 0) return [];
-    const blockedExecutionModelIds = new Set(
-      [recommenderModelId, recommenderFallbackModelId].filter(
-        (id): id is string => typeof id === "string" && id.length > 0,
-      ),
-    );
-    return models
-      .filter((m) => m.enabled && !blockedExecutionModelIds.has(m.modelId))
-      .map((m) => {
-        const supportsReasoningControls =
-          m.reasoningCapability.kind === "effort_levels" &&
-          m.reasoningCapability.control !== "unknown";
-        let allowedReasoningLevels: ReadonlyArray<string> = [];
-        if (supportsReasoningControls) {
-          allowedReasoningLevels = m.reasoningLevels;
-        }
-        return {
-          modelId: m.modelId,
-          displayLabel: m.modelLabel,
-          providerId: m.providerId as "openai" | "codex" | "minimax",
-          supportsReasoningControls,
-          allowedReasoningLevels,
-          tier: m.tier,
-        };
-      });
-  }, [models, recommenderFallbackModelId, recommenderModelId]);
-
-  /**
-   * Open the Routing Decision Panel for the given prompt. Fetches
-   * `/api/model/recommend` and stores the canonical panel payload.
-   */
-  const handleOpenRoutingPanel = useCallback(
-    async (message: string) => {
-      const trimmed = message.trim();
-      if (!trimmed) return;
-      setRouterDecision(null);
-      setThreadModeOverride(null);
-      setHarnessOverride(null);
-      setRecommendationLoading(true);
-      const promptTokens = Math.max(1, Math.ceil(trimmed.length / 4));
-      const expectedMs = Math.min(15_000, Math.max(3_000, 2_000 + promptTokens * 3));
-      setRecommendationEta({
-        expected_latency_ms: expectedMs,
-        upper_latency_ms: Math.round(expectedMs * 2.5),
-        estimate_quality: promptTokens > 2_000 ? "uncertain" : "likely",
-        started_at: new Date().toISOString(),
-      });
-      try {
-        const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
-        const res = await fetch("/api/model/recommend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
-            projectId: activeProjectId,
-            message: trimmed,
-            currentModelId: selectedModelId,
-            currentProvider: selected?.providerId ?? null,
-            currentReasoningLevel: selectedReasoningLevel,
-            mode: "normal_chat",
-          }),
-        });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data: ModelRecommendation = await res.json();
-        setRecommendation(data);
-        const panel = (data as unknown as { panel?: RoutingDecisionPanelPayload }).panel;
-        setRoutingPanel(panel ?? null);
-        setRoutingPanelLoudFailure(Boolean(data.loudFailure));
-        setRoutingPanelDraftText(trimmed);
-      } catch {
-        setRecommendation(null);
-        setRoutingPanel(null);
-        setRoutingPanelLoudFailure(true);
-        setRoutingPanelDraftText(trimmed);
-      } finally {
-        setRecommendationLoading(false);
-        setRecommendationEta(null);
-      }
-    },
-    [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
-  );
-
-  /**
-   * "Send with routing" — the user confirmed the panel as-is or
-   * after editing fields. Persists the panel telemetry row and
-   * schedules a chat send with the selected model + reasoning +
-   * harness.
-   */
-  const handleSendWithRouting = useCallback(
-    async (selection: RoutingDecisionPanelSelection) => {
-      const panel = routingPanel;
-      if (!panel) return;
-      const draftText = routingPanelDraftText.trim();
-      const harnessMap = mapHarnessValueToInternal(selection.harness);
-      // Map the harness registry id back to the thread-mode
-      // enum value the rest of the codebase uses.
-      const threadHarness: ThreadHarness | null =
-        harnessMap.harnessId === "codex_cli"
-          ? "codex"
-          : harnessMap.harnessId === "minimax_cli"
-            ? "minimax"
-            : null;
-      const execution = executionPayloadModelId({
-        modelId: selection.modelId,
-        reasoningLevel: selection.reasoningLevel,
-        registry: null,
-      });
-      try {
-        const promptHash = await getClientPromptHash(draftText);
-        await fetch("/api/routing-decision-panel/runs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
-            projectId: activeProjectId,
-            promptHash,
-            promptText: draftText,
-            panel,
-            selection,
-            changedFields: selection.changedFields,
-            comment: selection.comment.trim() || null,
-          }),
-        });
-      } catch {
-        // Best-effort. The chat send below still works.
-      }
-      setSelectedModelId(selection.modelId);
-      setSelectedReasoningLevel(execution.reasoningLevel ?? selectedReasoningLevel);
-      setSelectedModelSelectionSource("user_accepted");
-      setThreadModeOverride(harnessMap.threadMode);
-      setHarnessOverride(threadHarness);
-      const payload: RoutingDecisionPayload = {
-        kind: "routing_decision",
-        messageType: "routing_decision",
-        includeInModelContext: false,
-        auditId: routingDecisionAuditId({
-          threadId: activeThreadId,
-          prompt: draftText,
-          route: harnessMap.threadMode === "coding_task" ? "coding_task" : "normal_chat",
-          harness: harnessMap.harnessId,
-          executionModel: selection.modelId,
-        }),
-        route: harnessMap.threadMode === "coding_task" ? "coding_task" : "normal_chat",
-        selectionSource: "user_accepted",
-        harness: harnessMap.harnessId,
-        routerEngine: null,
-        recommenderEngine: null,
-        recommenderReasoningLevel: null,
-        executionModel: selection.modelId,
-        executionReasoningLevel: execution.reasoningLevel,
-        fallback: null,
-        whyRoute: panel.contextDecision.explanation,
-        whyModel: panel.executionPackage.explanation,
-        whyHarness:
-          selection.harness === "repo_file_harness"
-            ? "Routes through the repo/file harness so the model can read or change project files."
-            : null,
-        alternatives: [],
-      };
-      routingDecisionForNextSendRef.current = payload;
-      setPendingRoutingDecision(payload);
-      pendingRecommendedSendCounter.current += 1;
-      setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
-      setRoutingPanel(null);
-      setRoutingPanelLoudFailure(false);
-      setRoutingPanelDraftText("");
-      setRecommendation(null);
-    },
-    [
-      routingPanel,
-      routingPanelDraftText,
-      activeThreadId,
-      activeProjectId,
-      selectedReasoningLevel,
-    ],
-  );
-
-  /**
-   * "Send default" — the user chose to bypass the panel and send
-   * with the user's current manual selection.
-   */
-  const handleSendDefault = useCallback(() => {
-    const draftText = routingPanelDraftText.trim();
-    setRoutingPanel(null);
-    setRoutingPanelLoudFailure(false);
-    setRoutingPanelDraftText("");
-    setRecommendation(null);
-    if (!draftText) return;
-    pendingRecommendedSendCounter.current += 1;
-    setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
-  }, [routingPanelDraftText]);
-
-  /**
-   * "Dismiss" — closes the panel without sending.
-   */
-  const handleDismissRoutingPanel = useCallback(() => {
-    setRoutingPanel(null);
-    setRoutingPanelLoudFailure(false);
-    setRoutingPanelDraftText("");
-    setRecommendation(null);
-  }, []);
-
-  const handleRecommendModel = useCallback(
-    async (message: string) => {
-      const trimmed = message.trim();
-      if (!trimmed) return;
-      setRecommendation(null);
-      setRouterDecision(null);
-      setThreadModeOverride(null);
-      setHarnessOverride(null);
-      setRecommendationLoading(true);
-      const promptTokens = Math.max(1, Math.ceil(trimmed.length / 4));
-      const expectedMs = Math.min(15_000, Math.max(3_000, 2_000 + promptTokens * 3));
-      setRecommendationEta({
-        expected_latency_ms: expectedMs,
-        upper_latency_ms: Math.round(expectedMs * 2.5),
-        estimate_quality: promptTokens > 2_000 ? "uncertain" : "likely",
-        started_at: new Date().toISOString(),
-      });
-      try {
-        const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
-        const res = await fetch("/api/model/recommend", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            threadId: isLocalThreadId(activeThreadId) ? null : activeThreadId,
-            projectId: activeProjectId,
-            message: trimmed,
-            currentModelId: selectedModelId,
-            currentProvider: selected?.providerId ?? null,
-            currentReasoningLevel: selectedReasoningLevel,
-            mode: "normal_chat",
-          }),
-        });
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        const data: ModelRecommendation = await res.json();
-        setRecommendation(data);
-        const panel = (data as unknown as { panel?: RoutingDecisionPanelPayload }).panel;
-        setRoutingPanel(panel ?? null);
-        setRoutingPanelLoudFailure(Boolean(data.loudFailure));
-        setRoutingPanelDraftText(trimmed);
-      } catch {
-        const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
-        setRoutingPanel(null);
-        setRoutingPanelLoudFailure(true);
-        setRoutingPanelDraftText(trimmed);
-        setRecommendation({
-          recommendedRoute: "normal_chat",
-          routeReason: "The recommender could not run; defaulting to normal chat route.",
-          recommendedModelId: selectedModelId ?? "gpt-5.4-mini",
-          recommendedProvider: selected?.providerId ?? "openai",
-          recommendedReasoningLevel: selectedReasoningLevel,
-          reasoning:
-            "The recommender request failed. Control Room will not auto-substitute a different model.",
-          loudFailure: true,
-          proposedSubscriptionFallbacks: [],
-          diagnostics: {
-            recommenderProvider: "unknown",
-            recommenderModelId: "unknown",
-            fallback: true,
-            fallbackReason: "model_recommendation_failed",
-            attemptedCandidateModel: null,
-          },
-        });
-      } finally {
-        setRecommendationLoading(false);
-        setRecommendationEta(null);
-      }
-    },
-    [activeProjectId, activeThreadId, models, selectedModelId, selectedReasoningLevel],
-  );
-
-  const handleDecisionAction = useCallback(
-    (
-      action: "approved" | "corrected_to_coding_task" | "corrected_to_normal_chat" | "canceled",
-      comment: string,
-    ) => {
-      if (!routerDecision) return;
-      const finalDecision =
-        action === "corrected_to_coding_task"
-          ? "coding_task"
-          : action === "corrected_to_normal_chat"
-            ? "normal_chat"
-            : action === "approved"
-              ? routerDecision.decision
-              : null;
-      void fetch("/api/router/decision", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          runId: routerDecision.runId,
-          userAction: action,
-          userComment: comment.trim() || null,
-          finalDecision,
-        }),
-      });
-      const prompt = routerDecision.prompt;
-      if (action === "canceled") {
-        // Cancel clears the decision entirely; the user returns to
-        // a clean composer. The harness-recommendation state is
-        // dropped by the `useEffect` on `routerDecision === null`
-        // above.
-        setRouterDecision(null);
-        return;
-      }
-      if (finalDecision === "coding_task") {
-        // Switch to coding-task thread mode WITHOUT forcing a
-        // specific harness. The user picks the harness explicitly
-        // from the generic coding-harness approval card (Codex CLI
-        // vs MiniMax CLI). The `harnessOverride` is updated only
-        // when the user actually sends via one of the harness
-        // buttons so the legacy Codex-only pill keeps working for
-        // users who never open the new card.
-        //
-        // IMPORTANT: we keep `routerDecision` visible until the
-        // user either (a) sends to a coding harness, (b) answers
-        // in chat instead, or (c) cancels. Clearing it here would
-        // hide the harness approval card during the
-        // recommendation fetch (the card's visibility predicate
-        // falls back to `routerDecision.decision === "coding_task"`
-        // before the harness override is set), causing the user
-        // to see the bare composer + the legacy handoff-draft
-        // button which would then fire "This coding task thread
-        // is missing a harness." when clicked. We avoid that by
-        // setting `decisionApproved` instead and leaving the
-        // decision visible.
-        setDecisionApproved("coding_task");
-        setThreadModeOverride("coding_task");
-        setHarnessOverride(null);
-        void fetchCodingHarnessRecommendation(prompt);
-        return;
-      }
-      // normal_chat path: clear the decision immediately and let
-      // the normal-chat recommender take over.
-      setRouterDecision(null);
-      setThreadModeOverride(null);
-      setHarnessOverride(null);
-      void handleRecommendNormalChat(prompt);
-    },
-    [fetchCodingHarnessRecommendation, handleRecommendNormalChat, routerDecision],
-  );
-
-  const handleSendToCodingHarness = useCallback(
-    (input: {
-      harnessId: "codex_cli" | "minimax_cli";
-      modelId: string;
-      reasoningLevel: string;
-    }) => {
-      // Persist the user pick on the thread-level `harnessOverride`
-      // so the composer's "Coding task · <harness>" pill reflects
-      // the harness the user actually sent to. We do NOT auto-run
-      // anything else — the composer handles the actual `fetch`
-      // through `sendToCodingHarness`. The user must explicitly
-      // click Send.
-      setHarnessOverride(input.harnessId === "minimax_cli" ? "minimax" : "codex");
-      // Transition out of the intermediate state: the user picked
-      // a harness, so the decision + harness recommendation have
-      // both been consumed. Clear both pieces of state and the
-      // router decision so the next send starts a clean state
-      // machine.
-      setDecisionApproved(null);
-      setCodingHarnessRecommendation(null);
-      setCodingHarnessRecommendationError(null);
-      setRouterDecision(null);
-    },
-    [],
-  );
-
-  const handleAnswerInChatInstead = useCallback(() => {
-    // The user picked "Answer in chat instead" on the generic
-    // harness approval card. Switch back to normal-chat thread
-    // mode WITHOUT executing the harness; the next send goes
-    // through the chat path.
-    setThreadModeOverride(null);
-    setHarnessOverride(null);
-    setDecisionApproved(null);
-    setCodingHarnessRecommendation(null);
-    setCodingHarnessRecommendationError(null);
-    setRouterDecision(null);
-  }, []);
-
-  const handleUseRecommendation = useCallback(
-    async (draftText?: string) => {
-      if (!recommendation) return;
-      const proposed = recommendation.loudFailure
-        ? (recommendation.proposedSubscriptionFallbacks?.[0] ?? null)
-        : null;
-      setSelectedModelId(proposed?.toModelId ?? recommendation.recommendedModelId);
-      setSelectedModelSelectionSource("user_accepted");
-      if (!proposed && recommendation.recommendedReasoningLevel) {
-        setSelectedReasoningLevel(recommendation.recommendedReasoningLevel);
-      }
-      if (draftText?.trim()) {
-        const runThreadId =
-          activeThreadId && !isLocalThreadId(activeThreadId)
-            ? activeThreadId
-            : await handleCreateThread({ threadMode: "chat" });
-        const payload: RoutingDecisionPayload = {
-          kind: "routing_decision",
-          messageType: "routing_decision",
-          includeInModelContext: false,
-          auditId: routingDecisionAuditId({
-            threadId: runThreadId,
-            prompt: draftText,
-            route: recommendation.recommendedRoute ?? "normal_chat",
-            executionModel: proposed?.toModelId ?? recommendation.recommendedModelId,
-          }),
-          route: recommendation.recommendedRoute ?? "normal_chat",
-          selectionSource: "recommender_output",
-          harness: null,
-          routerEngine: routerDecision?.recommender_model_id ?? null,
-          recommenderEngine: recommendation.diagnostics.recommenderModelId,
-          recommenderReasoningLevel: recommenderReasoningLevel,
-          executionModel: proposed?.toModelId ?? recommendation.recommendedModelId,
-          executionReasoningLevel: proposed
-            ? selectedReasoningLevel
-            : recommendation.recommendedReasoningLevel,
-          fallback: {
-            configured: Boolean(recommenderFallbackModelId),
-            attempted: Boolean(recommendation.diagnostics.fallback),
-            used: Boolean(recommendation.diagnostics.fallback),
-            engine: recommenderFallbackModelId,
-            reason: recommendation.diagnostics.fallbackReason,
-          },
-          whyRoute: recommendation.routeReason ?? routerDecision?.reason ?? "User accepted the recommended route.",
-          whyModel: proposed?.reason ?? recommendation.reasoning,
-          alternatives: recommendation.alternatives,
-        };
-        // Also store in the ref so `prepareSendMessagesRequest` can pick it up
-        // even if React state is cleared before the transport builds the body.
-        routingDecisionForNextSendRef.current = payload;
-        setPendingRoutingDecision(payload);
-        pendingRecommendedSendCounter.current += 1;
-        setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
-      }
-      setRecommendation(null);
-    },
-    [
-      activeThreadId,
-      handleCreateThread,
-      recommendation,
-      recommenderFallbackModelId,
-      recommenderReasoningLevel,
-      routerDecision,
-      selectedReasoningLevel,
-    ],
-  );
-
-  const handleKeepCurrent = useCallback((draftText?: string) => {
-    if (draftText?.trim()) {
-      pendingRecommendedSendCounter.current += 1;
-      setPendingRecommendedSend({ id: pendingRecommendedSendCounter.current, text: draftText });
-    }
-    setRecommendation(null);
-  }, []);
-
-  /**
-   * Clears the routing decision React state after the transport has copied
-   * it into the request body. This is called from
-   * `prepareSendMessagesRequest` via the
-   * `onRoutingDecisionRequestBodyPrepared` prop, ensuring the state is
-   * only cleared AFTER the body is built — not when `composer.send()`
-   * returns, which was the root cause of the race condition.
-   */
-  const handleRoutingDecisionRequestBodyPrepared = useCallback((auditId: string | null) => {
-    if (!auditId) return;
-    setPendingRoutingDecision((current) =>
-      current?.auditId === auditId ? null : current,
-    );
-  }, []);
-
-  const handleManualRoutingDecision = useCallback(
-    (draftText: string) => {
-      const prompt = draftText.trim();
-      if (!prompt) return null;
-      const selected = models.find((m) => m.modelId === selectedModelId) ?? null;
-      const reasoningOrThinking =
-        selected?.reasoningCapability.kind === "thinking_budget"
-          ? selectedThinkingMode
-          : selectedReasoningLevel;
-      const payload: RoutingDecisionPayload = {
-        kind: "routing_decision",
-        messageType: "routing_decision",
-        includeInModelContext: false,
-        auditId: routingDecisionAuditId({
-          threadId: activeThreadId,
-          prompt,
-          route: "normal_chat",
-          executionModel: selectedModelId,
-        }),
-        route: "normal_chat",
-        selectionSource: "manual_current_selection",
-        harness: null,
-        routerEngine: null,
-        recommenderEngine: null,
-        recommenderReasoningLevel: null,
-        executionModel: selected?.modelLabel ?? selectedModelId ?? "unknown",
-        executionReasoningLevel: reasoningOrThinking,
-        fallback: null,
-        whyRoute: "Direct normal chat send using the current manual selection.",
-        whyModel: "Recommender was not used; Control Room used the currently selected model and reasoning/thinking setting.",
-        alternatives: [],
-      };
-      return payload;
-    },
-    [
-      activeThreadId,
-      models,
-      selectedModelId,
-      selectedReasoningLevel,
-      selectedThinkingMode,
-    ],
-  );
 
   // Centralized keyboard-shortcut handler. See lib/shortcuts.ts for the
   // full registry. The typing guard (isTypingTarget) is enforced here for
@@ -2568,45 +537,16 @@ export const Assistant = () => {
 
   if (!mounted) return <div className="h-dvh" />;
 
-  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
-  const activeThreadTitle = activeThread?.title ?? "New chat";
-  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
-  const effectiveThreadMode = threadModeOverride ?? activeThread?.threadMode ?? "chat";
-  const effectiveHarness = harnessOverride ?? activeThread?.harness ?? null;
-  const manualModelSummary = (() => {
-    const selected = models.find((m) => m.modelId === selectedModelId);
-    const label = selected?.modelLabel ?? selectedModelId ?? "No manual model selected";
-    const option =
-      selected?.reasoningCapability.kind === "thinking_budget"
-        ? selectedThinkingMode
-        : selectedReasoningLevel;
-    return `${label} · ${option}`;
-  })();
-  const recommenderEngineSummary = (() => {
-    const selected = recommenderModelOptions.find((m) => m.modelId === recommenderModelId);
-    const label = selected?.displayLabel ?? recommenderModelId ?? "No recommender engine selected";
-    return `${label} · ${recommenderReasoningLevel}`;
-  })();
-  const fallbackEngineSummary = (() => {
-    if (!recommenderFallbackModelId) return "No fallback configured";
-    const selected = recommenderModelOptions.find((m) => m.modelId === recommenderFallbackModelId);
-    const label = selected?.displayLabel ?? recommenderFallbackModelId;
-    return `${label} · ${recommenderFallbackReasoningLevel ?? "provider_default"}`;
-  })();
+  const activeThreadTitle =
+    threads.find((thread) => thread.id === activeThreadId)?.title ?? "New chat";
 
   return (
     <div className="flex h-dvh overflow-hidden">
       <SidebarPanel
         threads={threads}
-        projects={projects}
-        activeProjectId={activeProjectId}
-        onSelectProject={handleSelectProject}
-        onOpenProject={handleOpenProject}
         activeThreadId={activeThreadId ?? ""}
         onSelectThread={handleSelectThread}
         onNewThread={handleNewThread}
-        onDeleteAllThreads={handleDeleteAllThreads}
-        deleteAllDisabled={threadsLoading || deletingThreads}
         open={sidebarOpen}
         onOpenChange={setSidebarOpen}
       />
@@ -2617,20 +557,11 @@ export const Assistant = () => {
           onOpenSidebar={() => setSidebarOpen(true)}
         />
 
-        <ChatTopBar
+        <ModelSelector
           models={models}
           selectedModelId={selectedModelId}
-          onModelChange={(next) => {
-            setSelectedModelId(next);
-            setSelectedModelSelectionSource("user_explicit");
-          }}
-          modelsLoading={modelsLoading}
-          reasoningLevel={selectedReasoningLevel}
-          onReasoningChange={setSelectedReasoningLevel}
-          thinkingMode={selectedThinkingMode}
-          onThinkingModeChange={setSelectedThinkingMode}
-          routerAbOn={routerAbOn}
-          onRouterAbChange={setRouterAbOn}
+          onModelChange={setSelectedModelId}
+          loading={modelsLoading}
         />
 
         {!dbConfigured && (
@@ -2657,72 +588,7 @@ export const Assistant = () => {
               threadId={activeThreadId}
               initialMessages={threadMessages}
               notesDisabled={!dbConfigured || threadsLoading}
-              routerAbOn={routerAbOn}
-              reasoningLevel={selectedReasoningLevel}
-              thinkingMode={selectedThinkingMode}
-              selectionSource={selectedModelSelectionSource}
-              models={models}
-              activeProjectId={activeProjectId}
-              activeProject={activeProject}
-              threadMode={effectiveThreadMode}
-              harness={effectiveHarness}
-              recommenderEnabled={recommenderEnabled}
-              onToggleRecommender={toggleRecommender}
-              routerDecision={routerDecision}
-              routerDecisionLoading={routerDecisionLoading}
-              routerDecisionEta={routerDecisionEta}
-              recommendation={recommendation}
-              recommendationLoading={recommendationLoading}
-              recommendationEta={recommendationEta}
-              routingPanel={routingPanel}
-              routingPanelLoudFailure={routingPanelLoudFailure}
-              routingPanelDraftText={routingPanelDraftText}
-              routingPanelExecutionEligibleModels={routingPanelExecutionEligibleModels}
-              onSendWithRouting={handleSendWithRouting}
-              onSendDefault={handleSendDefault}
-              onDismissRoutingPanel={handleDismissRoutingPanel}
-              onOpenRoutingPanel={handleOpenRoutingPanel}
-              manualModelSummary={manualModelSummary}
-              recommenderEngineSummary={recommenderEngineSummary}
-              fallbackEngineSummary={fallbackEngineSummary}
-              onDecisionAction={handleDecisionAction}
-              onRecommend={handleRecommendModel}
-              onManualRoutingDecision={handleManualRoutingDecision}
-              onUseRecommendation={handleUseRecommendation}
-              onKeepCurrent={handleKeepCurrent}
-              pendingRecommendedSend={pendingRecommendedSend}
-              pendingRoutingDecision={pendingRoutingDecision}
-              onPendingRecommendedSendConsumed={(id) => {
-                setPendingRecommendedSend((pending) => (pending?.id === id ? null : pending));
-                // NOTE: Do NOT clear pendingRoutingDecision here. The routing
-                // decision is consumed in the transport's prepareSendMessagesRequest
-                // callback, then this handler is called via
-                // onRoutingDecisionRequestBodyPrepared to clear state.
-              }}
-              onRoutingDecisionRequestBodyPrepared={handleRoutingDecisionRequestBodyPrepared}
-              routingDecisionForNextSendRef={routingDecisionForNextSendRef}
-              onEnsureCodingThread={() =>
-                activeThreadId && !isLocalThreadId(activeThreadId)
-                  ? Promise.resolve(activeThreadId)
-                  : handleCreateThread({ threadMode: "coding_task", harness: "codex" })
-              }
-              onCodingRunComplete={(threadId) => {
-                if (threadId) setActiveThreadId(threadId);
-                setMessagesReloadNonce((n) => n + 1);
-                void refreshThreads();
-              }}
-              onFinish={() => {
-                void refreshThreads();
-                setMessagesReloadNonce((n) => n + 1);
-              }}
-              harnessRegistry={harnessRegistry}
-              codingHarnessRecommendation={codingHarnessRecommendation}
-              codingHarnessRecommendationLoading={codingHarnessRecommendationLoading}
-              codingHarnessRecommendationEta={codingHarnessRecommendationEta}
-              codingHarnessRecommendationError={codingHarnessRecommendationError}
-              decisionApproved={decisionApproved}
-              onSendToCodingHarness={handleSendToCodingHarness}
-              onAnswerInChatInstead={handleAnswerInChatInstead}
+              onFinish={() => void refreshThreads()}
             />
           )}
         </div>
