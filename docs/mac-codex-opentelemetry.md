@@ -73,6 +73,27 @@ contain complete tool arguments and outputs.
 
 The forensic tier contains unfiltered traces only. It exists for instrumentation debugging and filter validation, not long-term analytics. It has a three-day maximum age and an independent 4,000,000,000-byte ceiling inside the global ceiling.
 
+## Read-only lean archive audit
+
+Use the dependency-free audit command to measure schema availability, identity/correlation
+coverage, parent integrity, repository/project attribution, and privacy indicators without
+printing payload values:
+
+```bash
+./scripts/otel/audit.sh
+./scripts/otel/audit.sh --json
+./scripts/otel/audit.sh --root "/path/to/otel-home" --json
+```
+
+The default OTel home is `$CONTROL_ROOM_OTEL_HOME` or
+`~/Library/Application Support/ControlRoom/otel`. `--root` accepts that home, its `data`
+directory, or the `data/lean` directory directly. The audit opens telemetry read-only,
+streams newline-delimited export requests, includes rotated `*.json*` files, and reports malformed
+or unreadable input. It never reads the forensic or legacy directories unless a different root is
+passed explicitly. See
+[mac-codex-telemetry-audit-findings.md](mac-codex-telemetry-audit-findings.md) for the aggregate
+2026-08-19 validation results.
+
 ## Mac-only retention and storage status
 
 Lean and legacy Mac Codex telemetry has a maximum age of 60 days. The complete `data/` archive has an aggregate ceiling of exactly 50,000,000,000 bytes, with the oldest recognized rotated file removed first when size pruning is necessary. Whichever limit is reached first wins. The 50 GB value is a safety ceiling, not a storage target.
