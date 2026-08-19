@@ -162,7 +162,10 @@ export function parseCombo(combo: string): {
   shift: boolean;
   alt: boolean;
 } | null {
-  const parts = combo.toLowerCase().split("+").map((p) => p.trim());
+  const parts = combo
+    .toLowerCase()
+    .split("+")
+    .map((p) => p.trim());
   if (parts.length === 0 || !parts[parts.length - 1]) return null;
 
   let mod = false;
@@ -181,10 +184,7 @@ export function parseCombo(combo: string): {
 }
 
 /** True if the keyboard event matches the combo. */
-export function eventMatchesCombo(
-  e: KeyboardEvent,
-  combo: string,
-): boolean {
+export function eventMatchesCombo(e: KeyboardEvent, combo: string): boolean {
   const parsed = parseCombo(combo);
   if (!parsed) return false;
   // Treat Mac Cmd and Ctrl as the "mod" key interchangeably: the user said
@@ -199,9 +199,7 @@ export function eventMatchesCombo(
 }
 
 /** Resolve the first DOM element with a given data-shortcut-target attribute. */
-export function findShortcutTarget(
-  id: ShortcutTarget,
-): HTMLElement | null {
+export function findShortcutTarget(id: ShortcutTarget): HTMLElement | null {
   if (typeof document === "undefined") return null;
   return document.querySelector<HTMLElement>(`[data-shortcut-target="${id}"]`);
 }

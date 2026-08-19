@@ -65,10 +65,7 @@ export function KbdHint({ combo, className, ...rest }: KbdHintProps) {
       {...rest}
     >
       {keys.map((k, i) => (
-        <kbd
-          key={`${k}-${i}`}
-          className="font-mono text-[10px] leading-none"
-        >
+        <kbd key={`${k}-${i}`} className="font-mono text-[10px] leading-none">
           {mac === null ? resolveKey(k, false) : resolveKey(k, mac)}
         </kbd>
       ))}

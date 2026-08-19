@@ -19,6 +19,7 @@ export function messageRowsToUIMessages(rows: MessageRow[]): UIMessage[] {
 }
 
 export function uiMessageText(message: Pick<UIMessage, "parts">): string {
+  if (!message.parts || !Array.isArray(message.parts)) return "";
   return message.parts
     .filter(
       (part): part is Extract<UIMessage["parts"][number], { type: "text" }> => part.type === "text",

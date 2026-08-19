@@ -15,8 +15,9 @@ export function isMacOs(): boolean {
   // universal fallback. We also normalize against common Chromium quirks
   // (e.g. iPad reporting as Mac on Safari desktop UA).
   const platform =
-    (navigator as Navigator & { userAgentData?: { platform?: string } })
-      .userAgentData?.platform ?? navigator.platform ?? "";
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
+    navigator.platform ??
+    "";
   const ua = navigator.userAgent ?? "";
   if (/Mac/i.test(platform)) return true;
   if (/Mac/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua)) return true;
@@ -25,8 +26,5 @@ export function isMacOs(): boolean {
 
 export function isTouchDevice(): boolean {
   if (typeof window === "undefined") return false;
-  return (
-    "ontouchstart" in window ||
-    (navigator.maxTouchPoints ?? 0) > 1
-  );
+  return "ontouchstart" in window || (navigator.maxTouchPoints ?? 0) > 1;
 }

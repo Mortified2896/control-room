@@ -1,8 +1,11 @@
 # Control Room — Hermes VM dev workflow
 
 > How to develop Control Room on the Hermes VM from a Mac.
-> Status: Postgres Phase 1 + Phase 2 done (schema + write APIs). UI persistence **not** wired yet.
-> Last verified: 2026-06-16, on commit `bdbe206c83dffea39f6bbb97b317d0520ba01dfc` ("Add Postgres schema and write APIs").
+> Status: Postgres persistence + Router A/B Mode MVP shipped (see `docs/database.md` + `docs/router-ab-mode.md`).
+> Last verified: 2026-06-24, with the Router A/B Mode MVP merged.
+
+If the page goes blank on load/refresh, jump straight to **§11** before
+debugging the code.
 
 ---
 
@@ -191,7 +194,116 @@ npm run build         # next build
 
 ---
 
-## 11. Quickstart (cheat sheet)
+## 11. White blank page after reload — how to recover
+
+If the chat surface renders to a fully white blank page after a reload
+(or a refresh, or after switching dev ↔ prod without a clean rebuild),
+**the cause is almost always stale build artefacts or orphaned Next.js
+processes, not a code bug.** Two fixes, in order:
+
+### 11.1 Nuclear option (use first — fixes the issue 99% of the time)
+
+```bash
+ssh -J proxmox-home hermes@10.10.10.80 'bash -lc "
+  cd /home/hermes/workspace/repos/control-room
+  set -a && . /etc/hermes/control_room_postgres.env && set +a
+  pkill -9 -f \"next dev\"      2>/dev/null || true
+  pkill -9 -f \"next-server\"  2>/dev/null || true
+  pkill -9 -f \"next start\"  2>/dev/null || true
+  rm -rf .next
+  echo \"--- killed leftovers + wiped .next ---\"
+"'
+```
+
+Then start the server the way you normally do (dev or prod). What each
+line does:
+
+- The three `pkill`s terminate any leftover Next.js processes. On the
+  Hermes VM (and on most dev machines), `npm run dev` and `npm run
+start` use different binary names — `pkill -f "next dev"` alone
+  misses `next start` / `next-server`. Without the kill, two servers
+  can race for the same port and one of them serves stale chunks
+  built against an older `.next/` directory, which hydrates to a
+  blank `<div className="h-dvh" />` and stops there.
+- `rm -rf .next` wipes the build cache. Next.js 16 with Turbopack can
+  hydrate inconsistently if the server bundle (one `.next/`) and the
+  client chunks (different path inside the same `.next/`) end up
+  out of sync, which happens easily when you've been toggling between
+  `npm run dev` and `npm run start`. A clean build eliminates the
+  race entirely.
+
+### 11.2 Confirm it's not actually a code bug
+
+If the page is still blank after the nuclear option, it's a real code
+bug. Validate with the Playwright suite (the spec walks the exact
+load-and-reload path and captures screenshots):
+
+```bash
+ssh -J proxmox-home hermes@10.10.10.80 'bash -lc "
+  cd /home/hermes/workspace/repos/control-room
+  set -a && . /etc/hermes/control_room_postgres.env && set +a
+  CONTROL_ROOM_FAKE_LLM=1 npm run test:e2e
+"'
+```
+
+If a spec fails, the failure context under `test-results/` includes:
+
+- a Playwright trace ZIP (`test-results/<spec-name>-<test-name>-chromium/trace.zip`) — open with `npx playwright show-trace <path>` for step-by-step event timeline + screenshot at each step.
+- a `error-context.md` with the accessibility-snapshot YAML of the page at the moment of failure. Look for `<div class=\"h-dvh\">` in the YAML — that confirms hydration didn't complete.
+
+The single-page `app/assistant.tsx` intentionally renders
+`<div className="h-dvh" />` until the React `useEffect` flips
+`mounted = true` on the client. If that `useEffect` never runs (JS
+error, blocked cross-origin dev resources, etc.), the page stays
+white. Run:
+
+```bash
+ssh -J proxmox-home hermes@10.10.10.80 'tail -n 60 /tmp/control-room-dev.log'
+```
+
+and look for the Next.js cross-origin block warning:
+
+```
+Blocked cross-origin request to Next.js dev resource /_next/webpack-hmr
+from \"<host>\".
+
+To allow this host in development, add it to \"allowedDevOrigins\"
+in next.config.js and restart the dev server
+```
+
+If you see that, the offending host is missing from
+`allowedDevOrigins` in `next.config.ts`. Add it (the
+`127.0.0.1` and `localhost` entries are already there for local
+dev) and restart.
+
+### 11.3 When in doubt, run prod
+
+The dev server (Turbopack) is more prone to hydration surprises than
+the prod build. If a "blank page" report is hard to reproduce, build
+prod and run from there:
+
+```bash
+ssh -J proxmox-home hermes@10.10.10.80 'bash -lc "
+  cd /home/hermes/workspace/repos/control-room
+  set -a && . /etc/hermes/control_room_postgres.env && set +a
+  pkill -9 -f \"next\"          2>/dev/null || true
+  rm -rf .next
+  npm run build
+  CONTROL_ROOM_FAKE_LLM=1 nohup npm run start -- --port 3000 --hostname 127.0.0.1 \\
+    > /tmp/control-room-prod.log 2>&1 &
+  sleep 5
+  curl -fsS -I http://127.0.0.1:3000 | head -n 1
+"'
+```
+
+If prod renders fine but dev does not, the issue is a stale Turbopack
+state and the §11.1 nuclear option is the right fix. If prod also
+renders blank, look for a real bug — start from the Playwright
+trace ZIP.
+
+---
+
+## 12. Quickstart (cheat sheet)
 
 ```bash
 # 1. Start the dev server (in a Mac terminal, single shot)
