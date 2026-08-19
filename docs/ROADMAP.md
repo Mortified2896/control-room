@@ -1,6 +1,6 @@
 # Control Room Roadmap
 
-_Last updated: 2026-08-18_
+_Last updated: 2026-08-19_
 
 ## Goal
 
@@ -22,6 +22,25 @@ The key requirement is **genuine replay from the same starting state**, not mere
 - OpenObserve may later provide a lightweight query/UI layer over reconciled telemetry.
 - Server OTel should use the same persistent node/source identity convention so Mac Codex and server Omnigent telemetry can coexist and be reconciled without rewriting native trace or span IDs.
 - Daytona remains the reproducible workspace/snapshot layer. Harbor and Inspect remain later evaluation and replay layers.
+
+### Server revalidation gate — 2026-08-19
+
+The Control Room server is currently unavailable. Live acceptance evidence recorded on
+2026-08-18 is historical evidence only, not proof of current O1/O2, Collector, or MLflow health.
+Do not merge or describe server observability as deployed from that evidence alone.
+
+HomeLab PR #18 remains the draft source for bounded server OTel capture. When connectivity
+returns, rebase or otherwise verify it against current HomeLab `main`, rerun its repository
+fixtures and config/systemd validation, and then perform a fresh controlled rollout with distinct
+target and supervisor instances. Acceptance must re-establish localhost-only endpoints, pinned
+Collector/config provenance, tracked/live file equality, bounded rotation/retention and storage
+headroom, O1/O2 source identity, native trace/span ID preservation, sensitive-content defaults,
+zero receiver refusal, and bounded optional-MLflow interruption/recovery behavior.
+
+Omnigent PR #110's volatile peer-deployer runtime-directory fix is not present on current
+Omnigent `main` and still targets `harden/permanent-peer-deployer`. Reconcile the minimal fix and
+focused regression coverage onto current `main`, pass current CI plus Linux systemd validation,
+and only then revalidate the installed unit. Do not merge the stale stack directly.
 
 ---
 
@@ -367,11 +386,11 @@ Requirements before enabling this:
 
 The current order is intentionally conservative:
 
-1. **Restore O1 and peer-supervised deployment health without destabilizing O2.**
-2. **Establish reliable, bounded server-side OpenTelemetry capture independent of MLflow.**
-3. **Keep MLflow optional downstream; repair or enable it only when useful for analysis/evaluation.**
-4. **Add Daytona and prove pre-agent snapshot/restore.**
-5. **Prove one genuine two-agent replay from the same starting state.**
+1. **Keep the validated local Mac lean/forensic capture and audit healthy.**
+2. **When server connectivity returns, reconcile and revalidate HomeLab PR #18 from reviewed source.**
+3. **Restack the Omnigent #110 runtime-directory fix onto current `main` and validate it independently.**
+4. **Complete Phase 0 metadata/provenance requirements; keep MLflow optional downstream.**
+5. **Add Daytona and prove pre-agent snapshot/restore, then one genuine two-agent replay.**
 6. **Only then add Harbor and Inspect, and accumulate evidence before touching OmniRoute routing policy.**
 
 ---
@@ -395,6 +414,6 @@ Do not currently:
 
 # Immediate milestone
 
-> **O1/peer-deployer healthy → bounded server Omnigent OTel capture works independently of MLflow → one Omnigent task runs in Daytona → snapshot taken at the pristine pre-agent boundary → snapshot/task identifiers linked to the OTel trace → the task can later be restored exactly.**
+> **Server OTel source of truth revalidated → Phase 0 metadata complete → one Omnigent task runs in Daytona → snapshot taken at the pristine pre-agent boundary → snapshot/task identifiers linked to the OTel trace → the task can later be restored exactly.**
 
 That milestone creates the foundation for optional MLflow analysis, Harbor, Inspect, and eventual evidence-driven OmniRoute routing without requiring those systems to own or gate canonical telemetry.
