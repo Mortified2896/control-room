@@ -1,0 +1,58 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 128
+    spike_limit_mib: 32
+  attributes/privacy:
+    actions:
+      - { key: payload, action: delete }
+      - { key: additional_metadata, action: delete }
+      - { key: error.message, action: delete }
+      - { key: exception.message, action: delete }
+      - { key: exception.stacktrace, action: delete }
+  transform/privacy:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(status.message, "") where status.message != nil
+      - context: spanevent
+        statements:
+          - delete_key(attributes, "exception.message")
+          - delete_key(attributes, "exception.stacktrace")
+  resource/pilot:
+    attributes:
+      - { key: deployment.environment.name, value: hatchet-pilot, action: upsert }
+      - { key: control_room.telemetry.profile, value: metadata-only, action: upsert }
+      - { key: control_room.capture_node_id, value: ai-control-hub, action: upsert }
+  batch:
+    timeout: 1s
+    send_batch_size: 128
+
+exporters:
+  file/traces:
+    path: /var/lib/control-room-hatchet-pilot/otel/traces.otlp.json
+    format: json
+    create_directory: true
+    rotation: { max_megabytes: 8, max_backups: 4, max_days: 7, localtime: false }
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/privacy, attributes/privacy, resource/pilot, batch]
+      exporters: [file/traces]

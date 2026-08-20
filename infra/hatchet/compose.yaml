@@ -1,0 +1,221 @@
+name: control-room-hatchet-pilot
+
+x-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-worker: &worker
+  build:
+    context: ../..
+    dockerfile: infra/hatchet/worker.Dockerfile
+  image: control-room-hatchet-pilot-worker:local
+  init: true
+  stop_grace_period: 30s
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  environment:
+    HATCHET_CLIENT_TOKEN: ${HATCHET_PILOT_WORKER_TOKEN:-bootstrap-not-valid}
+    HATCHET_CLIENT_HOST_PORT: hatchet:7077
+    HATCHET_CLIENT_API_URL: http://hatchet:8080
+    HATCHET_CLIENT_TLS_STRATEGY: none
+    HATCHET_CLIENT_LOG_LEVEL: WARN
+    HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED: "true"
+    HATCHET_CLIENT_WORKER_HEALTHCHECK_PORT: "8001"
+    HATCHET_PILOT_STATE_DIR: /var/lib/control-room-hatchet-pilot
+    HATCHET_PILOT_WORKER_NAME: control-room-hatchet-pilot-worker
+    HATCHET_PILOT_WORKER_SLOTS: "1"
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4317
+  volumes:
+    - type: bind
+      source: ${HATCHET_PILOT_STATE_DIR_HOST:?set HATCHET_PILOT_STATE_DIR_HOST}/runtime
+      target: /var/lib/control-room-hatchet-pilot
+      bind:
+        create_host_path: false
+  networks: [pilot]
+  logging: *bounded-logging
+
+services:
+  postgres:
+    image: postgres:17.11@sha256:e38411452a464af89e5adadb8d223bf53b898d47d6ef918b2d58c08707350449
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${HATCHET_PILOT_PG_USER:?set HATCHET_PILOT_PG_USER}
+      POSTGRES_PASSWORD: ${HATCHET_PILOT_PG_PASSWORD:?set HATCHET_PILOT_PG_PASSWORD}
+      POSTGRES_DB: ${HATCHET_PILOT_PG_DATABASE:?set HATCHET_PILOT_PG_DATABASE}
+    command:
+      - postgres
+      - -c
+      - max_connections=50
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 256m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    cpus: 1
+    mem_limit: 1536m
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    networks: [pilot]
+    logging: *bounded-logging
+
+  hatchet:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:v0.101.27@sha256:098f549448de860e95f79f93583dc353be3143a6bb2f6eba446b3d443e39e838
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${HATCHET_PILOT_PG_USER:?set HATCHET_PILOT_PG_USER}:${HATCHET_PILOT_PG_PASSWORD:?set HATCHET_PILOT_PG_PASSWORD}@postgres:5432/${HATCHET_PILOT_PG_DATABASE:?set HATCHET_PILOT_PG_DATABASE}?sslmode=disable
+      SERVER_AUTH_COOKIE_DOMAIN: localhost
+      SERVER_AUTH_COOKIE_INSECURE: "true"
+      SERVER_AUTH_COOKIE_SECRETS: ${HATCHET_PILOT_COOKIE_SECRETS:?set HATCHET_PILOT_COOKIE_SECRETS}
+      SERVER_AUTH_SET_EMAIL_VERIFIED: "true"
+      SERVER_GRPC_BIND_ADDRESS: 0.0.0.0
+      SERVER_GRPC_BROADCAST_ADDRESS: hatchet:7077
+      SERVER_GRPC_INSECURE: "true"
+      SERVER_GRPC_PORT: "7077"
+      SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS: hatchet:7077
+      SERVER_LIMITS_DEFAULT_TENANT_RETENTION_PERIOD: 168h
+      SERVER_LOGGER_LEVEL: warn
+      SERVER_MSGQUEUE_KIND: postgres
+      SERVER_URL: http://localhost:${HATCHET_PILOT_DASHBOARD_PORT:-8890}
+    ports:
+      - 127.0.0.1:${HATCHET_PILOT_DASHBOARD_PORT:-8890}:8888
+      - 127.0.0.1:${HATCHET_PILOT_GRPC_PORT:-7079}:7077
+    volumes:
+      - hatchet-config:/config
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS http://127.0.0.1:8733/ready >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    cpus: 1
+    mem_limit: 1024m
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    networks: [pilot]
+    logging: *bounded-logging
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+    restart: "no"
+    user: "1000:1000"
+    command: [--config=/etc/otelcol-contrib/config.yaml]
+    volumes:
+      - type: bind
+        source: ./otelcol.yaml
+        target: /etc/otelcol-contrib/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${HATCHET_PILOT_STATE_DIR_HOST:?set HATCHET_PILOT_STATE_DIR_HOST}/otel
+        target: /var/lib/control-room-hatchet-pilot/otel
+        bind:
+          create_host_path: false
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 128
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    networks: [pilot]
+    logging: *bounded-logging
+
+  worker:
+    <<: *worker
+    restart: "no"
+    depends_on:
+      hatchet:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    cpus: 1
+    mem_limit: 1024m
+    pids_limit: 256
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - Promise.all([fetch('http://127.0.0.1:8001/health'), fetch('http://hatchet:8733/ready')]).then(async ([worker, controlPlane]) => { const body = await worker.json(); if (!worker.ok || body.status !== 'HEALTHY' || !controlPlane.ok) process.exit(1); }).catch(() => process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  worker-secondary:
+    <<: *worker
+    profiles: [parallel]
+    restart: "no"
+    depends_on:
+      hatchet:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    environment:
+      HATCHET_CLIENT_TOKEN: ${HATCHET_PILOT_WORKER_TOKEN:-bootstrap-not-valid}
+      HATCHET_CLIENT_HOST_PORT: hatchet:7077
+      HATCHET_CLIENT_API_URL: http://hatchet:8080
+      HATCHET_CLIENT_TLS_STRATEGY: none
+      HATCHET_CLIENT_LOG_LEVEL: WARN
+      HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED: "true"
+      HATCHET_CLIENT_WORKER_HEALTHCHECK_PORT: "8001"
+      HATCHET_PILOT_STATE_DIR: /var/lib/control-room-hatchet-pilot
+      HATCHET_PILOT_WORKER_NAME: control-room-hatchet-pilot-worker-secondary
+      HATCHET_PILOT_WORKER_SLOTS: "1"
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4317
+    cpus: 1
+    mem_limit: 1024m
+    pids_limit: 256
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - Promise.all([fetch('http://127.0.0.1:8001/health'), fetch('http://hatchet:8733/ready')]).then(async ([worker, controlPlane]) => { const body = await worker.json(); if (!worker.ok || body.status !== 'HEALTHY' || !controlPlane.ok) process.exit(1); }).catch(() => process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  runner:
+    <<: *worker
+    profiles: [tools]
+    depends_on:
+      hatchet:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    entrypoint: [./node_modules/.bin/tsx, scripts/hatchet/integration.ts]
+    command: []
+    cpus: 1
+    mem_limit: 1024m
+    pids_limit: 256
+
+networks:
+  pilot:
+    driver: bridge
+
+volumes:
+  pgdata:
+  hatchet-config:

@@ -1,0 +1,15 @@
+**
+!.dockerignore
+!tsconfig.json
+!infra/
+!infra/hatchet/
+!infra/hatchet/worker.Dockerfile
+!infra/hatchet/worker/
+!infra/hatchet/worker/package.json
+!infra/hatchet/worker/package-lock.json
+!lib/
+!lib/orchestration/
+!lib/orchestration/**
+!scripts/
+!scripts/hatchet/
+!scripts/hatchet/**

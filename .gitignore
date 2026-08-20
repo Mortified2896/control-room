@@ -48,5 +48,8 @@ otel-data/
 __pycache__/
 *.pyc
 
+# Repository-local Hatchet pilot state is never source material.
+.hatchet-pilot/
+
 # Large local Control Room archives (never commit)
 .control-room-data/
