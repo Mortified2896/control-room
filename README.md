@@ -1,3 +1,27 @@
+# Control Room Standalone
+
+> **STATUS: DORMANT / PRESERVED / NOT THE CURRENT CONTROL ROOM PLATFORM**
+>
+> This repository contains the historical standalone TypeScript/Next.js Control Room application. It is preserved so the standalone product can be revived deliberately later.
+>
+> **Do not use this repository for Omnigent, O1, O2, current Control Room agent-platform, Hatchet/Autopilot integration, server deployment, or HomeLab work.**
+
+Current ownership:
+
+- [Mortified2896/omnigent](https://github.com/Mortified2896/omnigent) — current Control Room/Omnigent product, agent runtime, O1/O2 application, and deployment logic.
+- [Mortified2896/HomeLab](https://github.com/Mortified2896/HomeLab) — server, systemd, Docker, networking, Tailscale, storage, observability deployment, and operations.
+- [Mortified2896/omniroute-customizations](https://github.com/Mortified2896/omniroute-customizations) — OmniRoute catalog and routing overlays.
+
+Work may proceed here only when the task explicitly names this standalone application and says it is being revived, or when preserving/migrating historical evidence. Historical branches, PRs, Mac telemetry tooling, and the closed Hatchet pilot are intentionally retained; their presence does not make this repository an active current-platform source.
+
+This repository is expected to be renamed to an unmistakable standalone name and archived read-only after preservation is complete. Archival is reversible and does not delete its Git history.
+
+---
+
+## Preserved historical README
+
+The material below is retained for context and possible future standalone revival. It is **not** the current Control Room roadmap or repository-routing authority.
+
 # Control Room
 
 Control Room is evolving into a coding-agent observability, replay, and evaluation system around Omnigent, OmniRoute, OpenTelemetry, optional downstream analytics/evaluation consumers such as MLflow, reproducible sandbox state, and later benchmark/evaluation tooling.
