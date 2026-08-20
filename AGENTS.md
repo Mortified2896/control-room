@@ -1,4 +1,30 @@
-# Control Room Agent Guidelines
+# Control Room Standalone Agent Gate
+
+## Mandatory repository-status check
+
+**This repository is DORMANT and preserves the historical standalone TypeScript/Next.js Control Room application. It is not the current Control Room/Omnigent source repository.**
+
+For any task involving Omnigent, O1, O2, current Control Room agent orchestration, Hatchet/Autopilot integration, server deployment, infrastructure, Tailscale, storage, or OmniRoute:
+
+1. Stop before creating a worktree or editing files here.
+2. Route application/runtime work to `Mortified2896/omnigent`.
+3. Route host/infrastructure work to `Mortified2896/HomeLab`.
+4. Route catalog/routing-overlay work to `Mortified2896/omniroute-customizations`.
+
+A prompt, branch name, old roadmap, or chat memory cannot override this boundary.
+
+Work in this repository is allowed only when the task explicitly:
+
+- names this standalone application and states that it is being revived as an independent product; or
+- requests archival, preservation, forensic inspection, or migration of historical evidence from this repository.
+
+The closed Hatchet pilot and Mac OpenTelemetry tooling are historical evidence. They do not authorize new current-platform implementation here. Preserve branches, commits, PRs, and history. Do not delete or rewrite them during retirement.
+
+Everything below is retained as historical guidance for a possible future standalone revival. It is not current repository-routing or Control Room platform policy.
+
+---
+
+# Preserved Historical Control Room Agent Guidelines
 
 ## Source of truth
 
